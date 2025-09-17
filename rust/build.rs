@@ -17,18 +17,21 @@
  * under the License.
  */
 use std::process::Command;
+use cmake;
 
 fn main() {
     // Run `mylib-config --libdir` to get the library path
     let config_output = Command::new("tvm-ffi-config")
-        .arg("--libdir")
+        .arg("--sourcedir")
         .output()
         .expect("Failed to run tvm-ffi-config");
-    let lib_dir = String::from_utf8(config_output.stdout)
+    let source_dir = String::from_utf8(config_output.stdout)
         .expect("Invalid UTF-8 output from tvm-ffi-config")
         .trim()
         .to_string();
+
+    let cmake_dir = cmake::Config::new(source_dir).build();
+    println!("cargo:rustc-link-search=native={}", cmake_dir.display());
     // link the library
-    println!("cargo:rustc-link-search=native={}", lib_dir);
-    println!("cargo:rustc-link-lib=tvm_ffi");
+    println!("cargo:rustc-link-lib=tvm_ffi_shared");
 }

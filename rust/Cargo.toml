@@ -6,3 +6,6 @@ edition = "2021"
 [lib]
 name = "tvm_ffi"
 crate-type = ["lib"]
+
+[build-dependencies]
+cmake = "0.1"
