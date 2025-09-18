@@ -22,16 +22,15 @@ use cmake;
 fn main() {
     // Run `mylib-config --libdir` to get the library path
     let config_output = Command::new("tvm-ffi-config")
-        .arg("--sourcedir")
+        .arg("--libdir")
         .output()
         .expect("Failed to run tvm-ffi-config");
-    let source_dir = String::from_utf8(config_output.stdout)
+    let lib_dir = String::from_utf8(config_output.stdout)
         .expect("Invalid UTF-8 output from tvm-ffi-config")
         .trim()
         .to_string();
 
-    let cmake_dir = cmake::Config::new(source_dir).build();
-    println!("cargo:rustc-link-search=native={}", cmake_dir.display());
+    println!("cargo:rustc-link-search=native={}", lib_dir);
     // link the library
-    println!("cargo:rustc-link-lib=tvm_ffi_shared");
+    println!("cargo:rustc-link-lib=dylib=tvm_ffi");
 }
