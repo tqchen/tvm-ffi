@@ -50,7 +50,7 @@ int TestDLPackTensorAllocatorError(DLTensor* prototype, DLManagedTensorVersioned
 }
 
 TEST(Tensor, Basic) {
-  Tensor nd = Empty(Shape({1, 2, 3}), DLDataType({kDLFloat, 32, 1}), DLDevice({kDLCPU, 0}));
+  Tensor nd = Empty({1, 2, 3}, DLDataType({kDLFloat, 32, 1}), DLDevice({kDLCPU, 0}));
   Shape shape = nd.shape();
   Shape strides = nd.strides();
   EXPECT_EQ(shape.size(), 3);
@@ -66,10 +66,12 @@ TEST(Tensor, Basic) {
     reinterpret_cast<float*>(nd->data)[i] = static_cast<float>(i);
   }
 
+  EXPECT_EQ(nd.numel(), 6);
+  EXPECT_EQ(nd.ndim(), 3);
+  EXPECT_EQ(nd.data_ptr(), nd->data);
+
   Any any0 = nd;
   Tensor nd2 = any0.as<Tensor>().value();
-  EXPECT_EQ(nd2.shape(), shape);
-  EXPECT_EQ(nd2.strides(), strides);
   EXPECT_EQ(nd2.dtype(), DLDataType({kDLFloat, 32, 1}));
   for (int64_t i = 0; i < shape.Product(); ++i) {
     EXPECT_EQ(reinterpret_cast<float*>(nd2->data)[i], i);

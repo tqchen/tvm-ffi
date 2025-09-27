@@ -69,4 +69,28 @@ TEST(Shape, AnyConvert) {
   EXPECT_EQ(shape2[1], 2);
 }
 
+TEST(Shape, ShapeView) {
+  Shape shape = Shape({1, 2, 3});
+  ShapeView shape_view = shape;
+  EXPECT_EQ(shape_view.size(), 3);
+  EXPECT_EQ(shape_view[0], 1);
+  EXPECT_EQ(shape_view[1], 2);
+  EXPECT_EQ(shape_view[2], 3);
+
+  std::vector<int64_t> data = {4, 5, 6};
+  ShapeView view_from_data(data.data(), data.size());
+  EXPECT_EQ(view_from_data.size(), 3);
+  EXPECT_EQ(view_from_data[0], 4);
+  EXPECT_EQ(view_from_data[1], 5);
+  EXPECT_EQ(view_from_data[2], 6);
+
+  std::initializer_list<int64_t> init = {7, 8, 9};
+  ShapeView view_from_init = init;
+  EXPECT_EQ(view_from_init.size(), 3);
+  EXPECT_EQ(view_from_init[0], 7);
+  EXPECT_EQ(view_from_init[1], 8);
+  EXPECT_EQ(view_from_init[2], 9);
+  EXPECT_EQ(view_from_init.Product(), 7 * 8 * 9);
+}
+
 }  // namespace
