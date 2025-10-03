@@ -85,7 +85,7 @@ pub struct DLDataType {
 
 /// DLPack tensor struct - plain C tensor object, does not manage memory
 #[repr(C)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DLTensor {
     /// The data pointer points to the allocated data
     pub data: *mut core::ffi::c_void,
