@@ -318,3 +318,34 @@ def test_load_inline_both() -> None:
     y_cuda = torch.empty_like(x_cuda)
     mod.add_one_cuda(x_cuda, y_cuda)
     torch.testing.assert_close(x_cuda + 1, y_cuda)
+
+
+@pytest.mark.skipif(
+    torch is None or not torch.cuda.is_available(), reason="Requires torch and CUDA"
+)
+def test_cuda_memory_alloc_noleak() -> None:
+    assert torch is not None
+    mod = tvm_ffi.cpp.load_inline(
+        name="hello",
+        cuda_sources=r"""
+            #include <tvm/ffi/function.h>
+            #include <tvm/ffi/container/tensor.h>
+
+            namespace ffi = tvm::ffi;
+
+            ffi::Tensor return_tensor(tvm::ffi::TensorView x) {
+                ffi::Tensor y = ffi::Tensor::FromDLPackAlloc(
+                    TVMFFIEnvGetTensorAllocator(), x.shape(), x.dtype(), x->device);
+                return y;
+            }
+        """,
+        functions=["return_tensor"],
+    )
+    x = torch.arange(1024 * 1024, dtype=torch.float32, device="cuda")
+    current_allocated = torch.cuda.memory_allocated()
+    repeat = 8
+    for i in range(repeat):
+        mod.return_tensor(x)
+        diff = torch.cuda.memory_allocated() - current_allocated
+        # memory should not grow as we loop over
+        assert diff <= 1024**2 * 8

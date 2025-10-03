@@ -349,8 +349,14 @@ cdef inline object make_tensor_from_chandle(TVMFFIObjectHandle chandle, DLPackTo
                 c_dlpack_to_pyobject(dlpack, &py_obj)
                 tensor = <Tensor>(<PyObject*>py_obj)
                 Py_DECREF(tensor)
+                # decref original handle to prevent leak.
+                # note that DLManagedTensor also hold a reference to the tensor
+                # so we need to decref the original handle if the conversion is successful
+                TVMFFIObjectDecRef(chandle)
                 return tensor
             except Exception:
+                # call the deleter to free the memory since we will continue to use the chandle
+                dlpack.deleter(dlpack)
                 pass
     # default return the tensor
     tensor = _CLASS_TENSOR.__new__(_CLASS_TENSOR)
