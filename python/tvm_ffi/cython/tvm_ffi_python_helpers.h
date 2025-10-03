@@ -54,6 +54,16 @@
  *       not dependent on Python.h and can be copied to dlpack.h
  */
 typedef int (*DLPackFromPyObject)(void* py_obj, DLManagedTensorVersioned** out, void** env_stream);
+
+/*!
+ * \brief C-style function pointer to speed convert a PyObject Tensor to a DLTensor.
+ * \param py_obj The Python object to convert, this should be PyObject*
+ * \param out The output DLTensor.
+ * \param env_stream Outputs the current context stream of the device provided by the tensor.
+ * \return 0 on success, -1 on failure. PyError should be set if -1 is returned.
+ */
+typedef int (*DLPackDLTensorFromPyObject)(void* py_obj, DLTensor* out, void** env_stream);
+
 /*!
  * \brief C-style function pointer to speed convert a DLManagedTensorVersioned to a PyObject Tensor.
  * \param tensor The DLManagedTensorVersioned to convert.
@@ -89,6 +99,10 @@ struct TVMFFIPyCallContext {
   void** temp_py_objects = nullptr;
   /*! \brief the number of temporary arguments */
   int num_temp_py_objects = 0;
+  /*! \brief the temporary DLTensor on stack(no need to recycle) */
+  DLTensor* temp_dltensor = nullptr;
+  /*! \brief the number of temporary DLTensor */
+  int num_temp_dltensor = 0;
   /*! \brief the DLPack exporter, if any */
   DLPackToPyObject c_dlpack_to_pyobject{nullptr};
   /*! \brief the DLPack allocator, if any */
@@ -119,6 +133,10 @@ struct TVMFFIPyArgSetter {
    * \brief Optional DLPack allocator for for setters that leverages DLPack protocol.
    */
   DLPackTensorAllocator c_dlpack_tensor_allocator{nullptr};
+  /*!
+   * \brief Optional DLPack importer for for setters that leverages DLPack protocol.
+   */
+  DLPackDLTensorFromPyObject c_dlpack_dltensor_from_pyobject{nullptr};
   /*!
    * \brief Invoke the setter.
    * \param call_ctx The call context.
@@ -217,7 +235,7 @@ class TVMFFIPyCallManager {
       static_assert(sizeof(TVMFFIAny) >= (sizeof(void*) * 2));
       static_assert(alignof(TVMFFIAny) % alignof(void*) == 0);
       old_stack_top_ = manager->stack_top_;
-      int64_t requested_count = num_args * 2;
+      int64_t requested_count = num_args * 2 + (num_args * sizeof(DLTensor) + sizeof(TVMFFIAny)) / sizeof(TVMFFIAny);
       TVMFFIAny* stack_head = manager->temp_stack_.data() + manager->stack_top_;
       if (manager->stack_top_ + requested_count >
           static_cast<int64_t>(manager->temp_stack_.size())) {
@@ -230,6 +248,7 @@ class TVMFFIPyCallManager {
       this->packed_args = stack_head;
       this->temp_ffi_objects = reinterpret_cast<void**>(stack_head + num_args);
       this->temp_py_objects = this->temp_ffi_objects + num_args;
+      this->temp_dltensor = reinterpret_cast<DLTensor*>(this->temp_py_objects + num_args);
     }
 
     ~CallStack() {

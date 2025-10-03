@@ -291,8 +291,29 @@ cdef int _dltensor_test_wrapper_c_dlpack_from_pyobject(
     return TVMFFITensorToDLPackVersioned(wrapper.tensor.chandle, out)
 
 
+cdef int _dltensor_test_wrapper_c_dlpack_dltensor_from_pyobject(
+    void* obj, DLTensor* out, TVMFFIStreamHandle* env_stream
+) except -1 with gil:
+    cdef PyObject* py_obj = <PyObject*>obj
+    cdef DLTensorTestWrapper wrapper = <DLTensorTestWrapper>py_obj
+    out[0] = wrapper.tensor.cdltensor[0]
+    if env_stream != NULL:
+        env_stream[0] = TVMFFIEnvGetStream(
+            wrapper.tensor.cdltensor.device.device_type,
+            wrapper.tensor.cdltensor.device.device_id
+        )
+    return 0
+
+
 def _dltensor_test_wrapper_c_dlpack_from_pyobject_as_intptr():
     cdef DLPackFromPyObject converter_func = _dltensor_test_wrapper_c_dlpack_from_pyobject
+    cdef void* temp_ptr = <void*>converter_func
+    cdef long long temp_int_ptr = <long long>temp_ptr
+    return temp_int_ptr
+
+
+def _dltensor_test_wrapper_c_dlpack_dl_tensor_from_pyobject_as_intptr():
+    cdef DLPackDLTensorFromPyObject converter_func = _dltensor_test_wrapper_c_dlpack_dltensor_from_pyobject
     cdef void* temp_ptr = <void*>converter_func
     cdef long long temp_int_ptr = <long long>temp_ptr
     return temp_int_ptr
@@ -302,6 +323,7 @@ cdef class DLTensorTestWrapper:
     """Wrapper of a Tensor that exposes DLPack protocol, only for testing purpose.
     """
     __c_dlpack_from_pyobject__ = _dltensor_test_wrapper_c_dlpack_from_pyobject_as_intptr()
+    __c_dlpack_dltensor_from_pyobject__ = _dltensor_test_wrapper_c_dlpack_dl_tensor_from_pyobject_as_intptr()
 
     cdef Tensor tensor
     cdef dict __dict__

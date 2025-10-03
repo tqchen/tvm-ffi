@@ -267,6 +267,10 @@ cdef extern from "tvm_ffi_python_helpers.h":
         void* py_obj, DLManagedTensorVersioned** out, TVMFFIStreamHandle* env_stream
     ) except -1
 
+    ctypedef int (*DLPackDLTensorFromPyObject)(
+        void* py_obj, DLTensor* out, TVMFFIStreamHandle* env_stream
+    ) except -1
+
     ctypedef int (*DLPackToPyObject)(
         DLManagedTensorVersioned* tensor, void** py_obj_out
     ) except -1
@@ -275,18 +279,25 @@ cdef extern from "tvm_ffi_python_helpers.h":
         void (*SetError)(void* error_ctx, const char* kind, const char* message)
     ) except -1
 
+    cdef int TestDLPackDLTensorFromPyObject(
+        void* py_obj, DLTensor* out, TVMFFIStreamHandle* env_stream
+    ) except -1
+
     ctypedef struct TVMFFIPyCallContext:
         int device_type
         int device_id
         TVMFFIStreamHandle stream
         DLPackToPyObject c_dlpack_to_pyobject
         DLPackTensorAllocator c_dlpack_tensor_allocator
+        DLTensor* temp_dltensor
+        int num_temp_dltensor
 
     ctypedef struct TVMFFIPyArgSetter:
         int (*func)(TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,  PyObject* py_arg, TVMFFIAny* out) except -1
         DLPackFromPyObject c_dlpack_from_pyobject
         DLPackToPyObject c_dlpack_to_pyobject
         DLPackTensorAllocator c_dlpack_tensor_allocator
+        DLPackDLTensorFromPyObject c_dlpack_dltensor_from_pyobject
 
     ctypedef int (*TVMFFIPyArgSetterFactory)(PyObject* value, TVMFFIPyArgSetter* out) except -1
     # The main call function

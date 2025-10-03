@@ -177,6 +177,40 @@ cdef int TVMFFIPyArgSetterDLPackCExporter_(
     return 0
 
 
+cdef int TVMFFIPyArgSetterDLPackCExporterDLTensor_(
+    TVMFFIPyArgSetter* this, TVMFFIPyCallContext* ctx,
+    PyObject* arg, TVMFFIAny* out
+) except -1:
+    cdef DLManagedTensorVersioned* temp_managed_tensor
+    cdef TVMFFIObjectHandle temp_chandle
+    cdef TVMFFIStreamHandle env_stream = NULL
+
+    if this.c_dlpack_to_pyobject != NULL:
+        ctx.c_dlpack_to_pyobject = this.c_dlpack_to_pyobject
+    if this.c_dlpack_tensor_allocator != NULL:
+        ctx.c_dlpack_tensor_allocator = this.c_dlpack_tensor_allocator
+
+    cdef DLTensor* temp_dltensor = ctx.temp_dltensor + ctx.num_temp_dltensor
+    ctx.num_temp_dltensor += 1
+
+    if ctx.device_type != -1:
+        # already queried device, do not do it again, pass NULL to stream
+        if (this.c_dlpack_dltensor_from_pyobject)(arg, temp_dltensor, NULL) != 0:
+            return -1
+    else:
+        # query string on the envrionment stream
+        if (this.c_dlpack_dltensor_from_pyobject)(arg, temp_dltensor, &env_stream) != 0:
+            return -1
+        # If device is not CPU, we should set the device type and id
+        if temp_dltensor.device.device_type != kDLCPU:
+            ctx.stream = env_stream
+            ctx.device_type = temp_dltensor.device.device_type
+            ctx.device_id = temp_dltensor.device.device_id
+
+    out.type_index = kTVMFFIDLTensorPtr
+    out.v_ptr = temp_dltensor
+    return 0
+
 cdef int TorchDLPackToPyObjectFallback_(
     DLManagedTensorVersioned* dltensor, void** py_obj_out
 ) except -1:
@@ -551,12 +585,21 @@ cdef int TVMFFIPyArgSetterFactory_(PyObject* value, TVMFFIPyArgSetter* out) exce
             out.func = TVMFFIPyArgSetterDLPackCExporter_
             temp_ptr = arg.__c_dlpack_from_pyobject__
             out.c_dlpack_from_pyobject = <DLPackFromPyObject>temp_ptr
+            # favors on stack
+            if hasattr(arg, "__c_dlpack_dltensor_from_pyobject__"):
+                if os.environ.get("TVM_FFI_SKIP_c_dlpack_dltensor_from_pyobject", "0") != "1":
+                    out.func = TVMFFIPyArgSetterDLPackCExporterDLTensor_
+                temp_ptr = arg.__c_dlpack_dltensor_from_pyobject__
+                out.c_dlpack_dltensor_from_pyobject = <DLPackDLTensorFromPyObject>temp_ptr
             if hasattr(arg, "__c_dlpack_to_pyobject__"):
                 temp_ptr = arg.__c_dlpack_to_pyobject__
                 out.c_dlpack_to_pyobject = <DLPackToPyObject>temp_ptr
             if hasattr(arg, "__c_dlpack_tensor_allocator__"):
                 temp_ptr = arg.__c_dlpack_tensor_allocator__
                 out.c_dlpack_tensor_allocator = <DLPackTensorAllocator>temp_ptr
+            if hasattr(arg, "__c_dlpack_dltensor_from_pyobject__"):
+                temp_ptr = arg.__c_dlpack_dltensor_from_pyobject__
+                out.c_dlpack_dltensor_from_pyobject = <DLPackDLTensorFromPyObject>temp_ptr
             return 0
     if torch is not None and isinstance(arg, torch.Tensor):
         out.func = TVMFFIPyArgSetterTorchFallback_
