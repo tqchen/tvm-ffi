@@ -143,6 +143,7 @@ XLA_FFI_Error* CustomCallInstantiate(XLA_FFI_CallFrame* frame) {
 
 // The `execute` handler: called every time the operation runs.
 XLA_FFI_Error* CustomCallExecute(XLA_FFI_CallFrame* frame) {
+    printf("[FFI Execute] Called with %lld arguments.\n", (long long)frame->args.size);
     // 1. Retrieve the state that was created during the instantiate stage.
     CustomCallState* state;
     XLA_FFI_State_Get_Args get_args = {0};
