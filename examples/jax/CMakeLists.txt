@@ -27,8 +27,16 @@ execute_process(
   OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE tvm_ffi_ROOT)
 find_package(tvm_ffi CONFIG REQUIRED)
 
+execute_process(
+  COMMAND "${Python_EXECUTABLE}"
+          "-c" "from jax import ffi; print(ffi.include_dir())"
+  OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE XLA_DIR)
+message(STATUS "XLA include directory: ${XLA_DIR}")
+
+
 # use the projects as usual
 add_library(jax_tvm_ffi SHARED src/jax_tvm_ffi.cc)
+target_include_directories(jax_tvm_ffi PRIVATE ${XLA_DIR})
 target_link_libraries(jax_tvm_ffi tvm_ffi_header)
 target_link_libraries(jax_tvm_ffi tvm_ffi_shared)
 

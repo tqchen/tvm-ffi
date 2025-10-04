@@ -2,24 +2,36 @@ import jax
 import numpy as np
 import jax.numpy as jnp
 import jax.ffi
+import jax_tvm_ffi
 
 
-def rms_norm_ref(x, eps=1e-5):
-  scale = jnp.sqrt(jnp.mean(jnp.square(x), axis=-1, keepdims=True) + eps)
-  return x / scale
+@jax.jit
+def add_one_jax(x):
+    """JAX function that calls the 'add_one' C++ implementation."""
+    call = jax.ffi.ffi_call(
+        "custom_dispatch",
+        jax.ShapeDtypeStruct(x.shape, x.dtype),
+        vmap_method="broadcast_all",
+    )
+    return call(x)
 
-def rms_norm_ffi(x, eps=1e-5):
-  if x.dtype != jnp.float32:
-    raise ValueError("Only the float32 dtype is implemented by rms_norm")
 
-  call = jax.ffi.ffi_call(
-    "rms_norm_ffi",
-    jax.ShapeDtypeStruct(x.shape, x.dtype),
-    vmap_method="broadcast_all",
-  )
-  return call(x, eps=np.float32(eps))
+@jax.jit
+def mul_jax(x, y):
+    """JAX function that calls the 'mul' C++ implementation."""
+    call = jax.ffi.ffi_call(
+        "custom_dispatch",
+        jax.ShapeDtypeStruct(x.shape, x.dtype),
+        vmap_method="broadcast_all",
+    )
+    return call(x, y)
 
-gpu = jax.devices("gpu")[0]
+# Run the JIT-compiled functions
+print("\n--- Testing add_one ---")
+input_array = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+x = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32, device = jax.devices("cpu")[0])
+# Although our dummy function doesn't compute anything, we can see the
+# print statements from the C++ side when this line is executed.
+output_array = add_one_jax(x)
+print(f"JAX call to 'add_one' completed. Input was: {input_array}")
 
-x = jnp.arange(32, dtype=jnp.float32, device=gpu)
-print(jax.ffi.include_dir())

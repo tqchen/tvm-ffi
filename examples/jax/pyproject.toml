@@ -16,10 +16,9 @@
 # under the License.
 
 [project]
-name = "my-ffi-extension"
+name = "jax-tvm-ffi"
 version = "0.1.0"
 
-readme = "README.md"
 license = { text = "Apache 2.0" }
 classifiers = [
   "License :: OSI Approved :: Apache Software License",
@@ -54,5 +53,5 @@ cmake.build-type = "RelWithDebugInfo"
 logging.level = "INFO"
 
 # Wheel configuration
-wheel.packages = ["python/my_ffi_extension"]
-wheel.install-dir = "my_ffi_extension"
+wheel.packages = ["python/jax_tvm_ffi"]
+wheel.install-dir = "jax_tvm_ffi"
