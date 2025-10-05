@@ -1,213 +1,139 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-// ============================================================================
-// Include the actual C API Headers from JAX/XLA and DLPack
-// ============================================================================
-#include <xla/ffi/api/c_api.h>
-#include <tvm/ffi/function.h>
 #include <dlpack/dlpack.h>
+#include <tvm/ffi/function.h>
+#include <xla/ffi/api/ffi.h>
 
-// ============================================================================
-// C-style Implementations of Target Functions
-// ============================================================================
+#include <array>
+#include <memory>
+#include <type_traits>
 
-// Forward declare the main execution handler.
-XLA_FFI_Error* CustomCallExecute(XLA_FFI_CallFrame* frame);
+// subclass of xla::ffi::Ffi
+// so we can reuse existing helper functions defined.
+// we do not use the Handler class directly since we need to operate
+// on lower-level call frame arguments.
+class JAXTVMFFIHandler : public xla::ffi::Ffi {
+ public:
+  explicit JAXTVMFFIHandler(tvm::ffi::Function func, int traits) : func_(func), traits_(traits) {}
 
-void AddOne(DLTensor** args, int num_args) {
-    printf("  -> Executing AddOne(in, out)\n");
-    // In a real implementation, you would access args[0] (in) and args[1] (out)
-    // and perform the computation.
-}
+  XLA_FFI_Error* Call(XLA_FFI_CallFrame* call_frame) const final {
+    // If passed a call frame with the metadata extension, just return the
+    if (XLA_FFI_PREDICT_FALSE(call_frame->extension_start != nullptr &&
+                              call_frame->extension_start->type == XLA_FFI_Extension_Metadata)) {
+      return PopulateMetadata(call_frame->api, reinterpret_cast<XLA_FFI_Metadata_Extension*>(
+                                                   call_frame->extension_start));
+    }
+    std::cout << "FFIHandler::Call called " << std::endl;
 
-void Mul(DLTensor** args, int num_args) {
-    printf("  -> Executing Mul(x, y, z)\n");
-    // Real implementation would use args[0], args[1], and args[2].
-}
+    return Success();
+  }
 
-// ============================================================================
-// FFI Bridge Implementation (Pure C)
-// ============================================================================
+ private:
+  // populate metadata extension to the call frame
+  XLA_FFI_Error* PopulateMetadata(const XLA_FFI_Api* api,
+                                  XLA_FFI_Metadata_Extension* extension) const {
+    if (XLA_FFI_Error* err = StructSizeIsGreaterOrEqual(api, "XLA_FFI_Metadata_Extension",
+                                                        XLA_FFI_Metadata_Extension_STRUCT_SIZE,
+                                                        extension->extension_base.struct_size)) {
+      return err;
+    }
+    std::cout << "FFIHandler::PopulateMetadata called " << std::endl;
 
-// A C-style function pointer for our target functions.
-typedef void (*FfiFunctor)(DLTensor**, int);
-
-// A simple struct for our function registry lookup table.
-typedef struct {
-    const char* name;
-    FfiFunctor func;
-} FunctionRegistration;
-
-// The "closure" or context state. This now stores the resolved functor.
-typedef struct {
-    FfiFunctor func;
-} CustomCallState;
-
-// A unique ID for our state struct, to be registered with the runtime.
-static XLA_FFI_TypeId state_type_id = {0};
-
-// A helper to create error objects using the C API.
-static XLA_FFI_Error* CreateError(const XLA_FFI_Api* api, XLA_FFI_Error_Code code, const char* message) {
-    XLA_FFI_Error_Create_Args err_args = {0};
-    err_args.struct_size = XLA_FFI_Error_Create_Args_STRUCT_SIZE;
-    err_args.errc = code;
-    err_args.message = message;
-    return api->XLA_FFI_Error_Create(&err_args);
-}
-
-// The `instantiate` handler: called once per call site to resolve the function and set up state.
-XLA_FFI_Error* CustomCallInstantiate(XLA_FFI_CallFrame* frame) {
-    printf("[FFI Instantiate] Called with %lld attributes.\n", (long long)frame->attrs.size);
-    // Register our state's type ID if it hasn't been already.
-    if (state_type_id.type_id == 0) {
-        XLA_FFI_TypeId_Register_Args args = {0};
-        args.struct_size = XLA_FFI_TypeId_Register_Args_STRUCT_SIZE;
-        args.name.ptr = "CustomCallState";
-        args.name.len = strlen(args.name.ptr);
-        args.type_id = &state_type_id;
-        XLA_FFI_Error* err = frame->api->XLA_FFI_TypeId_Register(&args);
-        if (err) return err;
+    if (XLA_FFI_Error* err =
+            StructSizeIsGreaterOrEqual(api, "XLA_FFI_Metadata", XLA_FFI_Metadata_STRUCT_SIZE,
+                                       extension->metadata->struct_size)) {
+      return err;
     }
 
-    // 1. Find the target function name from the attributes.
-    const XLA_FFI_ByteSpan* name_span = NULL;
-    for (int i = 0; i < frame->attrs.size; ++i) {
-        const char* attr_name = "function_name";
-        size_t attr_name_len = strlen(attr_name);
-        if (frame->attrs.names[i]->len == attr_name_len &&
-            strncmp(frame->attrs.names[i]->ptr, attr_name, attr_name_len) == 0) {
-
-            if (frame->attrs.types[i] != XLA_FFI_AttrType_STRING) {
-                return CreateError(frame->api, XLA_FFI_Error_Code_INVALID_ARGUMENT, "'function_name' attribute must be a string");
-            }
-            name_span = (const XLA_FFI_ByteSpan*)frame->attrs.attrs[i];
-            break;
-        }
-    }
-
-    if (!name_span) {
-        return CreateError(frame->api, XLA_FFI_Error_Code_INVALID_ARGUMENT, "Missing 'function_name' attribute in instantiate stage");
-    }
-
-    // 2. Look up the function in a static registry.
-    static const FunctionRegistration registry[] = {
-        {"add_one", AddOne},
-        {"mul", Mul}
+    extension->metadata->api_version = XLA_FFI_Api_Version{
+        XLA_FFI_Api_Version_STRUCT_SIZE,
+        /*extension_start=*/nullptr,
+        XLA_FFI_API_MAJOR,
+        XLA_FFI_API_MINOR,
     };
-    static const int registry_size = sizeof(registry) / sizeof(registry[0]);
+    // TODO: add traits that indicate command buffer compatible
+    // which may be needed for cudagraph compatibility
+    extension->metadata->traits = static_cast<XLA_FFI_Handler_Traits>(traits_);
+    return Success();
+  }
 
-    FfiFunctor functor = NULL;
-    for (int i = 0; i < registry_size; ++i) {
-        const char* reg_name = registry[i].name;
-        size_t reg_name_len = strlen(reg_name);
-        if (reg_name_len == name_span->len &&
-            strncmp(reg_name, name_span->ptr, name_span->len) == 0) {
-            functor = registry[i].func;
-            break;
-        }
+  static XLA_FFI_Error* Success() { return nullptr; }
+  // underlying function
+  tvm::ffi::Function func_;
+  int traits_;
+};
+
+//-------------------------------------------------------------------
+// Macro to generate trampoline table
+// We use trampoline table to work around the limitation that xla
+// ffi handler right now can only take in raw function pointer
+// without extra closure data during registration.
+//
+// We will generate 1000 function pointers that calls into
+// JAXTVMFFIRegistry::Global()->Call(index, call_frame);
+// and then we can dispatch based on the index.
+//
+// Likely it should be sufficient since very unlikely users
+// will have more than 1000 handlers.
+//-------------------------------------------------------------------
+// global registry of handlers
+class JAXTVMFFIRegistry {
+ public:
+  static void* Register(tvm::ffi::Function func, int traits) {
+    return Global()->RegisterInternal(func, traits);
+  }
+
+  static size_t RegisteredCount() {
+    return Global()->registered_count_;
+  }
+
+ private:
+  // size of the trampoline table
+  static constexpr int kTrampolineTableSize = 1024;
+  // current number of handlers allocated
+  size_t registered_count_ = 0;
+  // handler table to dispatch to
+  std::array<std::unique_ptr<JAXTVMFFIHandler>, kTrampolineTableSize> handler_table_;
+  // global static trampoline table pre-populated
+  std::array<XLA_FFI_Handler*, kTrampolineTableSize> trampoline_table_ =
+      MakeTrampolineTable(std::make_index_sequence<kTrampolineTableSize>{});
+
+  // global instance
+  static JAXTVMFFIRegistry* Global() {
+    static JAXTVMFFIRegistry* inst = new JAXTVMFFIRegistry();
+    return inst;
+  }
+
+  // internal register function
+  void* RegisterInternal(tvm::ffi::Function func, int traits) {
+    if (registered_count_ >= kTrampolineTableSize) {
+      TVM_FFI_THROW(RuntimeError) << "JAXTVMFFIRegistry: cannot register more than "
+                                  << kTrampolineTableSize << " handlers";
     }
+    handler_table_[registered_count_++] = std::make_unique<JAXTVMFFIHandler>(func, traits);
+    return reinterpret_cast<void*>(trampoline_table_[registered_count_ - 1]);
+  }
 
-    if (!functor) {
-        char* target_name_buffer = (char*)malloc(name_span->len + 1);
-        if (!target_name_buffer) return CreateError(frame->api, XLA_FFI_Error_Code_RESOURCE_EXHAUSTED, "Failed to allocate buffer for error message");
-        memcpy(target_name_buffer, name_span->ptr, name_span->len);
-        target_name_buffer[name_span->len] = '\0';
+  // must not inline the entry to minimize the trampoline function size
+  TVM_FFI_NO_INLINE static XLA_FFI_Error* Entry(int index, XLA_FFI_CallFrame* call_frame) {
+    return Global()->handler_table_[index]->Call(call_frame);
+  }
+  // trampoline functions that dispatches based on index
+  // We use this design to work around the limitation that xla ffi handler right now
+  // can only take in raw function pointer without extra user data
+  template <int index>
+  static XLA_FFI_Error* Trampoline(XLA_FFI_CallFrame* call_frame) {
+    return JAXTVMFFIRegistry::Entry(index, call_frame);
+  }
+  // helper to geenrate the trampoline table
+  template <size_t... Indices>
+  static std::array<XLA_FFI_Handler*, sizeof...(Indices)> MakeTrampolineTable(
+      std::index_sequence<Indices...>) {
+    // This uses a parameter pack expansion to create an array of function pointers,
+    // one for each index in the sequence.
+    return std::array<XLA_FFI_Handler*, sizeof...(Indices)>{&Trampoline<Indices>...};
+  }
+};
 
-        char msg[256];
-        snprintf(msg, sizeof(msg), "No custom call function registered for name '%s'", target_name_buffer);
-        free(target_name_buffer);
-        return CreateError(frame->api, XLA_FFI_Error_Code_NOT_FOUND, msg);
-    }
-
-    printf("[FFI Instantiate] Successfully resolved and stored functor for the call site.\n");
-
-    // 3. Create the state struct on the heap and store the resolved functor.
-    CustomCallState* state = (CustomCallState*)malloc(sizeof(CustomCallState));
-    if (!state) {
-        return CreateError(frame->api, XLA_FFI_Error_Code_RESOURCE_EXHAUSTED, "Failed to allocate state");
-    }
-    state->func = functor;
-
-    // 4. Set the state in the execution context for the execute stage.
-    XLA_FFI_State_Set_Args set_args = {0};
-    set_args.struct_size = XLA_FFI_State_Set_Args_STRUCT_SIZE;
-    set_args.ctx = frame->ctx;
-    set_args.type_id = &state_type_id;
-    set_args.state = state;
-    set_args.deleter = free; // The runtime will call free(state) on teardown.
-
-    return frame->api->XLA_FFI_State_Set(&set_args);
-}
-
-// The `execute` handler: called every time the operation runs.
-XLA_FFI_Error* CustomCallExecute(XLA_FFI_CallFrame* frame) {
-    printf("[FFI Execute] Called with %lld arguments.\n", (long long)frame->args.size);
-    // 1. Retrieve the state that was created during the instantiate stage.
-    CustomCallState* state;
-    XLA_FFI_State_Get_Args get_args = {0};
-    get_args.struct_size = XLA_FFI_State_Get_Args_STRUCT_SIZE;
-    get_args.ctx = frame->ctx;
-    get_args.type_id = &state_type_id;
-    get_args.state = (void**)&state;
-    XLA_FFI_Error* err = frame->api->XLA_FFI_State_Get(&get_args);
-    if (err) return err;
-
-    // 2. The functor is already resolved. Get it directly from the state.
-    FfiFunctor functor = state->func;
-    if (!functor) {
-        // This should not happen if instantiate was successful.
-        return CreateError(frame->api, XLA_FFI_Error_Code_INTERNAL, "Invalid state: functor is NULL");
-    }
-    printf("\n[FFI Execute] Calling pre-resolved functor.\n");
-
-    // 3. Translate arguments from XLA_FFI_Buffer to DLTensor.
-    printf("[FFI Execute] Processing %lld arguments.\n", (long long)frame->args.size);
-    DLTensor* dl_tensors = (DLTensor*)malloc(frame->args.size * sizeof(DLTensor));
-    DLTensor** dl_tensor_ptrs = (DLTensor**)malloc(frame->args.size * sizeof(DLTensor*));
-    if (!dl_tensors || !dl_tensor_ptrs) {
-        free(dl_tensors); free(dl_tensor_ptrs);
-        return CreateError(frame->api, XLA_FFI_Error_Code_RESOURCE_EXHAUSTED, "Failed to allocate tensor arrays");
-    }
-
-    for (int i = 0; i < frame->args.size; ++i) {
-        if (frame->args.types[i] != XLA_FFI_ArgType_BUFFER) {
-            free(dl_tensors); free(dl_tensor_ptrs);
-            return CreateError(frame->api, XLA_FFI_Error_Code_INVALID_ARGUMENT, "Argument is not a buffer");
-        }
-        XLA_FFI_Buffer* xla_buffer = (XLA_FFI_Buffer*)frame->args.args[i];
-        dl_tensors[i].data = xla_buffer->data;
-        dl_tensors[i].ndim = xla_buffer->rank;
-        dl_tensors[i].shape = xla_buffer->dims;
-        // Fill in dummy values
-        // dl_tensors[i].device_type = 0; dl_tensors[i].device_id = 0;
-        // dl_tensors[i].strides = NULL; dl_tensors[i].byte_offset = 0;
-        // dl_tensors[i].dtype_code = 0; dl_tensors[i].dtype_bits = 32; dl_tensors[i].dtype_lanes = 1;
-
-        dl_tensor_ptrs[i] = &dl_tensors[i];
-    }
-
-    // 4. Call the functor.
-    functor(dl_tensor_ptrs, frame->args.size);
-
-    free(dl_tensors);
-    free(dl_tensor_ptrs);
-
-    printf("[FFI Execute] Successfully executed call.\n");
-    return NULL; // NULL signifies OK
-}
-
-
-void *CustomCallInstantiatePtr() {
-  void *func = reinterpret_cast<void *>(CustomCallInstantiate);
-  return func;
-}
-
-void *CustomCallExecutePtr() {
-  void *func = reinterpret_cast<void *>(CustomCallExecute);
-  return func;
-}
-
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(CustomCallInstantiatePtr, CustomCallInstantiatePtr);
-TVM_FFI_DLL_EXPORT_TYPED_FUNC(CustomCallExecutePtr, CustomCallExecutePtr);
+// callback to register a handler to the global registry
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(register_tvm_ffi_handler, JAXTVMFFIRegistry::Register);
+// get the number of handlers registered
+TVM_FFI_DLL_EXPORT_TYPED_FUNC(registered_count, JAXTVMFFIRegistry::RegisteredCount);
