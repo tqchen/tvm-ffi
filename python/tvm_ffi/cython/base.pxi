@@ -339,6 +339,8 @@ cdef extern from "tvm_ffi_python_helpers.h":
     int TVMFFIPyArgSetterInt_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* arg, TVMFFIAny* out) except -1
     int TVMFFIPyArgSetterBool_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* arg, TVMFFIAny* out) except -1
     int TVMFFIPyArgSetterNone_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* arg, TVMFFIAny* out) except -1
+    # deleter for python objects
+    void TVMFFIPyObjectDeleter(void* py_obj) noexcept nogil
 
 
 cdef class ByteArrayArg:

@@ -192,8 +192,17 @@ if (TVM_FFI_BUILD_PYTHON_MODULE)
       ${CMAKE_CURRENT_SOURCE_DIR}/python/tvm_ffi/cython/object.pxi
       ${CMAKE_CURRENT_SOURCE_DIR}/python/tvm_ffi/cython/string.pxi
   )
-  # set working directory to source so we can see the exact file name in backtrace relatived to the
-  # project source root
+  # Run a Python script to check for free-threaded build
+  execute_process(
+    COMMAND ${Python_EXECUTABLE} -c
+            "import sysconfig; print(sysconfig.get_config_var('Py_GIL_DISABLED') == 1)"
+    OUTPUT_VARIABLE PYTHON_IS_FREE_THREADED
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if (PYTHON_IS_FREE_THREADED)
+    message(STATUS "Free-threaded Python detected.")
+  endif ()
+
   add_custom_command(
     OUTPUT ${_core_cpp}
     COMMAND ${Python_EXECUTABLE} -m cython --cplus ${_core_pyx} -o ${_core_cpp}
@@ -202,7 +211,8 @@ if (TVM_FFI_BUILD_PYTHON_MODULE)
     DEPENDS ${_cython_sources}
     VERBATIM
   )
-  if (Python_VERSION VERSION_GREATER_EQUAL "3.12")
+
+  if (Python_VERSION VERSION_GREATER_EQUAL "3.12" AND NOT PYTHON_IS_FREE_THREADED)
     # >= Python3.12, use Use_SABI version
     python_add_library(tvm_ffi_cython MODULE "${_core_cpp}" USE_SABI 3.12)
     set_target_properties(tvm_ffi_cython PROPERTIES OUTPUT_NAME "core")

@@ -709,12 +709,6 @@ def _get_global_func(name, allow_missing):
     raise ValueError("Cannot find global function %s" % name)
 
 
-# handle callbacks
-cdef void tvm_ffi_pyobject_deleter(void* fhandle) noexcept with gil:
-    local_pyobject = <object>(fhandle)
-    Py_DECREF(local_pyobject)
-
-
 cdef int tvm_ffi_callback(void* context,
                           const TVMFFIAny* packed_args,
                           int32_t num_args,
@@ -722,8 +716,9 @@ cdef int tvm_ffi_callback(void* context,
     cdef list pyargs
     cdef TVMFFIAny temp_result
     cdef int c_api_ret_code
-    local_pyfunc = <object>(context)
+    cdef object local_pyfunc = <object>(context)
     pyargs = []
+
     for i in range(num_args):
         CHECK_CALL(TVMFFIAnyViewToOwnedAny(&packed_args[i], &temp_result))
         pyargs.append(make_ret(temp_result))
@@ -736,11 +731,7 @@ cdef int tvm_ffi_callback(void* context,
             result,
             &c_api_ret_code
         )
-        if c_api_ret_code == 0:
-            return 0
-        elif c_api_ret_code == -2:
-            raise_existing_error()
-        return -1
+        return c_api_ret_code
     except Exception as err:
         set_last_ffi_error(err)
         return -1
@@ -754,7 +745,7 @@ cdef inline int _convert_to_ffi_func_handle(
     CHECK_CALL(TVMFFIFunctionCreate(
         <void*>(pyfunc),
         tvm_ffi_callback,
-        tvm_ffi_pyobject_deleter,
+        TVMFFIPyObjectDeleter,
         out_handle))
     return 0
 
@@ -776,7 +767,7 @@ cdef inline int _convert_to_opaque_object_handle(
     CHECK_CALL(TVMFFIObjectCreateOpaque(
         <void*>(pyobject),
         kTVMFFIOpaquePyObject,
-        tvm_ffi_pyobject_deleter,
+        TVMFFIPyObjectDeleter,
         out_handle))
     return 0
 

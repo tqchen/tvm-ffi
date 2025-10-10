@@ -339,7 +339,13 @@ class TypeTable {
                             TypeIndex::kTVMFFIObjectRValueRef);
     ReserveBuiltinTypeIndex(StaticTypeKey::kTVMFFISmallStr, TypeIndex::kTVMFFISmallStr);
     ReserveBuiltinTypeIndex(StaticTypeKey::kTVMFFISmallBytes, TypeIndex::kTVMFFISmallBytes);
-    ReserveBuiltinTypeIndex(StaticTypeKey::kTVMFFIOpaquePyObject, TypeIndex::kTVMFFIOpaquePyObject);
+    // register opaque py whose type depth is 1
+    this->GetOrAllocTypeIndex(StaticTypeKey::kTVMFFIOpaquePyObject,
+                              TypeIndex::kTVMFFIOpaquePyObject,
+                              /*type_depth=*/1,
+                              /*num_child_slots=*/0,
+                              /*child_slots_can_overflow=*/false,
+                              /*parent_type_index=*/TypeIndex::kTVMFFIObject);
     // no need to reserve for object types as they will be registered
   }
 

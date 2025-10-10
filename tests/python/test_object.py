@@ -107,17 +107,20 @@ class MyObject:
 
 def test_opaque_object() -> None:
     obj0 = MyObject("hello")
-    assert sys.getrefcount(obj0) == 2
+    base_count = sys.getrefcount(obj0)
+    ref_count = tvm_ffi.get_global_func("testing.object_use_count")
+    assert sys.getrefcount(obj0) == base_count
     obj0_converted = tvm_ffi.convert(obj0)
-    assert sys.getrefcount(obj0) == 3
+    assert ref_count(obj0_converted) == 1
+    assert sys.getrefcount(obj0) == base_count + 1
     assert isinstance(obj0_converted, tvm_ffi.core.OpaquePyObject)
     obj0_cpy = obj0_converted.pyobject()
     assert obj0_cpy is obj0
-    assert sys.getrefcount(obj0) == 4
+    assert sys.getrefcount(obj0) == base_count + 2
     obj0_converted = None
-    assert sys.getrefcount(obj0) == 3
+    assert sys.getrefcount(obj0) == base_count + 1
     obj0_cpy = None
-    assert sys.getrefcount(obj0) == 2
+    assert sys.getrefcount(obj0) == base_count
 
 
 def test_opaque_type_error() -> None:

@@ -591,4 +591,35 @@ TVM_FFI_INLINE void TVMFFIPyPushTempPyObject(TVMFFIPyCallContext* ctx, PyObject*
   Py_IncRef(arg);
   ctx->temp_py_objects[ctx->num_temp_py_objects++] = arg;
 }
+
+//------------------------------------------------------------------------------------
+// Helpers for free-threaded python
+//------------------------------------------------------------------------------------
+#if defined(Py_GIL_DISABLED)
+// NOGIL case
+class TVMFFIPyWithGILIfNotFreeThreaded {
+ public:
+  TVMFFIPyWithGILIfNotFreeThreaded() = default;
+};
+#else
+// GIL case, need to ensure/release the GIL
+class TVMFFIPyWithGILIfNotFreeThreaded {
+ public:
+  TVMFFIPyWithGILIfNotFreeThreaded() noexcept { gstate_ = PyGILState_Ensure(); }
+  ~TVMFFIPyWithGILIfNotFreeThreaded() { PyGILState_Release(gstate_); }
+
+ private:
+  PyGILState_STATE gstate_;
+};
+#endif
+
+/*!
+ * \brief Deleter for Python objects
+ * \param py_obj The Python object to delete
+ */
+extern "C" void TVMFFIPyObjectDeleter(void* py_obj) noexcept {
+  TVMFFIPyWithGILIfNotFreeThreaded gil_state;
+  Py_DecRef(static_cast<PyObject*>(py_obj));
+}
+
 #endif  // TVM_FFI_PYTHON_HELPERS_H_

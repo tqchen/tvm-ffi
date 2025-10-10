@@ -42,7 +42,8 @@ GitHub = "https://github.com/apache/tvm-ffi"
 # setup tools is needed by torch jit for best perf
 torch = ["torch", "setuptools", "ninja"]
 cpp = ["ninja"]
-test = ["pytest", "numpy", "torch", "ninja"]
+# note pytorch does not yet ship with 3.14t
+test = ["pytest", "numpy", "ninja", "torch; python_version < '3.14'"]
 
 [dependency-groups]
 docs = [
@@ -197,7 +198,8 @@ build-verbosity = 1
 
 # only build up to cp312, cp312
 # will be abi3 and can be used in future versions
-build = ["cp39-*", "cp310-*", "cp311-*", "cp312-*"]
+# ship 314t threaded nogil version
+build = ["cp39-*", "cp310-*", "cp311-*", "cp312-*", "cp314t-*"]
 skip = ["*musllinux*"]
 # we only need to test on cp312
 test-skip = ["cp39-*", "cp310-*", "cp311-*"]
