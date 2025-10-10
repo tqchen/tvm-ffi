@@ -172,6 +172,26 @@ int TVMFFIPyArgSetterNone_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* a
   return 0;
 }
 
+//--------------------------------------------------------------------------
+// Return value translation handler
+//--------------------------------------------------------------------------
+struct TVMFFIPyRetGetter {
+  /*!
+   * \brief Function pointer to invoke the getter.
+   * \param self Pointer to this, this should be TVMFFIPyRetGetter*
+   * \param call_ctx The call context.
+   * \param in The input argument.
+   * \param out The output argument.
+   * \return The output Python object, NULL on failure.
+   */
+  PyObject* (*func)(TVMFFIPyRetGetter*, TVMFFIPyCallContext*, const TVMFFIAny* in) = nullptr;
+  /*!
+   * \brief The target Python class of the stored by the ret getter.
+   * \note This class should be kept alive for the lifetime of the ret getter.
+   */
+  PyObject* py_cls = nullptr;
+};
+
 //---------------------------------------------------------------------------------------------
 // The following section contains the dispatcher logic for function calling
 //---------------------------------------------------------------------------------------------
@@ -191,6 +211,19 @@ int TVMFFIPyArgSetterNone_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* a
  *       the same type as the provided example argument.
  */
 typedef int (*TVMFFIPyArgSetterFactory)(PyObject* arg, TVMFFIPyArgSetter* out);
+
+/*!
+ * \brief Factory function that creates a return value getter for a given FFI return value type.
+ * \param in The FFI return value to get.
+ * \param out Output parameter that receives the created return value getter.
+ * \return 0 on success, -1 on failure. PyError should be set if -1 is returned.
+ */
+typedef int (*TVMFFIPyRetGetterFactory)(const TVMFFIAny* in, TVMFFIPyRetGetter* out);
+
+/*!
+ * \brief Function pointer to move the last python error to the FFI error.
+ */
+typedef void (*TVMFFIPySetPyErrorAsFFIError)(PyObject* py_error);
 
 /*!
  * \brief A manager class that handles python ffi calls.
@@ -432,6 +465,39 @@ class TVMFFIPyCallManager {
    */
   size_t GetDispatchMapSize() const { return dispatch_map_.size(); }
 
+  PyObject* GetRetAsPyObject(
+    TVMFFIPyRetGetterFactory ret_getter_factory,
+    TVMFFIPyCallContext* opt_ctx,
+    const TVMFFIAny* ret
+  ) {
+    if (ret_getter_table_.size() <= ret->type_index) {
+      ret_getter_table_.resize(ret->type_index + 1);
+    }
+    TVMFFIPyRetGetter& ret_getter = ret_getter_table_[ret->type_index];
+    if (ret_getter.func == nullptr) {
+      if (ret_getter_factory(ret, &ret_getter) != 0) {
+        return nullptr;
+      }
+    }
+    return ret_getter.func(&ret_getter, opt_ctx, ret);
+  }
+
+  /*!
+   * \brief Callback for Python argument setting
+   * \param arg_setter_factory The factory function to create the argument setter
+   * \param ret_getter_factory The factory function to create the return value getter
+   * \param opt_ctx Optional call context
+   * \param py_arg The python argument to be set
+   * \param out The output argument
+   * \return 0 on success, -1 on failure
+   */
+  int PyCallback(TVMFFIPyArgSetterFactory arg_setter_factory,
+                 TVMFFIPyRetGetterFactory ret_getter_factory,
+                 TVMFFIPyCallContext* opt_ctx,
+                 const TVMFFIAny* packed_args, int num_args, TVMFFIAny* out) {
+    return 0;
+  }
+
  private:
   TVMFFIPyCallManager() {
     static constexpr size_t kDefaultDispatchCapacity = 32;
@@ -477,6 +543,8 @@ class TVMFFIPyCallManager {
   }
   // internal dispacher
   std::unordered_map<PyTypeObject*, TVMFFIPyArgSetter> dispatch_map_;
+  // internal ret getter table, where func==nullptr indicates the type is not supported
+  std::vector<TVMFFIPyRetGetter> ret_getter_table_;
   // temp call stack
   std::vector<TVMFFIAny> temp_stack_;
   int64_t stack_top_ = 0;
