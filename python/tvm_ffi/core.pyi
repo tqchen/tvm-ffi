@@ -528,6 +528,28 @@ class Function(Object):
         Python object.
         """
 
+    @staticmethod
+    def __from_extern_c__(c_symbol: int, keep_alive_object: Any | None = None) -> Function:
+        """Construct a ``Function`` from a C symbol and keep_alive_object.
+
+        Parameters
+        ----------
+        c_symbol : int
+            function pointer to the safe call function
+            The function pointer must ignore the first argument,
+            which is the function handle
+
+        keep_alive_object : object
+            optional closure to be captured and kept alive
+            Usually can be the execution engine that JITed the function
+
+        Returns
+        -------
+        Function
+            The constructed ``Function`` instance.
+
+        """
+
 def _register_global_func(
     name: str, pyfunc: Callable[..., Any] | Function, override: bool
 ) -> Function: ...

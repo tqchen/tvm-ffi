@@ -114,7 +114,7 @@ cdef extern from "tvm/ffi/c_api.h":
         uint64_t combined_ref_count
         int32_t type_index
         uint32_t __padding
-        void (*deleter)(TVMFFIObject* self)
+        void (*deleter)(void* self, int flags)
 
     ctypedef struct TVMFFIAny:
         int32_t type_index

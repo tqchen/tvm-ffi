@@ -630,6 +630,7 @@ cdef int TVMFFIPyArgSetterFactory_(PyObject* value, TVMFFIPyArgSetter* out) exce
     out.func = TVMFFIPyArgSetterFallback_
     return 0
 
+
 # ---------------------------------------------------------------------------------------------
 # Implementation of function calling
 # ---------------------------------------------------------------------------------------------
@@ -676,6 +677,54 @@ cdef class Function(Object):
         elif c_api_ret_code == -2:
             raise_existing_error()
         raise move_from_last_error().py_error()
+
+    @staticmethod
+    def __from_extern_c__(c_symbol: int, keep_alive_object: object = None) -> "Function":
+        """Convert a function from extern C address and closure object
+
+        Parameters
+        ----------
+        c_symbol : int
+            function pointer to the safe call function
+            The function pointer must ignore the first argument,
+            which is the function handle
+
+        keep_alive_object : object
+            optional closure to be captured and kept alive
+            Usually can be the execution engine that JITed the function
+
+        Returns
+        -------
+        Function
+            The function object
+        """
+        cdef TVMFFIObjectHandle chandle
+        # must first convert to int64_t
+        cdef int64_t c_symbol_as_long_long = c_symbol
+        cdef void* safe_call_addr_ptr = <void*>c_symbol_as_long_long
+        cdef PyObject* closure_py_obj = <PyObject*>keep_alive_object
+        cdef int ret_code
+        if keep_alive_object is None:
+            ret_code = TVMFFIFunctionCreate(
+                NULL, <TVMFFISafeCallType>safe_call_addr_ptr, NULL,
+                &chandle
+            )
+        else:
+            # otherwise, we use Python object
+            Py_INCREF(keep_alive_object)
+            ret_code = TVMFFIFunctionCreate(
+                closure_py_obj, <TVMFFISafeCallType>safe_call_addr_ptr, TVMFFIPyObjectDeleter,
+                &chandle
+            )
+            if ret_code != 0:
+                # cleanup during error handling
+                Py_DECREF(keep_alive_object)
+
+        CHECK_CALL(ret_code)
+        func = Function.__new__(Function)
+        (<Object>func).chandle = chandle
+        return func
+
 
 _register_object_by_index(kTVMFFIFunction, Function)
 

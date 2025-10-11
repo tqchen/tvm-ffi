@@ -18,6 +18,7 @@
  */
 // This file is used for testing the FFI API.
 #include <dlpack/dlpack.h>
+#include <tvm/ffi/any.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/map.h>
 #include <tvm/ffi/container/tensor.h>
@@ -172,6 +173,13 @@ TVM_FFI_NO_INLINE void TestApply(PackedArgs args, Any* ret) {
   f.CallPacked(args.Slice(1), ret);
 }
 
+int __add_one_c_symbol(void*, const TVMFFIAny* args, int32_t num_args, TVMFFIAny* ret) {
+  TVM_FFI_SAFE_CALL_BEGIN();
+  int x = reinterpret_cast<const AnyView*>(args)[0].cast<int>();
+  reinterpret_cast<Any*>(ret)[0] = x + 1;
+  TVM_FFI_SAFE_CALL_END();
+}
+
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
 
@@ -241,7 +249,11 @@ TVM_FFI_STATIC_INIT_BLOCK() {
            })
       .def("testing.object_use_count", [](const Object* obj) { return obj->use_count(); })
       .def("testing.make_unregistered_object",
-           []() { return ObjectRef(make_object<TestUnregisteredObject>(41, 42)); });
+           []() { return ObjectRef(make_object<TestUnregisteredObject>(41, 42)); })
+      .def("testing.get_add_one_c_symbol", []() {
+        TVMFFISafeCallType symbol = __add_one_c_symbol;
+        return reinterpret_cast<int64_t>(reinterpret_cast<void*>(symbol));
+      });
 }
 
 }  // namespace ffi
