@@ -235,7 +235,29 @@ def test_function_from_c_symbol() -> None:
 
     keep_alive = [1, 2, 3]
     base_ref_count = sys.getrefcount(keep_alive)
-    fadd_one = tvm_ffi.Function.__from_extern_c__(add_one_c_symbol, keep_alive)
+    fadd_one = tvm_ffi.Function.__from_extern_c__(add_one_c_symbol, keep_alive_object=keep_alive)
+    assert fadd_one(1) == 2
+    assert fadd_one(2) == 3
+    assert sys.getrefcount(keep_alive) == base_ref_count + 1
+    fadd_one = None
+    assert sys.getrefcount(keep_alive) == base_ref_count
+
+
+def test_function_from_mlir_packed_safe_call() -> None:
+    add_one_c_symbol = tvm_ffi.get_global_func("testing.get_mlir_add_one_c_symbol")()
+    fadd_one = tvm_ffi.Function.__from_mlir_packed_safe_call__(add_one_c_symbol)
+    assert fadd_one(1) == 2
+    assert fadd_one(2) == 3
+
+    keep_alive = [1, 2, 3]
+    base_ref_count = sys.getrefcount(keep_alive)
+    fadd_one = tvm_ffi.Function.__from_mlir_packed_safe_call__(
+        add_one_c_symbol, keep_alive_object=keep_alive
+    )
+
+    with pytest.raises(TypeError):
+        fadd_one(None)
+
     assert fadd_one(1) == 2
     assert fadd_one(2) == 3
     assert sys.getrefcount(keep_alive) == base_ref_count + 1

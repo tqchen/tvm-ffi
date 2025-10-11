@@ -679,24 +679,30 @@ cdef class Function(Object):
         raise move_from_last_error().py_error()
 
     @staticmethod
-    def __from_extern_c__(c_symbol: int, keep_alive_object: object = None) -> "Function":
-        """Convert a function from extern C address and closure object
+    def __from_extern_c__(
+        c_symbol: int,
+        *,
+        keep_alive_object: object = None
+    ) -> Function:
+        """Convert a function from extern C address.
 
         Parameters
         ----------
         c_symbol : int
-            function pointer to the safe call function
+            Function pointer to the safe call function.
             The function pointer must ignore the first argument,
-            which is the function handle
+            which is the function handle.
 
         keep_alive_object : object
-            optional closure to be captured and kept alive
-            Usually can be the execution engine that JITed the function
+            Optional object to be captured and kept alive.
+            Usually this can be the execution engine that JIT-compiled the function
+            to ensure we keep the execution environment alive
+            as long as the function is alive.
 
         Returns
         -------
         Function
-            The function object
+            The function object.
         """
         cdef TVMFFIObjectHandle chandle
         # must first convert to int64_t
@@ -725,6 +731,59 @@ cdef class Function(Object):
         (<Object>func).chandle = chandle
         return func
 
+    @staticmethod
+    def __from_mlir_packed_safe_call__(
+        mlir_packed_symbol: int,
+        *,
+        keep_alive_object: object = None
+    ) -> Function:
+        """Convert a function from MLIR packed safe call function pointer.
+
+        Parameters
+        ----------
+        mlir_packed_symbol : int
+            Function pointer to the MLIR packed call function
+            that represents a safe call function.
+
+        keep_alive_object : object
+            Optional object to be captured and kept alive.
+            Usually this can be the execution engine that JIT-compiled the function
+            to ensure we keep the execution environment alive
+            as long as the function is alive.
+
+        Returns
+        -------
+        Function
+            The function object.
+        """
+        cdef TVMFFIObjectHandle chandle
+        # must first convert to int64_t
+        cdef int64_t c_symbol_as_long_long = mlir_packed_symbol
+        cdef void* packed_call_addr_ptr = <void*>c_symbol_as_long_long
+        cdef PyObject* keepalive_py_obj
+        if keep_alive_object is None:
+            keepalive_py_obj = NULL
+        else:
+            keepalive_py_obj = <PyObject*>keep_alive_object
+
+        cdef void* mlir_packed_safe_call = TVMFFIPyMLIRPackedSafeCallCreate(
+            <void (*)(void**) noexcept>packed_call_addr_ptr,
+            keepalive_py_obj
+        )
+        cdef int ret_code
+        ret_code = TVMFFIFunctionCreate(
+            mlir_packed_safe_call,
+            TVMFFIPyMLIRPackedSafeCallInvoke,
+            TVMFFIPyMLIRPackedSafeCallDeleter,
+            &chandle
+        )
+        if ret_code != 0:
+            # cleanup during error handling
+            TVMFFIPyMLIRPackedSafeCallDeleter(mlir_packed_safe_call)
+        CHECK_CALL(ret_code)
+        func = Function.__new__(Function)
+        (<Object>func).chandle = chandle
+        return func
 
 _register_object_by_index(kTVMFFIFunction, Function)
 

@@ -339,6 +339,10 @@ cdef extern from "tvm_ffi_python_helpers.h":
     int TVMFFIPyArgSetterInt_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* arg, TVMFFIAny* out) except -1
     int TVMFFIPyArgSetterBool_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* arg, TVMFFIAny* out) except -1
     int TVMFFIPyArgSetterNone_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* arg, TVMFFIAny* out) except -1
+    # MLIRPackedSafeCall
+    void* TVMFFIPyMLIRPackedSafeCallCreate(void (*mlir_packed_safe_call)(void**) noexcept, PyObject* keep_alive_object)
+    int TVMFFIPyMLIRPackedSafeCallInvoke(void* self, const TVMFFIAny* args, int32_t num_args, TVMFFIAny* rv)
+    void TVMFFIPyMLIRPackedSafeCallDeleter(void* self)
     # deleter for python objects
     void TVMFFIPyObjectDeleter(void* py_obj) noexcept nogil
 

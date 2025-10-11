@@ -180,6 +180,15 @@ int __add_one_c_symbol(void*, const TVMFFIAny* args, int32_t num_args, TVMFFIAny
   TVM_FFI_SAFE_CALL_END();
 }
 
+void _mlir_add_one_c_symbol(void** packed_args) {
+  void* handle = *reinterpret_cast<void**>(packed_args[0]);
+  const TVMFFIAny* args = *reinterpret_cast<const TVMFFIAny**>(packed_args[1]);
+  int32_t num_args = *reinterpret_cast<int32_t*>(packed_args[2]);
+  TVMFFIAny* rv = *reinterpret_cast<TVMFFIAny**>(packed_args[3]);
+  int* ret_code = reinterpret_cast<int*>(packed_args[4]);
+  *ret_code = __add_one_c_symbol(handle, args, num_args, rv);
+}
+
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
 
@@ -250,9 +259,13 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def("testing.object_use_count", [](const Object* obj) { return obj->use_count(); })
       .def("testing.make_unregistered_object",
            []() { return ObjectRef(make_object<TestUnregisteredObject>(41, 42)); })
-      .def("testing.get_add_one_c_symbol", []() {
-        TVMFFISafeCallType symbol = __add_one_c_symbol;
-        return reinterpret_cast<int64_t>(reinterpret_cast<void*>(symbol));
+      .def("testing.get_add_one_c_symbol",
+           []() {
+             TVMFFISafeCallType symbol = __add_one_c_symbol;
+             return reinterpret_cast<int64_t>(reinterpret_cast<void*>(symbol));
+           })
+      .def("testing.get_mlir_add_one_c_symbol", []() {
+        return reinterpret_cast<int64_t>(reinterpret_cast<void*>(_mlir_add_one_c_symbol));
       });
 }
 

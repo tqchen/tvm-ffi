@@ -529,7 +529,7 @@ class Function(Object):
         """
 
     @staticmethod
-    def __from_extern_c__(c_symbol: int, keep_alive_object: Any | None = None) -> Function:
+    def __from_extern_c__(c_symbol: int, *, keep_alive_object: Any | None = None) -> Function:
         """Construct a ``Function`` from a C symbol and keep_alive_object.
 
         Parameters
@@ -540,13 +540,35 @@ class Function(Object):
             which is the function handle
 
         keep_alive_object : object
-            optional closure to be captured and kept alive
+            optional object to be captured and kept alive
             Usually can be the execution engine that JITed the function
+            to ensure we keep the execution environment alive
+            as long as the function is alive
 
         Returns
         -------
         Function
             The constructed ``Function`` instance.
+
+        """
+
+    @staticmethod
+    def __from_mlir_packed_safe_call__(
+        mlir_packed_symbol: int, *, keep_alive_object: Any | None = None
+    ) -> Function:
+        """Construct a ``Function`` from a MLIR packed safe call function pointer.
+
+        Parameters
+        ----------
+        mlir_packed_symbol : int
+            function pointer to the MLIR packed call function pointer
+            that represents a safe call function
+
+        keep_alive_object : object
+            optional object to be captured and kept alive
+            Usually can be the execution engine that JITed the function
+            to ensure we keep the execution environment alive
+            as long as the function is alive
 
         """
 

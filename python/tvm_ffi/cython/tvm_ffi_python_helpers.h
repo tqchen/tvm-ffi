@@ -592,6 +592,90 @@ TVM_FFI_INLINE void TVMFFIPyPushTempPyObject(TVMFFIPyCallContext* ctx, PyObject*
   ctx->temp_py_objects[ctx->num_temp_py_objects++] = arg;
 }
 
+//----------------------------------------------------------
+// Helpers for MLIR redirection
+//----------------------------------------------------------
+/*!
+ * \brief Function specialization that leverages MLIR packed safe call definitions.
+ *
+ * The MLIR execution engine generates functions that correspond to the packed signature.
+ * As of now, it is hard to access the raw extern C function pointer of SafeCall
+ * directly when we declare the signature in LLVM dialect.
+ *
+ * Note that in theory, the MLIR execution engine should be able to support
+ * some form of "extern C" feature that directly exposes the function pointers
+ * of C-compatible functions with an attribute tag. So we keep this feature
+ * in the Python helper layer for now in case the MLIR execution engine supports it in the future.
+ *
+ * This helper enables us to create ffi::Function from the MLIR packed
+ * safe call function pointer instead of following the redirection pattern
+ * in `TVMFFIPyMLIRPackedSafeCall::Invoke`.
+ *
+ * \sa TVMFFIPyMLIRPackedSafeCall::Invoke
+ */
+class TVMFFIPyMLIRPackedSafeCall {
+ public:
+  TVMFFIPyMLIRPackedSafeCall(void (*mlir_packed_safe_call)(void**), PyObject* keep_alive_object)
+      : mlir_packed_safe_call_(mlir_packed_safe_call), keep_alive_object_(keep_alive_object) {
+    if (keep_alive_object_) {
+      Py_IncRef(keep_alive_object_);
+    }
+  }
+
+  ~TVMFFIPyMLIRPackedSafeCall() {
+    if (keep_alive_object_) {
+      Py_DecRef(keep_alive_object_);
+    }
+  }
+
+  static int Invoke(void* func, const TVMFFIAny* args, int32_t num_args, TVMFFIAny* rv) {
+    TVMFFIPyMLIRPackedSafeCall* self = reinterpret_cast<TVMFFIPyMLIRPackedSafeCall*>(func);
+    int ret_code = 0;
+    void* handle = nullptr;
+    void* mlir_args[] = {&handle, const_cast<TVMFFIAny**>(&args), &num_args, &rv, &ret_code};
+    (*self->mlir_packed_safe_call_)(mlir_args);
+    return ret_code;
+  }
+
+  static void Deleter(void* self) { delete static_cast<TVMFFIPyMLIRPackedSafeCall*>(self); }
+
+ private:
+  void (*mlir_packed_safe_call_)(void**);
+  PyObject* keep_alive_object_;
+};
+
+/*!
+ * \brief Create a TVMFFIPyMLIRPackedSafeCall handle
+ * \param mlir_packed_safe_call The MLIR packed safe call function
+ * \param keep_alive_object The keep alive object
+ * \return The TVMFFIPyMLIRPackedSafeCall object
+ */
+void* TVMFFIPyMLIRPackedSafeCallCreate(void (*mlir_packed_safe_call)(void**),
+                                       PyObject* keep_alive_object) {
+  return new TVMFFIPyMLIRPackedSafeCall(mlir_packed_safe_call, keep_alive_object);
+}
+
+/*!
+ * \brief Call the MLIR packed safe call function
+ * \param self The TVMFFIPyMLIRPackedSafeCall object
+ * \param args The arguments
+ * \param num_args The number of arguments
+ * \param rv The result
+ * \return The return code
+ */
+int TVMFFIPyMLIRPackedSafeCallInvoke(void* self, const TVMFFIAny* args, int32_t num_args,
+                                     TVMFFIAny* rv) {
+  return TVMFFIPyMLIRPackedSafeCall::Invoke(self, args, num_args, rv);
+}
+
+/*!
+ * \brief Delete the TVMFFIPyMLIRPackedSafeCall object
+ * \param self The TVMFFIPyMLIRPackedSafeCall object
+ */
+void TVMFFIPyMLIRPackedSafeCallDeleter(void* self) {
+  return TVMFFIPyMLIRPackedSafeCall::Deleter(self);
+}
+
 //------------------------------------------------------------------------------------
 // Helpers for free-threaded python
 //------------------------------------------------------------------------------------
