@@ -38,6 +38,7 @@ def test_tensor_attributes() -> None:
     x = tvm_ffi.from_dlpack(data)
     assert isinstance(x, tvm_ffi.Tensor)
     assert x.shape == (10, 8, 4, 2)
+    assert x.strides == (64, 8, 2, 1)
     assert x.dtype == tvm_ffi.dtype("int16")
     assert x.device.dlpack_device_type() == tvm_ffi.DLDeviceType.kDLCPU
     assert x.device.index == 0

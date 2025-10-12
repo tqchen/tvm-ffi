@@ -410,6 +410,9 @@ class Tensor(Object):
     def shape(self) -> tuple[int, ...]:
         """Tensor shape as a tuple of integers."""
     @property
+    def strides(self) -> tuple[int, ...]:
+        """Tensor strides as a tuple of integers."""
+    @property
     def dtype(self) -> Any:
         """Data type as :class:`tvm_ffi.dtype` (``str`` subclass)."""
     @property

@@ -179,6 +179,18 @@ def _shape_obj_get_py_tuple(obj):
     return tuple(shape.data[i] for i in range(shape.size))
 
 
+def _make_strides_from_shape(tuple shape):
+    cdef int64_t expected_stride = 1
+    cdef list strides = []
+    cdef int64_t ndim = len(shape)
+    cdef int64_t reverse_index
+    for i in range(ndim):
+        reverse_index = ndim - i - 1
+        strides.append(expected_stride)
+        expected_stride *= shape[reverse_index]
+    return tuple(reversed(strides))
+
+
 cdef class Tensor(Object):
     """Tensor object that represents a managed n-dimensional array.
     """
@@ -188,6 +200,13 @@ cdef class Tensor(Object):
     def shape(self):
         """Shape of this array"""
         return tuple(self.cdltensor.shape[i] for i in range(self.cdltensor.ndim))
+
+    @property
+    def strides(self):
+        """Strides of this array"""
+        if self.cdltensor.strides == NULL:
+            return _make_strides_from_shape(self.shape)
+        return tuple(self.cdltensor.strides[i] for i in range(self.cdltensor.ndim))
 
     @property
     def dtype(self):
