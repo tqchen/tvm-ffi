@@ -40,8 +40,8 @@ int ReadDLTensorPtr(const TVMFFIAny* value, DLTensor** out) {
     return 0;
   }
   if (value->type_index != kTVMFFITensor) {
-    // Use TVMFFIErrorSetRaisedFromCStr to set an error which will
-    // be propagated to the caller
+    // Use TVMFFIErrorSetRaisedFromCStr or TVMFFIErrorSetRaisedFromCStrParts to set an
+    // error which will be propagated to the caller
     TVMFFIErrorSetRaisedFromCStr("ValueError", "Expects a Tensor input");
     return -1;
   }

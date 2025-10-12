@@ -17,7 +17,7 @@
 """TVM FFI Python package."""
 
 # version
-__version__ = "0.1.0b16"
+__version__ = "0.1.0b17"
 
 # order matters here so we need to skip isort here
 # isort: skip_file

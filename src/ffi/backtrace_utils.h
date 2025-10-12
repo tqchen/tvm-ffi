@@ -67,6 +67,9 @@ inline bool ShouldExcludeFrame(const char* filename, const char* symbol) {
     if (strncmp(symbol, "TVMFFIErrorSetRaisedFromCStr", 28) == 0) {
       return true;
     }
+    if (strncmp(symbol, "TVMFFIErrorSetRaisedFromCStrParts", 33) == 0) {
+      return true;
+    }
     // C++ stdlib frames
     if (strncmp(symbol, "__libc_", 7) == 0) {
       return true;

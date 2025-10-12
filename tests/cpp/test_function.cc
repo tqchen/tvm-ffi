@@ -238,6 +238,21 @@ TEST(Func, ObjectRefWithFallbackTraits) {
       ::tvm::ffi::Error);
 }
 
+TEST(SetRaisedFromCStr, ValueError) {
+  TVMFFIErrorSetRaisedFromCStr("ValueError", "Value must be non-negative, got -5");
+  Error error = tvm::ffi::details::MoveFromSafeCallRaised();
+  EXPECT_EQ(error.kind(), "ValueError");
+  EXPECT_EQ(error.message(), "Value must be non-negative, got -5");
+}
+
+TEST(SetRaisedFromCStrParts, TypeError) {
+  const char* message_parts[] = {"Mismatched", nullptr, " got Tensor"};
+  TVMFFIErrorSetRaisedFromCStrParts("TypeError", message_parts, 3);
+  Error error = tvm::ffi::details::MoveFromSafeCallRaised();
+  EXPECT_EQ(error.kind(), "TypeError");
+  EXPECT_EQ(error.message(), "Mismatched got Tensor");
+}
+
 int testing_add1(int x) { return x + 1; }
 
 TVM_FFI_DLL_EXPORT_TYPED_FUNC(testing_add1, testing_add1);
