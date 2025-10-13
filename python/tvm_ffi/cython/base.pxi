@@ -19,7 +19,7 @@ from libc.stdint cimport int32_t, int64_t, uint64_t, uint32_t, uint8_t, int16_t
 from libc.string cimport memcpy
 from libcpp.vector cimport vector
 from cpython.bytes cimport PyBytes_AsStringAndSize, PyBytes_FromStringAndSize, PyBytes_AsString
-from cpython cimport Py_INCREF, Py_DECREF
+from cpython cimport Py_INCREF, Py_DECREF, Py_REFCNT
 from cpython cimport PyErr_CheckSignals, PyGILState_Ensure, PyGILState_Release, PyObject
 from cpython cimport pycapsule, PyCapsule_Destructor
 from cpython cimport PyErr_SetNone

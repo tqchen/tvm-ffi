@@ -92,3 +92,23 @@ def test_tensor_class_override() -> None:
     y = fecho(x)
     assert isinstance(y, MyTensor)
     tvm_ffi.core._set_class_tensor(old_tensor)
+
+
+def test_tvm_ffi_tensor_compatible() -> None:
+    class MyTensor:
+        def __init__(self, tensor: tvm_ffi.Tensor) -> None:
+            """Initialize the MyTensor."""
+            self._tensor = tensor
+
+        def __tvm_ffi_tensor__(self) -> tvm_ffi.Tensor:
+            """Implement __tvm_ffi_tensor__ protocol."""
+            return self._tensor
+
+    data = np.zeros((10, 8, 4, 2), dtype="int32")
+    if not hasattr(data, "__dlpack__"):
+        return
+    x = tvm_ffi.from_dlpack(data)
+    y = MyTensor(x)
+    fecho = tvm_ffi.get_global_func("testing.echo")
+    z = fecho(y)
+    assert z.__chandle__() == x.__chandle__()

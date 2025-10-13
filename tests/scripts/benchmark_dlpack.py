@@ -38,6 +38,18 @@ import torch
 import tvm_ffi
 
 
+class TestFFITensor:
+    """Test FFI Tensor that exposes __tvm_ffi_tensor__ protocol."""
+
+    def __init__(self, tensor: tvm_ffi.Tensor) -> None:
+        """Initialize the TestFFITensor."""
+        self._tensor = tensor
+
+    def __tvm_ffi_tensor__(self) -> tvm_ffi.Tensor:
+        """Implement __tvm_ffi_tensor__ protocol."""
+        return self._tensor
+
+
 def print_speed(name: str, speed: float) -> None:
     print(f"{name:<60} {speed} sec/call")
 
@@ -262,6 +274,21 @@ def tvm_ffi_nop_autodlpack_from_dltensor_test_wrapper(repeat: int, device: str) 
     )
 
 
+def tvm_ffi_nop_autodlpack_from_test_ffi_tensor(repeat: int, device: str) -> None:
+    """Measures overhead of running dlpack via auto convert by directly
+    take test wrapper as inputs. This effectively measure DLPack exchange in tvm ffi.
+    """
+    x = tvm_ffi.from_dlpack(torch.arange(1, device=device))
+    y = tvm_ffi.from_dlpack(torch.arange(1, device=device))
+    z = tvm_ffi.from_dlpack(torch.arange(1, device=device))
+    x = TestFFITensor(x)
+    y = TestFFITensor(y)
+    z = TestFFITensor(z)
+    bench_tvm_ffi_nop_autodlpack(
+        f"tvm_ffi.nop.autodlpack(TestFFITensor[{device}])", x, y, z, repeat
+    )
+
+
 def bench_to_dlpack(x: Any, name: str, repeat: int) -> None:
     x.__dlpack__()
     start = time.time()
@@ -372,6 +399,8 @@ def main() -> None:  # noqa: PLR0915
     tvm_ffi_nop_autodlpack_from_numpy(repeat)
     tvm_ffi_nop_autodlpack_from_dltensor_test_wrapper(repeat, "cpu")
     tvm_ffi_nop_autodlpack_from_dltensor_test_wrapper(repeat, "cuda")
+    tvm_ffi_nop_autodlpack_from_test_ffi_tensor(repeat, "cpu")
+    tvm_ffi_nop_autodlpack_from_test_ffi_tensor(repeat, "cuda")
     tvm_ffi_nop(repeat)
     print("-------------------------------")
     print("Benchmark x.__dlpack__ overhead")

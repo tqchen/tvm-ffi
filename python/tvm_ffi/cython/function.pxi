@@ -267,6 +267,26 @@ cdef int TVMFFIPyArgSetterDLPack_(
     return 0
 
 
+cdef int TVMFFIPyArgSetterFFITensorCompatible_(
+    TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
+    PyObject* py_arg, TVMFFIAny* out
+) except -1:
+    """Setter for objects that implement the `__tvm_ffi_tensor__` protocol."""
+    cdef object arg = <object>py_arg
+    cdef TVMFFIObjectHandle temp_chandle
+    cdef Tensor tensor = arg.__tvm_ffi_tensor__()
+    cdef long ref_count = Py_REFCNT(tensor)
+    temp_chandle = tensor.chandle
+    out.type_index = kTVMFFITensor
+    out.v_ptr = temp_chandle
+    if ref_count == 1:
+        # keep alive the tensor, since the tensor is temporary
+        # and will be freed after we exit here
+        TVMFFIObjectIncRef(temp_chandle)
+        TVMFFIPyPushTempFFIObject(ctx, temp_chandle)
+    return 0
+
+
 cdef int TVMFFIPyArgSetterDType_(
     TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
     PyObject* py_arg, TVMFFIAny* out
@@ -570,10 +590,16 @@ cdef int TVMFFIPyArgSetterFactory_(PyObject* value, TVMFFIPyArgSetter* out) exce
     if isinstance(arg, ObjectRValueRef):
         out.func = TVMFFIPyArgSetterObjectRValueRef_
         return 0
+    arg_class = type(arg)
+    if hasattr(arg_class, "__tvm_ffi_tensor__"):
+        # can directly map to tvm ffi tensor
+        # usually used for solutions that takes ffi.Tensor
+        # as a member variable
+        out.func = TVMFFIPyArgSetterFFITensorCompatible_
+        return 0
     if os.environ.get("TVM_FFI_SKIP_c_dlpack_from_pyobject", "0") != "1":
         # Check for DLPackExchangeAPI struct (new approach)
         # This is checked on the CLASS, not the instance
-        arg_class = type(arg)
         if hasattr(arg_class, "__c_dlpack_exchange_api__"):
             out.func = TVMFFIPyArgSetterDLPackExchangeAPI_
             temp_ptr = arg_class.__c_dlpack_exchange_api__
