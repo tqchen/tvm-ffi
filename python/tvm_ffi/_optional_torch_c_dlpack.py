@@ -607,3 +607,24 @@ int64_t TorchDLPackExchangeAPIPtr() {
 
 # keep alive
 _mod = load_torch_c_dlpack_extension()
+
+
+def patch_torch_cuda_stream_protocol() -> Any:
+    """Load the torch cuda stream protocol for older versions of torch."""
+    try:
+        import torch  # noqa: PLC0415
+
+        if not torch.cuda.is_available():
+            return
+        if not hasattr(torch.cuda.Stream, "__cuda_stream__"):
+
+            def __torch_cuda_stream__(self: torch.cuda.Stream) -> tuple[int, torch.cuda.Stream]:
+                """Return the version number and the cuda stream."""
+                return (0, self.cuda_stream)
+
+            setattr(torch.cuda.Stream, "__cuda_stream__", __torch_cuda_stream__)
+    except ImportError:
+        pass
+
+
+patch_torch_cuda_stream_protocol()
