@@ -512,6 +512,44 @@ class Function : public ObjectRef {
     };
     return FromPackedInternal(std::move(call_packed));
   }
+
+  /*!
+   * \brief Directly invoke an extern "C" function that follows the TVM FFI SafeCall convention.
+   *
+   * This function can be useful to turn an existing exported symbol into a typed function.
+   *
+   * \code
+   *
+   * // An extern "C" function, matching TVMFFISafeCallType
+   * extern "C" int __tvm_ffi_add(
+   *   void* handle, const TVMFFIAny* args, int32_t num_args, TVMFFIAny*result
+   * );
+   *
+   * // redirect an existing symbol into a typed function
+   * inline int add(int a, int b) {
+   *   return tvm::ffi::Function::InvokeExternC(nullptr, __tvm_ffi_add, a, b).cast<int>();
+   * }
+   *
+   * \endcode
+   *
+   * \tparam Args The types of the arguments to the extern function.
+   * \param handle The handle argument, for exported symbols this is usually nullptr.
+   * \param safe_call The function pointer to the extern "C" function.
+   * \param args The arguments to pass to the function.
+   * \return The return value, wrapped in a tvm::ffi::Any.
+   */
+  template <typename... Args>
+  TVM_FFI_INLINE static Any InvokeExternC(void* handle, TVMFFISafeCallType safe_call,
+                                          Args&&... args) {
+    const int kNumArgs = sizeof...(Args);
+    const int kArraySize = kNumArgs > 0 ? kNumArgs : 1;
+    AnyView args_pack[kArraySize];
+    PackedArgs::Fill(args_pack, std::forward<Args>(args)...);
+    Any result;
+    TVM_FFI_CHECK_SAFE_CALL(safe_call(handle, reinterpret_cast<const TVMFFIAny*>(args_pack),
+                                      kNumArgs, reinterpret_cast<TVMFFIAny*>(&result)));
+    return result;
+  }
   /*!
    * \brief Call function by directly passing in unpacked arguments.
    *

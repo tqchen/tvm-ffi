@@ -263,4 +263,10 @@ TEST(Func, FromExternC) {
   EXPECT_EQ(fadd1(1).cast<int>(), 2);
 }
 
+int invoke_testing_add1(int x) {
+  return Function::InvokeExternC(nullptr, __tvm_ffi_testing_add1, x).cast<int>();
+}
+
+TEST(Func, InvokeExternC) { EXPECT_EQ(invoke_testing_add1(1), 2); }
+
 }  // namespace
