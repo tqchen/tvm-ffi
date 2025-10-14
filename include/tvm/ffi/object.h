@@ -94,6 +94,8 @@ struct StaticTypeKey {
   static constexpr const char* kTVMFFISmallStr = "ffi.SmallStr";
   /*! \brief The type key for SmallBytes */
   static constexpr const char* kTVMFFISmallBytes = "ffi.SmallBytes";
+  /*! \brief The type key for Error */
+  static constexpr const char* kTVMFFIError = "ffi.Error";
   /*! \brief The type key for Bytes */
   static constexpr const char* kTVMFFIBytes = "ffi.Bytes";
   /*! \brief The type key for String */
@@ -913,8 +915,20 @@ struct ObjectPtrEqual {
   TVM_FFI_INLINE bool operator()(const Variant<V...>& a, const Variant<V...>& b) const;
 };
 
-/// \cond Doxygen_Suppress
-#define TVM_FFI_REGISTER_STATIC_TYPE_INFO(TypeName, ParentType)                               \
+/*!
+ * \brief Helper macro to declare object information with static type index.
+ *
+ * For each custom object, you need to call tvm::ffi::reflection::ObjectDef<TypeName>()
+ * once in your cc file to register the type index with the runtime.
+ * Alternatively, you can call TypeName::_GetOrAllocRuntimeTypeIndex() once.
+ *
+ * \param TypeKey The type key of the current type.
+ * \param TypeName The name of the current type.
+ * \param ParentType The name of the ParentType
+ *
+ * \see tvm::ffi::reflection::ObjectDef
+ */
+#define TVM_FFI_DECLARE_OBJECT_INFO_STATIC(TypeKey, TypeName, ParentType)                     \
   static constexpr int32_t _type_depth = ParentType::_type_depth + 1;                         \
   static int32_t _GetOrAllocRuntimeTypeIndex() {                                              \
     static_assert(!ParentType::_type_final, "ParentType marked as final");                    \
@@ -923,25 +937,13 @@ struct ObjectPtrEqual {
                   "Need to set _type_child_slots when parent specifies it.");                 \
     TVMFFIByteArray type_key{TypeName::_type_key,                                             \
                              std::char_traits<char>::length(TypeName::_type_key)};            \
-    static int32_t tindex = TVMFFITypeGetOrAllocIndex(                                        \
+    static int32_t tindex [[maybe_unused]] = TVMFFITypeGetOrAllocIndex(                       \
         &type_key, TypeName::_type_index, TypeName::_type_depth, TypeName::_type_child_slots, \
         TypeName::_type_child_slots_can_overflow, ParentType::_GetOrAllocRuntimeTypeIndex()); \
-    return tindex;                                                                            \
+    return TypeName::_type_index;                                                             \
   }                                                                                           \
-  static inline int32_t _register_type_index = _GetOrAllocRuntimeTypeIndex()
-/// \endcond
-
-/*!
- * \brief Helper macro to declare object information with static type index.
- *
- * \param TypeKey The type key of the current type.
- * \param TypeName The name of the current type.
- * \param ParentType The name of the ParentType
- */
-#define TVM_FFI_DECLARE_OBJECT_INFO_STATIC(TypeKey, TypeName, ParentType) \
-  static constexpr const char* _type_key = TypeKey;                       \
-  static int32_t RuntimeTypeIndex() { return TypeName::_type_index; }     \
-  TVM_FFI_REGISTER_STATIC_TYPE_INFO(TypeName, ParentType)
+  static int32_t RuntimeTypeIndex() { return TypeName::_type_index; }                         \
+  static constexpr const char* _type_key = TypeKey
 
 /*!
  * \brief Helper macro to declare object information with type key already defined in class.
@@ -963,15 +965,19 @@ struct ObjectPtrEqual {
         TypeName::_type_child_slots_can_overflow, ParentType::_GetOrAllocRuntimeTypeIndex()); \
     return tindex;                                                                            \
   }                                                                                           \
-  static int32_t RuntimeTypeIndex() { return _GetOrAllocRuntimeTypeIndex(); }                 \
-  static inline int32_t _type_index = _GetOrAllocRuntimeTypeIndex()
+  static int32_t RuntimeTypeIndex() { return _GetOrAllocRuntimeTypeIndex(); }
 
 /*!
  * \brief Helper macro to declare object information with dynamic type index.
  *
+ * For each custom object, you need to call tvm::ffi::reflection::ObjectDef<TypeName>()
+ * once in your cc file to register the type index with the runtime.
+ * Alternatively, you can call TypeName::_GetOrAllocRuntimeTypeIndex() once.
+ *
  * \param TypeKey The type key of the current type.
  * \param TypeName The name of the current type.
  * \param ParentType The name of the ParentType
+ * \sa tvm::ffi::reflection::ObjectDef
  */
 #define TVM_FFI_DECLARE_OBJECT_INFO(TypeKey, TypeName, ParentType) \
   static constexpr const char* _type_key = TypeKey;                \
@@ -980,9 +986,14 @@ struct ObjectPtrEqual {
 /*!
  * \brief Helper macro to declare object information with dynamic type index and is final.
  *
+ * For each custom object, you need to call tvm::ffi::reflection::ObjectDef<TypeName>()
+ * once in your cc file to register the type index with the runtime.
+ * Alternatively, you can call TypeName::_GetOrAllocRuntimeTypeIndex() once.
+ *
  * \param TypeKey The type key of the current type.
  * \param TypeName The name of the current type.
  * \param ParentType The name of the ParentType
+ * \sa tvm::ffi::reflection::ObjectDef
  */
 #define TVM_FFI_DECLARE_OBJECT_INFO_FINAL(TypeKey, TypeName, ParentType) \
   static const constexpr int _type_child_slots [[maybe_unused]] = 0;     \

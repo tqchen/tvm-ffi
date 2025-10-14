@@ -89,7 +89,7 @@ class ErrorObj : public Object, public TVMFFIErrorCell {
  public:
   /// \cond Doxygen_Suppress
   static constexpr const int32_t _type_index = TypeIndex::kTVMFFIError;
-  TVM_FFI_DECLARE_OBJECT_INFO_STATIC("ffi.Error", ErrorObj, Object);
+  TVM_FFI_DECLARE_OBJECT_INFO_STATIC(StaticTypeKey::kTVMFFIError, ErrorObj, Object);
   /// \endcond
 };
 

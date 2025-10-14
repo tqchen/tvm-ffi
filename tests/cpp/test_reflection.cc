@@ -172,7 +172,7 @@ TEST(Reflection, ForEachFieldInfo) {
 
 TEST(Reflection, TypeAttrColumn) {
   reflection::TypeAttrColumn size_attr("test.size");
-  EXPECT_EQ(size_attr[TIntObj::_type_index].cast<int>(), sizeof(TIntObj));
+  EXPECT_EQ(size_attr[TIntObj::RuntimeTypeIndex()].cast<int>(), sizeof(TIntObj));
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {

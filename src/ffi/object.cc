@@ -339,18 +339,27 @@ class TypeTable {
                             TypeIndex::kTVMFFIObjectRValueRef);
     ReserveBuiltinTypeIndex(StaticTypeKey::kTVMFFISmallStr, TypeIndex::kTVMFFISmallStr);
     ReserveBuiltinTypeIndex(StaticTypeKey::kTVMFFISmallBytes, TypeIndex::kTVMFFISmallBytes);
-    // register opaque py whose type depth is 1
-    this->GetOrAllocTypeIndex(StaticTypeKey::kTVMFFIOpaquePyObject,
-                              TypeIndex::kTVMFFIOpaquePyObject,
-                              /*type_depth=*/1,
-                              /*num_child_slots=*/0,
-                              /*child_slots_can_overflow=*/false,
-                              /*parent_type_index=*/TypeIndex::kTVMFFIObject);
-    // no need to reserve for object types as they will be registered
+    // reserved static type indices for depth 1 object types
+    ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIStr, TypeIndex::kTVMFFIStr);
+    ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIBytes, TypeIndex::kTVMFFIBytes);
+    ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIError, TypeIndex::kTVMFFIError);
+    ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIFunction, TypeIndex::kTVMFFIFunction);
+    ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIShape, TypeIndex::kTVMFFIShape);
+    ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFITensor, TypeIndex::kTVMFFITensor);
+    ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIArray, TypeIndex::kTVMFFIArray);
+    ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIMap, TypeIndex::kTVMFFIMap);
+    ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIModule, TypeIndex::kTVMFFIModule);
+    ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIOpaquePyObject,
+                                   TypeIndex::kTVMFFIOpaquePyObject);
   }
 
   void ReserveBuiltinTypeIndex(const char* type_key, int32_t static_type_index) {
     this->GetOrAllocTypeIndex(String(type_key), static_type_index, 0, 0, false, -1);
+  }
+
+  void ReserveDepthOneObjectTypeIndex(const char* type_key, int32_t static_type_index) {
+    this->GetOrAllocTypeIndex(String(type_key), static_type_index, 1, 0, false,
+                              TypeIndex::kTVMFFIObject);
   }
 
   static ObjectPtr<details::StringObj> MakeInplaceString(const char* data, size_t length) {
