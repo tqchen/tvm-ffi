@@ -63,18 +63,18 @@ TEST(Tensor, Basic) {
   EXPECT_EQ(strides[2], 1);
   EXPECT_EQ(nd.dtype(), DLDataType({kDLFloat, 32, 1}));
   for (int64_t i = 0; i < shape.Product(); ++i) {
-    reinterpret_cast<float*>(nd->data)[i] = static_cast<float>(i);
+    reinterpret_cast<float*>(nd.data_ptr())[i] = static_cast<float>(i);
   }
 
   EXPECT_EQ(nd.numel(), 6);
   EXPECT_EQ(nd.ndim(), 3);
-  EXPECT_EQ(nd.data_ptr(), nd->data);
+  EXPECT_EQ(nd.data_ptr(), nd.GetDLTensorPtr()->data);
 
   Any any0 = nd;
   Tensor nd2 = any0.as<Tensor>().value();  // NOLINT(bugprone-unchecked-optional-access)
   EXPECT_EQ(nd2.dtype(), DLDataType({kDLFloat, 32, 1}));
   for (int64_t i = 0; i < shape.Product(); ++i) {
-    EXPECT_EQ(reinterpret_cast<float*>(nd2->data)[i], i);
+    EXPECT_EQ(reinterpret_cast<float*>(nd2.data_ptr())[i], i);
   }
 
   EXPECT_EQ(nd.IsContiguous(), true);
@@ -101,7 +101,7 @@ TEST(Tensor, DLPack) {
   {
     Tensor tensor2 = Tensor::FromDLPack(dlpack);
     EXPECT_EQ(tensor2.use_count(), 1);
-    EXPECT_EQ(tensor2->data, tensor->data);
+    EXPECT_EQ(tensor2.data_ptr(), tensor.data_ptr());
     EXPECT_EQ(tensor.use_count(), 2);
     EXPECT_EQ(tensor2.use_count(), 1);
   }
@@ -129,7 +129,7 @@ TEST(Tensor, DLPackVersioned) {
   {
     Tensor tensor2 = Tensor::FromDLPackVersioned(dlpack);
     EXPECT_EQ(tensor2.use_count(), 1);
-    EXPECT_EQ(tensor2->data, tensor->data);
+    EXPECT_EQ(tensor2.data_ptr(), tensor.data_ptr());
     EXPECT_EQ(tensor.use_count(), 2);
     EXPECT_EQ(tensor2.use_count(), 1);
   }
@@ -142,15 +142,15 @@ TEST(Tensor, DLPackAlloc) {
                                           DLDataType({kDLFloat, 32, 1}), DLDevice({kDLCPU, 0}));
   EXPECT_EQ(tensor.use_count(), 1);
   EXPECT_EQ(tensor.shape().size(), 3);
-  EXPECT_EQ(tensor.shape()[0], 1);
-  EXPECT_EQ(tensor.shape()[1], 2);
-  EXPECT_EQ(tensor.shape()[2], 3);
+  EXPECT_EQ(tensor.size(0), 1);
+  EXPECT_EQ(tensor.size(1), 2);
+  EXPECT_EQ(tensor.size(2), 3);
   EXPECT_EQ(tensor.dtype().code, kDLFloat);
   EXPECT_EQ(tensor.dtype().bits, 32);
   EXPECT_EQ(tensor.dtype().lanes, 1);
-  EXPECT_EQ(tensor->device.device_type, kDLCPU);
-  EXPECT_EQ(tensor->device.device_id, 0);
-  EXPECT_NE(tensor->data, nullptr);
+  EXPECT_EQ(tensor.device().device_type, kDLCPU);
+  EXPECT_EQ(tensor.device().device_id, 0);
+  EXPECT_NE(tensor.data_ptr(), nullptr);
 }
 
 TEST(Tensor, DLPackAllocError) {

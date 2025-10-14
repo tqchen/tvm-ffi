@@ -38,7 +38,7 @@ int main() {
   // create an Tensor, alternatively, one can directly pass in a DLTensor*
   ffi::Tensor x = Empty({5}, DLDataType({kDLFloat, 32, 1}), DLDevice({kDLCPU, 0}));
   for (int i = 0; i < 5; ++i) {
-    reinterpret_cast<float*>(x->data)[i] = static_cast<float>(i);
+    reinterpret_cast<float*>(x.data_ptr())[i] = static_cast<float>(i);
   }
 
   ffi::Function add_one_cpu = mod->GetFunction("add_one_cpu").value();
@@ -46,7 +46,7 @@ int main() {
 
   std::cout << "x after add_one_cpu(x, x)" << std::endl;
   for (int i = 0; i < 5; ++i) {
-    std::cout << reinterpret_cast<float*>(x->data)[i] << " ";
+    std::cout << reinterpret_cast<float*>(x.data_ptr())[i] << " ";
   }
   std::cout << std::endl;
   return 0;

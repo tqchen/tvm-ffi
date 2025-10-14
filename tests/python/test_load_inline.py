@@ -38,14 +38,14 @@ def test_load_inline_cpp() -> None:
         cpp_sources=r"""
             void add_one_cpu(tvm::ffi::TensorView x, tvm::ffi::TensorView y) {
               // implementation of a library function
-              TVM_FFI_ICHECK(x->ndim == 1) << "x must be a 1D tensor";
+              TVM_FFI_ICHECK(x.ndim() == 1) << "x must be a 1D tensor";
               DLDataType f32_dtype{kDLFloat, 32, 1};
-              TVM_FFI_ICHECK(x->dtype == f32_dtype) << "x must be a float tensor";
-              TVM_FFI_ICHECK(y->ndim == 1) << "y must be a 1D tensor";
-              TVM_FFI_ICHECK(y->dtype == f32_dtype) << "y must be a float tensor";
-              TVM_FFI_ICHECK(x->shape[0] == y->shape[0]) << "x and y must have the same shape";
-              for (int i = 0; i < x->shape[0]; ++i) {
-                static_cast<float*>(y->data)[i] = static_cast<float*>(x->data)[i] + 1;
+              TVM_FFI_ICHECK(x.dtype() == f32_dtype) << "x must be a float tensor";
+              TVM_FFI_ICHECK(y.ndim() == 1) << "y must be a 1D tensor";
+              TVM_FFI_ICHECK(y.dtype() == f32_dtype) << "y must be a float tensor";
+              TVM_FFI_ICHECK(x.size(0) == y.size(0)) << "x and y must have the same shape";
+              for (int i = 0; i < x.size(0); ++i) {
+                static_cast<float*>(y.data_ptr())[i] = static_cast<float*>(x.data_ptr())[i] + 1;
               }
             }
         """,
@@ -64,14 +64,14 @@ def test_load_inline_cpp_with_docstrings() -> None:
         cpp_sources=r"""
             void add_one_cpu(tvm::ffi::TensorView x, tvm::ffi::TensorView y) {
               // implementation of a library function
-              TVM_FFI_ICHECK(x->ndim == 1) << "x must be a 1D tensor";
+              TVM_FFI_ICHECK(x.ndim() == 1) << "x must be a 1D tensor";
               DLDataType f32_dtype{kDLFloat, 32, 1};
-              TVM_FFI_ICHECK(x->dtype == f32_dtype) << "x must be a float tensor";
-              TVM_FFI_ICHECK(y->ndim == 1) << "y must be a 1D tensor";
-              TVM_FFI_ICHECK(y->dtype == f32_dtype) << "y must be a float tensor";
-              TVM_FFI_ICHECK(x->shape[0] == y->shape[0]) << "x and y must have the same shape";
-              for (int i = 0; i < x->shape[0]; ++i) {
-                static_cast<float*>(y->data)[i] = static_cast<float*>(x->data)[i] + 1;
+              TVM_FFI_ICHECK(x.dtype() == f32_dtype) << "x must be a float tensor";
+              TVM_FFI_ICHECK(y.ndim() == 1) << "y must be a 1D tensor";
+              TVM_FFI_ICHECK(y.dtype() == f32_dtype) << "y must be a float tensor";
+              TVM_FFI_ICHECK(x.size(0) == y.size(0)) << "x and y must have the same shape";
+              for (int i = 0; i < x.size(0); ++i) {
+                static_cast<float*>(y.data_ptr())[i] = static_cast<float*>(x.data_ptr())[i] + 1;
               }
             }
         """,
@@ -91,28 +91,28 @@ def test_load_inline_cpp_multiple_sources() -> None:
             r"""
             void add_one_cpu(tvm::ffi::TensorView x, tvm::ffi::TensorView y) {
               // implementation of a library function
-              TVM_FFI_ICHECK(x->ndim == 1) << "x must be a 1D tensor";
+              TVM_FFI_ICHECK(x.ndim() == 1) << "x must be a 1D tensor";
               DLDataType f32_dtype{kDLFloat, 32, 1};
-              TVM_FFI_ICHECK(x->dtype == f32_dtype) << "x must be a float tensor";
-              TVM_FFI_ICHECK(y->ndim == 1) << "y must be a 1D tensor";
-              TVM_FFI_ICHECK(y->dtype == f32_dtype) << "y must be a float tensor";
-              TVM_FFI_ICHECK(x->shape[0] == y->shape[0]) << "x and y must have the same shape";
-              for (int i = 0; i < x->shape[0]; ++i) {
-                static_cast<float*>(y->data)[i] = static_cast<float*>(x->data)[i] + 1;
+              TVM_FFI_ICHECK(x.dtype() == f32_dtype) << "x must be a float tensor";
+              TVM_FFI_ICHECK(y.ndim() == 1) << "y must be a 1D tensor";
+              TVM_FFI_ICHECK(y.dtype() == f32_dtype) << "y must be a float tensor";
+              TVM_FFI_ICHECK(x.size(0) == y.size(0)) << "x and y must have the same shape";
+              for (int i = 0; i < x.size(0); ++i) {
+                static_cast<float*>(y.data_ptr())[i] = static_cast<float*>(x.data_ptr())[i] + 1;
               }
             }
         """,
             r"""
             void add_two_cpu(tvm::ffi::TensorView x, tvm::ffi::TensorView y) {
               // implementation of a library function
-              TVM_FFI_ICHECK(x->ndim == 1) << "x must be a 1D tensor";
+              TVM_FFI_ICHECK(x.ndim() == 1) << "x must be a 1D tensor";
               DLDataType f32_dtype{kDLFloat, 32, 1};
-              TVM_FFI_ICHECK(x->dtype == f32_dtype) << "x must be a float tensor";
-              TVM_FFI_ICHECK(y->ndim == 1) << "y must be a 1D tensor";
-              TVM_FFI_ICHECK(y->dtype == f32_dtype) << "y must be a float tensor";
-              TVM_FFI_ICHECK(x->shape[0] == y->shape[0]) << "x and y must have the same shape";
-              for (int i = 0; i < x->shape[0]; ++i) {
-                static_cast<float*>(y->data)[i] = static_cast<float*>(x->data)[i] + 2;
+              TVM_FFI_ICHECK(x.dtype() == f32_dtype) << "x must be a float tensor";
+              TVM_FFI_ICHECK(y.ndim() == 1) << "y must be a 1D tensor";
+              TVM_FFI_ICHECK(y.dtype() == f32_dtype) << "y must be a float tensor";
+              TVM_FFI_ICHECK(x.size(0) == y.size(0)) << "x and y must have the same shape";
+              for (int i = 0; i < x.size(0); ++i) {
+                static_cast<float*>(y.data_ptr())[i] = static_cast<float*>(x.data_ptr())[i] + 2;
               }
             }
         """,
@@ -132,14 +132,14 @@ def test_load_inline_cpp_build_dir() -> None:
         cpp_sources=r"""
             void add_one_cpu(tvm::ffi::TensorView x, tvm::ffi::TensorView y) {
               // implementation of a library function
-              TVM_FFI_ICHECK(x->ndim == 1) << "x must be a 1D tensor";
+              TVM_FFI_ICHECK(x.ndim() == 1) << "x must be a 1D tensor";
               DLDataType f32_dtype{kDLFloat, 32, 1};
-              TVM_FFI_ICHECK(x->dtype == f32_dtype) << "x must be a float tensor";
-              TVM_FFI_ICHECK(y->ndim == 1) << "y must be a 1D tensor";
-              TVM_FFI_ICHECK(y->dtype == f32_dtype) << "y must be a float tensor";
-              TVM_FFI_ICHECK(x->shape[0] == y->shape[0]) << "x and y must have the same shape";
-              for (int i = 0; i < x->shape[0]; ++i) {
-                static_cast<float*>(y->data)[i] = static_cast<float*>(x->data)[i] + 1;
+              TVM_FFI_ICHECK(x.dtype() == f32_dtype) << "x must be a float tensor";
+              TVM_FFI_ICHECK(y.ndim() == 1) << "y must be a 1D tensor";
+              TVM_FFI_ICHECK(y.dtype() == f32_dtype) << "y must be a float tensor";
+              TVM_FFI_ICHECK(x.size(0) == y.size(0)) << "x and y must have the same shape";
+              for (int i = 0; i < x.size(0); ++i) {
+                static_cast<float*>(y.data_ptr())[i] = static_cast<float*>(x.data_ptr())[i] + 1;
               }
             }
         """,
@@ -169,26 +169,26 @@ def test_load_inline_cuda() -> None:
 
             void add_one_cuda(tvm::ffi::TensorView x, tvm::ffi::TensorView y, int64_t raw_stream) {
               // implementation of a library function
-              TVM_FFI_ICHECK(x->ndim == 1) << "x must be a 1D tensor";
+              TVM_FFI_ICHECK(x.ndim() == 1) << "x must be a 1D tensor";
               DLDataType f32_dtype{kDLFloat, 32, 1};
-              TVM_FFI_ICHECK(x->dtype == f32_dtype) << "x must be a float tensor";
-              TVM_FFI_ICHECK(y->ndim == 1) << "y must be a 1D tensor";
-              TVM_FFI_ICHECK(y->dtype == f32_dtype) << "y must be a float tensor";
-              TVM_FFI_ICHECK(x->shape[0] == y->shape[0]) << "x and y must have the same shape";
+              TVM_FFI_ICHECK(x.dtype() == f32_dtype) << "x must be a float tensor";
+              TVM_FFI_ICHECK(y.ndim() == 1) << "y must be a 1D tensor";
+              TVM_FFI_ICHECK(y.dtype() == f32_dtype) << "y must be a float tensor";
+              TVM_FFI_ICHECK(x.size(0) == y.size(0)) << "x and y must have the same shape";
 
-              int64_t n = x->shape[0];
+              int64_t n = x.size(0);
               int64_t nthread_per_block = 256;
               int64_t nblock = (n + nthread_per_block - 1) / nthread_per_block;
               // Obtain the current stream from the environment
               // it will be set to torch.cuda.current_stream() when calling the function
               // with torch.Tensors
               cudaStream_t stream = static_cast<cudaStream_t>(
-                  TVMFFIEnvGetStream(x->device.device_type, x->device.device_id));
+                  TVMFFIEnvGetStream(x.device().device_type, x.device().device_id));
               TVM_FFI_ICHECK_EQ(reinterpret_cast<int64_t>(stream), raw_stream)
                 << "stream must be the same as raw_stream";
               // launch the kernel
-              AddOneKernel<<<nblock, nthread_per_block, 0, stream>>>(static_cast<float*>(x->data),
-                                                                     static_cast<float*>(y->data), n);
+              AddOneKernel<<<nblock, nthread_per_block, 0, stream>>>(static_cast<float*>(x.data_ptr()),
+                                                                     static_cast<float*>(y.data_ptr()), n);
             }
         """,
         functions=["add_one_cuda"],
@@ -227,16 +227,16 @@ def test_load_inline_with_env_tensor_allocator() -> None:
             ffi::Tensor return_add_one(ffi::Map<ffi::String, ffi::Tuple<ffi::Tensor>> kwargs) {
               ffi::Tensor x = kwargs["x"].get<0>();
               // implementation of a library function
-              TVM_FFI_ICHECK(x->ndim == 1) << "x must be a 1D tensor";
+              TVM_FFI_ICHECK(x.ndim() == 1) << "x must be a 1D tensor";
               DLDataType f32_dtype{kDLFloat, 32, 1};
-              TVM_FFI_ICHECK(x->dtype == f32_dtype) << "x must be a float tensor";
+              TVM_FFI_ICHECK(x.dtype() == f32_dtype) << "x must be a float tensor";
               // allocate a new tensor with the env tensor allocator
               // it will be redirected to torch.empty when calling the function
               ffi::Tensor y = ffi::Tensor::FromDLPackAlloc(
-                TVMFFIEnvGetTensorAllocator(), ffi::Shape({x->shape[0]}), f32_dtype, x->device);
-              int64_t n = x->shape[0];
+                TVMFFIEnvGetTensorAllocator(), ffi::Shape({x.size(0)}), f32_dtype, x.device());
+              int64_t n = x.size(0);
               for (int i = 0; i < n; ++i) {
-                static_cast<float*>(y->data)[i] = static_cast<float*>(x->data)[i] + 1;
+                static_cast<float*>(y.data_ptr())[i] = static_cast<float*>(x.data_ptr())[i] + 1;
               }
               return y;
             }
@@ -263,14 +263,14 @@ def test_load_inline_both() -> None:
         cpp_sources=r"""
             void add_one_cpu(tvm::ffi::TensorView x, tvm::ffi::TensorView y) {
               // implementation of a library function
-              TVM_FFI_ICHECK(x->ndim == 1) << "x must be a 1D tensor";
+              TVM_FFI_ICHECK(x.ndim() == 1) << "x must be a 1D tensor";
               DLDataType f32_dtype{kDLFloat, 32, 1};
-              TVM_FFI_ICHECK(x->dtype == f32_dtype) << "x must be a float tensor";
-              TVM_FFI_ICHECK(y->ndim == 1) << "y must be a 1D tensor";
-              TVM_FFI_ICHECK(y->dtype == f32_dtype) << "y must be a float tensor";
-              TVM_FFI_ICHECK(x->shape[0] == y->shape[0]) << "x and y must have the same shape";
-              for (int i = 0; i < x->shape[0]; ++i) {
-                static_cast<float*>(y->data)[i] = static_cast<float*>(x->data)[i] + 1;
+              TVM_FFI_ICHECK(x.dtype() == f32_dtype) << "x must be a float tensor";
+              TVM_FFI_ICHECK(y.ndim() == 1) << "y must be a 1D tensor";
+              TVM_FFI_ICHECK(y.dtype() == f32_dtype) << "y must be a float tensor";
+              TVM_FFI_ICHECK(x.size(0) == y.size(0)) << "x and y must have the same shape";
+              for (int i = 0; i < x.size(0); ++i) {
+                static_cast<float*>(y.data_ptr())[i] = static_cast<float*>(x.data_ptr())[i] + 1;
               }
             }
 
@@ -286,24 +286,24 @@ def test_load_inline_both() -> None:
 
             void add_one_cuda(tvm::ffi::TensorView x, tvm::ffi::TensorView y) {
               // implementation of a library function
-              TVM_FFI_ICHECK(x->ndim == 1) << "x must be a 1D tensor";
+              TVM_FFI_ICHECK(x.ndim() == 1) << "x must be a 1D tensor";
               DLDataType f32_dtype{kDLFloat, 32, 1};
-              TVM_FFI_ICHECK(x->dtype == f32_dtype) << "x must be a float tensor";
-              TVM_FFI_ICHECK(y->ndim == 1) << "y must be a 1D tensor";
-              TVM_FFI_ICHECK(y->dtype == f32_dtype) << "y must be a float tensor";
-              TVM_FFI_ICHECK(x->shape[0] == y->shape[0]) << "x and y must have the same shape";
+              TVM_FFI_ICHECK(x.dtype() == f32_dtype) << "x must be a float tensor";
+              TVM_FFI_ICHECK(y.ndim() == 1) << "y must be a 1D tensor";
+              TVM_FFI_ICHECK(y.dtype() == f32_dtype) << "y must be a float tensor";
+              TVM_FFI_ICHECK(x.size(0) == y.size(0)) << "x and y must have the same shape";
 
-              int64_t n = x->shape[0];
+              int64_t n = x.size(0);
               int64_t nthread_per_block = 256;
               int64_t nblock = (n + nthread_per_block - 1) / nthread_per_block;
               // Obtain the current stream from the environment
               // it will be set to torch.cuda.current_stream() when calling the function
               // with torch.Tensors
               cudaStream_t stream = static_cast<cudaStream_t>(
-                  TVMFFIEnvGetStream(x->device.device_type, x->device.device_id));
+                  TVMFFIEnvGetStream(x.device().device_type, x.device().device_id));
               // launch the kernel
-              AddOneKernel<<<nblock, nthread_per_block, 0, stream>>>(static_cast<float*>(x->data),
-                                                                     static_cast<float*>(y->data), n);
+              AddOneKernel<<<nblock, nthread_per_block, 0, stream>>>(static_cast<float*>(x.data_ptr()),
+                                                                     static_cast<float*>(y.data_ptr()), n);
             }
         """,
         functions=["add_one_cpu", "add_one_cuda"],
@@ -335,7 +335,7 @@ def test_cuda_memory_alloc_noleak() -> None:
 
             ffi::Tensor return_tensor(tvm::ffi::TensorView x) {
                 ffi::Tensor y = ffi::Tensor::FromDLPackAlloc(
-                    TVMFFIEnvGetTensorAllocator(), x.shape(), x.dtype(), x->device);
+                    TVMFFIEnvGetTensorAllocator(), x.shape(), x.dtype(), x.device());
                 return y;
             }
         """,

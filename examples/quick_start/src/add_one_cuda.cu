@@ -33,24 +33,24 @@ __global__ void AddOneKernel(float* x, float* y, int n) {
 
 void AddOneCUDA(tvm::ffi::TensorView x, tvm::ffi::TensorView y) {
   // implementation of a library function
-  TVM_FFI_ICHECK(x->ndim == 1) << "x must be a 1D tensor";
+  TVM_FFI_ICHECK(x.ndim() == 1) << "x must be a 1D tensor";
   DLDataType f32_dtype{kDLFloat, 32, 1};
-  TVM_FFI_ICHECK(x->dtype == f32_dtype) << "x must be a float tensor";
-  TVM_FFI_ICHECK(y->ndim == 1) << "y must be a 1D tensor";
-  TVM_FFI_ICHECK(y->dtype == f32_dtype) << "y must be a float tensor";
-  TVM_FFI_ICHECK(x->shape[0] == y->shape[0]) << "x and y must have the same shape";
+  TVM_FFI_ICHECK(x.dtype() == f32_dtype) << "x must be a float tensor";
+  TVM_FFI_ICHECK(y.ndim() == 1) << "y must be a 1D tensor";
+  TVM_FFI_ICHECK(y.dtype() == f32_dtype) << "y must be a float tensor";
+  TVM_FFI_ICHECK(x.size(0) == y.size(0)) << "x and y must have the same shape";
 
-  int64_t n = x->shape[0];
+  int64_t n = x.size(0);
   int64_t nthread_per_block = 256;
   int64_t nblock = (n + nthread_per_block - 1) / nthread_per_block;
   // Obtain the current stream from the environment
   // it will be set to torch.cuda.current_stream() when calling the function
   // with torch.Tensors
   cudaStream_t stream =
-      static_cast<cudaStream_t>(TVMFFIEnvGetStream(x->device.device_type, x->device.device_id));
+      static_cast<cudaStream_t>(TVMFFIEnvGetStream(x.device().device_type, x.device().device_id));
   // launch the kernel
-  AddOneKernel<<<nblock, nthread_per_block, 0, stream>>>(static_cast<float*>(x->data),
-                                                         static_cast<float*>(y->data), n);
+  AddOneKernel<<<nblock, nthread_per_block, 0, stream>>>(static_cast<float*>(x.data_ptr()),
+                                                         static_cast<float*>(y.data_ptr()), n);
 }
 
 // Expose global symbol `add_one_cpu` that follows tvm-ffi abi

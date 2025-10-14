@@ -26,15 +26,22 @@ def _load_lib() -> tvm_ffi.Module:
     # first look at the directory of the current file
     file_dir = Path(__file__).resolve().parent
 
+    path_candidates = [
+        file_dir,
+        file_dir / ".." / ".." / "build",
+    ]
+
     if sys.platform.startswith("win32"):
         lib_dll_name = "my_ffi_extension.dll"
     elif sys.platform.startswith("darwin"):
         lib_dll_name = "my_ffi_extension.dylib"
     else:
         lib_dll_name = "my_ffi_extension.so"
+    for candidate in path_candidates:
+        for path in Path(candidate).glob(lib_dll_name):
+            return tvm_ffi.load_module(str(path))
 
-    lib_path = file_dir / lib_dll_name
-    return tvm_ffi.load_module(str(lib_path))
+    raise RuntimeError(f"Cannot find {lib_dll_name} in {path_candidates}")
 
 
 _LIB = _load_lib()

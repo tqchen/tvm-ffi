@@ -272,21 +272,21 @@ class StructuralHashHandler {
 
   // NOLINTNEXTLINE(performance-unnecessary-value-param)
   uint64_t HashTensor(Tensor tensor) {
-    uint64_t hash_value = details::StableHashCombine(tensor->GetTypeKeyHash(), tensor->ndim);
-    for (int i = 0; i < tensor->ndim; ++i) {
-      hash_value = details::StableHashCombine(hash_value, tensor->shape[i]);
+    uint64_t hash_value = details::StableHashCombine(tensor->GetTypeKeyHash(), tensor.ndim());
+    for (int i = 0; i < tensor.ndim(); ++i) {
+      hash_value = details::StableHashCombine(hash_value, tensor.size(i));
     }
     TVMFFIAny temp;
     temp.v_uint64 = 0;
-    temp.v_dtype = tensor->dtype;
+    temp.v_dtype = tensor.dtype();
     hash_value = details::StableHashCombine(hash_value, temp.v_int64);
 
     if (!skip_tensor_content_) {
-      TVM_FFI_ICHECK_EQ(tensor->device.device_type, kDLCPU) << "can only hash CPU tensor";
+      TVM_FFI_ICHECK_EQ(tensor.device().device_type, kDLCPU) << "can only hash CPU tensor";
       TVM_FFI_ICHECK(tensor.IsContiguous()) << "Can only hash contiguous tensor";
-      size_t data_size = GetDataSize(*(tensor.operator->()));
+      size_t data_size = GetDataSize(tensor.numel(), tensor.dtype());
       uint64_t data_hash =
-          details::StableHashBytes(static_cast<const char*>(tensor->data), data_size);
+          details::StableHashBytes(static_cast<const char*>(tensor.data_ptr()), data_size);
       hash_value = details::StableHashCombine(hash_value, data_hash);
     }
     return hash_value;

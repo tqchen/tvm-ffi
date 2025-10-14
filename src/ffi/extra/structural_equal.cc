@@ -349,18 +349,19 @@ class StructEqualHandler {
   // NOLINTNEXTLINE(performance-unnecessary-value-param)
   bool CompareTensor(Tensor lhs, Tensor rhs) {
     if (lhs.same_as(rhs)) return true;
-    if (lhs->ndim != rhs->ndim) return false;
-    for (int i = 0; i < lhs->ndim; ++i) {
-      if (lhs->shape[i] != rhs->shape[i]) return false;
+    if (lhs.ndim() != rhs.ndim()) return false;
+    for (int i = 0; i < lhs.ndim(); ++i) {
+      if (lhs.size(i) != rhs.size(i)) return false;
     }
-    if (lhs->dtype != rhs->dtype) return false;
+
+    if (lhs.dtype() != rhs.dtype()) return false;
     if (!skip_tensor_content_) {
-      TVM_FFI_ICHECK_EQ(lhs->device.device_type, kDLCPU) << "can only compare CPU tensor";
-      TVM_FFI_ICHECK_EQ(rhs->device.device_type, kDLCPU) << "can only compare CPU tensor";
+      TVM_FFI_ICHECK_EQ(lhs.device().device_type, kDLCPU) << "can only compare CPU tensor";
+      TVM_FFI_ICHECK_EQ(rhs.device().device_type, kDLCPU) << "can only compare CPU tensor";
       TVM_FFI_ICHECK(lhs.IsContiguous()) << "Can only compare contiguous tensor";
       TVM_FFI_ICHECK(rhs.IsContiguous()) << "Can only compare contiguous tensor";
-      size_t data_size = GetDataSize(*(lhs.operator->()));
-      return std::memcmp(lhs->data, rhs->data, data_size) == 0;
+      size_t data_size = GetDataSize(lhs);
+      return std::memcmp(lhs.data_ptr(), rhs.data_ptr(), data_size) == 0;
     } else {
       return true;
     }

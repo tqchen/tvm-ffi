@@ -244,6 +244,47 @@ class TensorObjFromDLPack : public TensorObj {
 class Tensor : public ObjectRef {
  public:
   /*!
+   * \brief Default constructor.
+   */
+  Tensor() = default;
+  /*!
+   * \brief Constructor from a ObjectPtr<TensorObj>.
+   * \param n The ObjectPtr<TensorObj>.
+   */
+  explicit Tensor(::tvm::ffi::ObjectPtr<TensorObj> n) : ObjectRef(std::move(n)) {}
+  /*!
+   * \brief Constructor from a UnsafeInit tag.
+   * \param tag The UnsafeInit tag.
+   */
+  explicit Tensor(::tvm::ffi::UnsafeInit tag) : ObjectRef(tag) {}
+  /// \cond Doxygen_Suppress
+  TVM_FFI_DEFINE_DEFAULT_COPY_MOVE_AND_ASSIGN(Tensor)
+  /// \endcond
+  /*!
+   * \brief Get the data pointer of the Tensor.
+   * \return The data pointer of the Tensor.
+   */
+  void* data_ptr() const { return get()->data; }
+
+  /*!
+   * \brief Get the device of the Tensor.
+   * \return The device of the Tensor.
+   */
+  DLDevice device() const { return get()->device; }
+
+  /*!
+   * \brief Get the number of dimensions in the Tensor.
+   * \return The number of dimensions in the Tensor.
+   */
+  int32_t ndim() const { return get()->ndim; }
+
+  /*!
+   * \brief Get the data type of the Tensor.
+   * \return The data type of the Tensor.
+   */
+  DLDataType dtype() const { return get()->dtype; }
+
+  /*!
    * \brief Get the shape of the Tensor.
    * \return The shape of the Tensor.
    */
@@ -251,6 +292,7 @@ class Tensor : public ObjectRef {
     const TensorObj* obj = get();
     return tvm::ffi::ShapeView(obj->shape, obj->ndim);
   }
+
   /*!
    * \brief Get the strides of the Tensor.
    * \return The strides of the Tensor.
@@ -262,28 +304,29 @@ class Tensor : public ObjectRef {
   }
 
   /*!
-   * \brief Get the data pointer of the Tensor.
-   * \return The data pointer of the Tensor.
+   * \brief Get the size of the idx-th dimension.
+   * \param idx The index of the size.
+   * \return The size of the idx-th dimension.
    */
-  void* data_ptr() const { return (*this)->data; }
+  int64_t size(size_t idx) const { return get()->shape[idx]; }
 
   /*!
-   * \brief Get the number of dimensions in the Tensor.
-   * \return The number of dimensions in the Tensor.
+   * \brief Get the stride of the idx-th dimension.
+   * \param idx The index of the stride.
+   * \return The stride of the idx-th dimension.
    */
-  int32_t ndim() const { return (*this)->ndim; }
+  int64_t stride(size_t idx) const { return get()->strides[idx]; }
 
   /*!
    * \brief Get the number of elements in the Tensor.
    * \return The number of elements in the Tensor.
    */
   int64_t numel() const { return this->shape().Product(); }
-
   /*!
-   * \brief Get the data type of the Tensor.
-   * \return The data type of the Tensor.
+   * \brief Get the byte offset of the Tensor.
+   * \return The byte offset of the Tensor.
    */
-  DLDataType dtype() const { return (*this)->dtype; }
+  uint64_t byte_offset() const { return get()->byte_offset; }
   /*!
    * \brief Check if the Tensor is contiguous.
    * \return True if the Tensor is contiguous, false otherwise.
@@ -445,12 +488,22 @@ class Tensor : public ObjectRef {
    * \return The converted DLPack managed tensor.
    */
   DLManagedTensorVersioned* ToDLPackVersioned() const { return get_mutable()->ToDLPackVersioned(); }
-
+  /*!
+   * \brief Get the underlying DLTensor pointer.
+   * \return The underlying DLTensor pointer.
+   */
+  const DLTensor* GetDLTensorPtr() const { return get(); }
   /// \cond Doxygen_Suppress
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(Tensor, ObjectRef, TensorObj);
+  [[maybe_unused]] static constexpr bool _type_is_nullable = true;
+  using ContainerType = TensorObj;
   /// \endcond
 
  protected:
+  /*!
+   * \brief Get const internal container pointer.
+   * \return a const container pointer.
+   */
+  const TensorObj* get() const { return static_cast<const TensorObj*>(ObjectRef::get()); }
   /*!
    * \brief Get mutable internal container pointer.
    * \return a mutable container pointer.
@@ -481,7 +534,7 @@ class TensorView {
    */
   TensorView(const Tensor& tensor) {  // NOLINT(*)
     TVM_FFI_ICHECK(tensor.defined());
-    tensor_ = *tensor.operator->();
+    tensor_ = *tensor.GetDLTensorPtr();
   }  // NOLINT(*)
   /*!
    * \brief Create a TensorView from a DLTensor.
@@ -520,7 +573,7 @@ class TensorView {
    */
   TensorView& operator=(const Tensor& tensor) {
     TVM_FFI_ICHECK(tensor.defined());
-    tensor_ = *tensor.operator->();
+    tensor_ = *tensor.GetDLTensorPtr();
     return *this;
   }
 
@@ -529,16 +582,36 @@ class TensorView {
   // delete move assignment operator from owned tensor
   TensorView& operator=(Tensor&& tensor) = delete;
   /*!
-   * \brief Get the underlying DLTensor pointer.
-   * \return The underlying DLTensor pointer.
+   * \brief Get the data pointer of the Tensor.
+   * \return The data pointer of the Tensor.
    */
-  const DLTensor* operator->() const { return &tensor_; }
-
+  void* data_ptr() const { return tensor_.data; }
+  /*!
+   * \brief Get the device of the Tensor.
+   * \return The device of the Tensor.
+   */
+  DLDevice device() const { return tensor_.device; }
+  /*!
+   * \brief Get the number of dimensions in the Tensor.
+   * \return The number of dimensions in the Tensor.
+   */
+  int32_t ndim() const { return tensor_.ndim; }
+  /*!
+   * \brief Get the data type of the Tensor.
+   * \return The data type of the Tensor.
+   */
+  DLDataType dtype() const { return tensor_.dtype; }
   /*!
    * \brief Get the shape of the Tensor.
    * \return The shape of the Tensor.
    */
   ShapeView shape() const { return ShapeView(tensor_.shape, tensor_.ndim); }
+
+  /*!
+   * \brief Get the number of elements in the Tensor.
+   * \return The number of elements in the Tensor.
+   */
+  int64_t numel() const { return this->shape().Product(); }
 
   /*!
    * \brief Get the strides of the Tensor.
@@ -550,28 +623,24 @@ class TensorView {
   }
 
   /*!
-   * \brief Get the data pointer of the Tensor.
-   * \return The data pointer of the Tensor.
+   * \brief Get the size of the idx-th dimension.
+   * \param idx The index of the size.
+   * \return The size of the idx-th dimension.
    */
-  void* data_ptr() const { return tensor_.data; }
+  int64_t size(size_t idx) const { return tensor_.shape[idx]; }
 
   /*!
-   * \brief Get the number of dimensions in the Tensor.
-   * \return The number of dimensions in the Tensor.
+   * \brief Get the stride of the idx-th dimension.
+   * \param idx The index of the stride.
+   * \return The stride of the idx-th dimension.
    */
-  int32_t ndim() const { return tensor_.ndim; }
+  int64_t stride(size_t idx) const { return tensor_.strides[idx]; }
 
   /*!
-   * \brief Get the number of elements in the Tensor.
-   * \return The number of elements in the Tensor.
+   * \brief Get the byte offset of the Tensor.
+   * \return The byte offset of the Tensor.
    */
-  int64_t numel() const { return this->shape().Product(); }
-
-  /*!
-   * \brief Get the data type of the Tensor.
-   * \return The data type of the Tensor.
-   */
-  DLDataType dtype() const { return tensor_.dtype; }
+  uint64_t byte_offset() const { return tensor_.byte_offset; }
 
   /*!
    * \brief Check if the Tensor is contiguous.
@@ -581,7 +650,27 @@ class TensorView {
 
  private:
   DLTensor tensor_;
+  template <typename, typename>
+  friend struct TypeTraits;
 };
+
+/*!
+ * \brief Get the data size of the Tensor.
+ * \param tensor The input Tensor.
+ * \return The data size of the Tensor.
+ */
+inline size_t GetDataSize(const Tensor& tensor) {
+  return GetDataSize(tensor.numel(), tensor.dtype());
+}
+
+/*!
+ * \brief Get the data size of the TensorView.
+ * \param tensor The input TensorView.
+ * \return The data size of the TensorView.
+ */
+inline size_t GetDataSize(const TensorView& tensor) {
+  return GetDataSize(tensor.numel(), tensor.dtype());
+}
 
 // TensorView type, allow implicit casting from DLTensor*
 // NOTE: we deliberately do not support MoveToAny and MoveFromAny since it does not retain ownership
@@ -594,7 +683,7 @@ struct TypeTraits<TensorView> : public TypeTraitsBase {
     result->type_index = TypeIndex::kTVMFFIDLTensorPtr;
     result->zero_padding = 0;
     TVM_FFI_CLEAR_PTR_PADDING_IN_FFI_ANY(result);
-    result->v_ptr = const_cast<DLTensor*>(src.operator->());
+    result->v_ptr = const_cast<DLTensor*>(&(src.tensor_));
   }
 
   TVM_FFI_INLINE static bool CheckAnyStrict(const TVMFFIAny* src) {

@@ -70,7 +70,7 @@ int main() {
   }
 
   size_t nbytes = host_x.size() * sizeof(float);
-  cudaError_t err = cudaMemcpy(x->data, host_x.data(), nbytes, cudaMemcpyHostToDevice);
+  cudaError_t err = cudaMemcpy(x.data_ptr(), host_x.data(), nbytes, cudaMemcpyHostToDevice);
   TVM_FFI_ICHECK_EQ(err, cudaSuccess)
       << "cudaMemcpy host to device failed: " << cudaGetErrorString(err);
 
@@ -80,7 +80,7 @@ int main() {
   add_one_cuda(x, y);
 
   std::vector<float> host_y(host_x.size());
-  err = cudaMemcpy(host_y.data(), y->data, nbytes, cudaMemcpyDeviceToHost);
+  err = cudaMemcpy(host_y.data(), y.data_ptr(), nbytes, cudaMemcpyDeviceToHost);
   TVM_FFI_ICHECK_EQ(err, cudaSuccess)
       << "cudaMemcpy device to host failed: " << cudaGetErrorString(err);
 
