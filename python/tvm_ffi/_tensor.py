@@ -45,13 +45,13 @@ class Shape(tuple, PyNativeObject):
 
     """
 
-    __tvm_ffi_object__: Any
+    _tvm_ffi_cached_object: Any
 
     def __new__(cls, content: tuple[int, ...]) -> Shape:
         if any(not isinstance(x, Integral) for x in content):
             raise ValueError("Shape must be a tuple of integers")
         val: Shape = tuple.__new__(cls, content)
-        val.__init_tvm_ffi_object_by_constructor__(_ffi_api.Shape, *content)
+        val.__init_cached_object_by_constructor__(_ffi_api.Shape, *content)
         return val
 
     # pylint: disable=no-self-argument
@@ -59,7 +59,7 @@ class Shape(tuple, PyNativeObject):
         """Construct from a given tvm object."""
         content = _shape_obj_get_py_tuple(obj)
         val: Shape = tuple.__new__(cls, content)  # type: ignore[arg-type]
-        val.__tvm_ffi_object__ = obj  # type: ignore[attr-defined]
+        val._tvm_ffi_cached_object = obj  # type: ignore[attr-defined]
         return val
 
 

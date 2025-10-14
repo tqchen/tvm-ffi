@@ -53,12 +53,12 @@ def test_shape_object() -> None:
 
     fecho = tvm_ffi.convert(lambda x: x)
     shape2: tvm_ffi.Shape = fecho(shape)
-    assert shape2.__tvm_ffi_object__.same_as(shape.__tvm_ffi_object__)
+    assert shape2._tvm_ffi_cached_object.same_as(shape._tvm_ffi_cached_object)
     assert isinstance(shape2, tvm_ffi.Shape)
     assert isinstance(shape2, tuple)
 
     shape3: tvm_ffi.Shape = tvm_ffi.convert(shape)
-    assert shape3.__tvm_ffi_object__.same_as(shape.__tvm_ffi_object__)
+    assert shape3._tvm_ffi_cached_object.same_as(shape._tvm_ffi_cached_object)
     assert isinstance(shape3, tvm_ffi.Shape)
 
 
@@ -100,8 +100,8 @@ def test_tvm_ffi_tensor_compatible() -> None:
             """Initialize the MyTensor."""
             self._tensor = tensor
 
-        def __tvm_ffi_tensor__(self) -> tvm_ffi.Tensor:
-            """Implement __tvm_ffi_tensor__ protocol."""
+        def __tvm_ffi_object__(self) -> tvm_ffi.Tensor:
+            """Implement __tvm_ffi_object__ protocol."""
             return self._tensor
 
     data = np.zeros((10, 8, 4, 2), dtype="int32")

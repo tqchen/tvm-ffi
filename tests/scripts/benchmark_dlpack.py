@@ -39,14 +39,14 @@ import tvm_ffi
 
 
 class TestFFITensor:
-    """Test FFI Tensor that exposes __tvm_ffi_tensor__ protocol."""
+    """Test FFI Tensor that exposes __tvm_ffi_object__ protocol."""
 
     def __init__(self, tensor: tvm_ffi.Tensor) -> None:
         """Initialize the TestFFITensor."""
         self._tensor = tensor
 
-    def __tvm_ffi_tensor__(self) -> tvm_ffi.Tensor:
-        """Implement __tvm_ffi_tensor__ protocol."""
+    def __tvm_ffi_object__(self) -> tvm_ffi.Tensor:
+        """Implement __tvm_ffi_object__ protocol."""
         return self._tensor
 
 

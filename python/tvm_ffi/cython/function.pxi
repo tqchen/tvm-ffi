@@ -267,17 +267,17 @@ cdef int TVMFFIPyArgSetterDLPack_(
     return 0
 
 
-cdef int TVMFFIPyArgSetterFFITensorCompatible_(
+cdef int TVMFFIPyArgSetterFFIObjectCompatible_(
     TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
     PyObject* py_arg, TVMFFIAny* out
 ) except -1:
-    """Setter for objects that implement the `__tvm_ffi_tensor__` protocol."""
+    """Setter for objects that implement the `__tvm_ffi_object__` protocol."""
     cdef object arg = <object>py_arg
     cdef TVMFFIObjectHandle temp_chandle
-    cdef Tensor tensor = arg.__tvm_ffi_tensor__()
-    cdef long ref_count = Py_REFCNT(tensor)
-    temp_chandle = tensor.chandle
-    out.type_index = kTVMFFITensor
+    cdef Object obj = arg.__tvm_ffi_object__()
+    cdef long ref_count = Py_REFCNT(obj)
+    temp_chandle = obj.chandle
+    out.type_index = TVMFFIObjectGetTypeIndex(temp_chandle)
     out.v_ptr = temp_chandle
     if ref_count == 1:
         # keep alive the tensor, since the tensor is temporary
@@ -349,11 +349,11 @@ cdef int TVMFFIPyArgSetterPyNativeObjectStr_(
     TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
     PyObject* py_arg, TVMFFIAny* out
 ) except -1:
-    """Specially handle String as its __tvm_ffi_object__ may be empty"""
+    """Specially handle String as its _tvm_ffi_cached_object may be empty"""
     cdef object arg = <object>py_arg
     # need to check if the arg is a large string returned from ffi
-    if arg.__tvm_ffi_object__ is not None:
-        arg = arg.__tvm_ffi_object__
+    if arg._tvm_ffi_cached_object is not None:
+        arg = arg._tvm_ffi_cached_object
         out.type_index = TVMFFIObjectGetTypeIndex((<Object>arg).chandle)
         out.v_ptr = (<Object>arg).chandle
         return 0
@@ -388,11 +388,11 @@ cdef int TVMFFIPyArgSetterPyNativeObjectBytes_(
     TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
     PyObject* py_arg, TVMFFIAny* out
 ) except -1:
-    """Specially handle Bytes as its __tvm_ffi_object__ may be empty"""
+    """Specially handle Bytes as its _tvm_ffi_cached_object may be empty"""
     cdef object arg = <object>py_arg
     # need to check if the arg is a large bytes returned from ffi
-    if arg.__tvm_ffi_object__ is not None:
-        arg = arg.__tvm_ffi_object__
+    if arg._tvm_ffi_cached_object is not None:
+        arg = arg._tvm_ffi_cached_object
         out.type_index = TVMFFIObjectGetTypeIndex((<Object>arg).chandle)
         out.v_ptr = (<Object>arg).chandle
         return 0
@@ -403,12 +403,12 @@ cdef int TVMFFIPyArgSetterPyNativeObjectGeneral_(
     TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
     PyObject* py_arg, TVMFFIAny* out
 ) except -1:
-    """Specially handle Bytes as its __tvm_ffi_object__ may be empty"""
+    """Specially handle Object as its _tvm_ffi_cached_object may be empty"""
     cdef object arg = <object>py_arg
-    if arg.__tvm_ffi_object__ is None:
-        raise ValueError(f"__tvm_ffi_object__ is None for {type(arg)}")
-    assert arg.__tvm_ffi_object__ is not None
-    arg = arg.__tvm_ffi_object__
+    if arg._tvm_ffi_cached_object is None:
+        raise ValueError(f"_tvm_ffi_cached_object is None for {type(arg)}")
+    assert arg._tvm_ffi_cached_object is not None
+    arg = arg._tvm_ffi_cached_object
     out.type_index = TVMFFIObjectGetTypeIndex((<Object>arg).chandle)
     out.v_ptr = (<Object>arg).chandle
     return 0
@@ -605,11 +605,11 @@ cdef int TVMFFIPyArgSetterFactory_(PyObject* value, TVMFFIPyArgSetter* out) exce
         out.func = TVMFFIPyArgSetterObjectRValueRef_
         return 0
     arg_class = type(arg)
-    if hasattr(arg_class, "__tvm_ffi_tensor__"):
-        # can directly map to tvm ffi tensor
-        # usually used for solutions that takes ffi.Tensor
+    if hasattr(arg_class, "__tvm_ffi_object__"):
+        # can directly map to tvm ffi object
+        # usually used for solutions that takes subclass of ffi.Object
         # as a member variable
-        out.func = TVMFFIPyArgSetterFFITensorCompatible_
+        out.func = TVMFFIPyArgSetterFFIObjectCompatible_
         return 0
     if os.environ.get("TVM_FFI_SKIP_c_dlpack_from_pyobject", "0") != "1":
         # Check for DLPackExchangeAPI struct (new approach)

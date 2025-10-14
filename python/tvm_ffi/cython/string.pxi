@@ -29,7 +29,7 @@ cdef inline bytes _bytes_obj_get_py_bytes(obj):
 
 
 class String(str, PyNativeObject):
-    __slots__ = ["__tvm_ffi_object__"]
+    __slots__ = ["_tvm_ffi_cached_object"]
     """String object that is possibly returned by FFI call.
 
     Note
@@ -39,7 +39,7 @@ class String(str, PyNativeObject):
     """
     def __new__(cls, value):
         val = str.__new__(cls, value)
-        val.__tvm_ffi_object__ = None
+        val._tvm_ffi_cached_object = None
         return val
 
     # pylint: disable=no-self-argument
@@ -47,7 +47,7 @@ class String(str, PyNativeObject):
         """Construct from a given tvm object."""
         content = _string_obj_get_py_str(obj)
         val = str.__new__(cls, content)
-        val.__tvm_ffi_object__ = obj
+        val._tvm_ffi_cached_object = obj
         return val
 
 
@@ -64,7 +64,7 @@ class Bytes(bytes, PyNativeObject):
     """
     def __new__(cls, value):
         val = bytes.__new__(cls, value)
-        val.__tvm_ffi_object__ = None
+        val._tvm_ffi_cached_object = None
         return val
 
     # pylint: disable=no-self-argument
@@ -72,7 +72,7 @@ class Bytes(bytes, PyNativeObject):
         """Construct from a given tvm object."""
         content = _bytes_obj_get_py_bytes(obj)
         val = bytes.__new__(cls, content)
-        val.__tvm_ffi_object__ = obj
+        val._tvm_ffi_cached_object = obj
         return val
 
 

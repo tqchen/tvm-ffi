@@ -218,8 +218,8 @@ class PyNativeObject:
     """Base class of all TVM objects that also subclass python's builtin types."""
     __slots__ = []
 
-    def __init_tvm_ffi_object_by_constructor__(self, fconstructor, *args):
-        """Initialize the internal tvm_ffi_object by calling constructor function.
+    def __init_cached_object_by_constructor__(self, fconstructor, *args):
+        """Initialize the internal _tvm_ffi_cached_object by calling constructor function.
 
         Parameters
         ----------
@@ -236,7 +236,7 @@ class PyNativeObject:
         """
         obj = _CLASS_OBJECT.__new__(_CLASS_OBJECT)
         obj.__init_handle_by_constructor__(fconstructor, *args)
-        self.__tvm_ffi_object__ = obj
+        self._tvm_ffi_cached_object = obj
 
 
 def _object_type_key_to_index(str type_key):

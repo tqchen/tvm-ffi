@@ -109,7 +109,7 @@ def test_string_bytes_passing() -> None:
     x = "hello" * 100
     y = fecho(x)
     assert y == x
-    assert y.__tvm_ffi_object__ is not None
+    assert y._tvm_ffi_cached_object is not None
     use_count(y) == 1
     # small bytes
     assert fecho(b"hello") == b"hello"
@@ -117,7 +117,7 @@ def test_string_bytes_passing() -> None:
     x2 = b"hello" * 100
     y2 = fecho(x2)
     assert y2 == x2
-    assert y2.__tvm_ffi_object__ is not None
+    assert y2._tvm_ffi_cached_object is not None
     fecho(y2) == 1
 
 

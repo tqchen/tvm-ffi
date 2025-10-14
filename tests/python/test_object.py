@@ -133,6 +133,22 @@ def test_opaque_type_error() -> None:
     )
 
 
+def test_object_protocol() -> None:
+    class CompactObject:
+        def __init__(self, backend_obj: Any) -> None:
+            self.backend_obj = backend_obj
+
+        def __tvm_ffi_object__(self) -> Any:
+            return self.backend_obj
+
+    x = tvm_ffi.convert([])
+    assert isinstance(x, tvm_ffi.Object)
+    x_compact = CompactObject(x)
+    test_echo = tvm_ffi.get_global_func("testing.echo")
+    y = test_echo(x_compact)
+    assert y.__chandle__() == x.__chandle__()
+
+
 def test_unregistered_object_fallback() -> None:
     def _check_type(x: Any) -> None:
         type_info: TypeInfo = type(x).__tvm_ffi_type_info__  # type: ignore[attr-defined]

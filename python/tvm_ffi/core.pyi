@@ -206,7 +206,7 @@ class PyNativeObject:
     """
 
     __slots__: list[str]
-    def __init_tvm_ffi_object_by_constructor__(self, fconstructor: Any, *args: Any) -> None: ...
+    def __init_cached_object_by_constructor__(self, fconstructor: Any, *args: Any) -> None: ...
 
 def _set_class_object(cls: type) -> None: ...
 def _register_object_by_index(type_index: int, type_cls: type) -> TypeInfo: ...
@@ -602,8 +602,8 @@ class String(str, PyNativeObject):
 
     """
 
-    __slots__ = ["__tvm_ffi_object__"]
-    __tvm_ffi_object__: Object | None
+    __slots__ = ["_tvm_ffi_cached_object"]
+    _tvm_ffi_cached_object: Object | None
 
     def __new__(cls, value: str) -> String:
         """Create a new ``String`` from a Python ``str``."""
@@ -620,8 +620,8 @@ class Bytes(bytes, PyNativeObject):
     layer constructs :class:`Bytes` as needed.
     """
 
-    __slots__ = ["__tvm_ffi_object__"]
-    __tvm_ffi_object__: Object | None
+    __slots__ = ["_tvm_ffi_cached_object"]
+    _tvm_ffi_cached_object: Object | None
 
     def __new__(cls, value: bytes) -> Bytes:
         """Create a new ``Bytes`` from a Python ``bytes`` value."""
