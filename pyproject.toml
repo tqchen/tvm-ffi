@@ -47,7 +47,7 @@ test = [
   "pytest",
   "numpy",
   "ninja",
-  "torch; python_version < '3.14' and sys_platform != 'win32'",
+  "torch; python_version < '3.14',
 ]
 
 [dependency-groups]
