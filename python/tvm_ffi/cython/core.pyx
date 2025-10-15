@@ -38,6 +38,21 @@ cdef extern from "tvm/ffi/extra/c_env_api.h":
                            TVMFFIStreamHandle* opt_out_original_stream) nogil
 
 
+cdef inline c_str(pystr):
+    """Create ctypes char * from a python string
+
+    Parameters
+    ----------
+    string : string type
+        python string
+
+    Returns
+    -------
+    str : c_char_p
+        A char pointer that can be passed to C API
+    """
+    return pystr.encode("utf-8")
+
 cdef _init_env_api():
     # Initialize env api for signal handling
     # Also registers the gil state release and ensure as PyErr_CheckSignals
