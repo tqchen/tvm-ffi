@@ -25,6 +25,9 @@ __version__ = "0.1.0b19"
 from . import base
 from . import libinfo
 
+from . import core
+
+"""
 # package init part
 from .registry import (
     register_object,
@@ -34,6 +37,7 @@ from .registry import (
     remove_global_func,
     init_ffi_api,
 )
+
 from ._dtype import dtype
 from .core import Object, ObjectConvertible, Function
 from ._convert import convert
@@ -81,3 +85,4 @@ __all__ = [
     "serialization",
     "system_lib",
 ]
+"""

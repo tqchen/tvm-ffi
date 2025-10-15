@@ -455,4 +455,4 @@ cdef _init_env_api():
 _init_env_api()
 
 # ensure testing is linked and we can run testcases
-TVMFFITestingDummyTarget()
+# TVMFFITestingDummyTarget()
