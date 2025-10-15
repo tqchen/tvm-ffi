@@ -306,8 +306,12 @@ class TypeTable {
   }
 
   static TypeTable* Global() {
-    static TypeTable inst;
-    return &inst;
+    // deliberately create a new instance via raw new
+    // to ensure table lives longe in case unloading
+    // still need the table info
+    // memory will be recycled by the OS at program exit
+    static TypeTable* inst = new TypeTable();
+    return inst;
   }
 
  private:
