@@ -37,6 +37,12 @@ function (_libbacktrace_compile)
   file(MAKE_DIRECTORY ${libbacktrace_prefix}/lib)
   detect_target_triple(TVM_FFI_MACHINE_NAME)
   message(STATUS "Detected target triple: ${TVM_FFI_MACHINE_NAME}")
+
+  # Add symbol hiding flags for GCC, Clang, and AppleClang
+  set(symbol_hiding_flags "")
+  if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+    set(symbol_hiding_flags "-fvisibility=hidden -fvisibility-inlines-hidden")
+  endif ()
   ExternalProject_Add(
     project_libbacktrace
     PREFIX libbacktrace
@@ -50,7 +56,7 @@ function (_libbacktrace_compile)
       "--with-pic" #
       "CC=${cmake_c_compiler}" #
       "CPP=${cmake_c_compiler} -E" #
-      "CFLAGS=${CMAKE_C_FLAGS}" #
+      "CFLAGS=${CMAKE_C_FLAGS} ${symbol_hiding_flags}" #
       "LDFLAGS=${CMAKE_EXE_LINKER_FLAGS}" #
       "NM=${CMAKE_NM}" #
       "STRIP=${CMAKE_STRIP}" #
