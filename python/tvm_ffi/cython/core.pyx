@@ -26,7 +26,7 @@ from cpython cimport PyErr_CheckSignals, PyGILState_Ensure, PyGILState_Release, 
 from cpython cimport pycapsule, PyCapsule_Destructor
 from cpython cimport PyErr_SetNone
 
-import torch
+
 # include "./base.pxi"
 # include "./type_info.pxi"
 # include "./dtype.pxi"

@@ -26,7 +26,7 @@ from . import base
 from . import libinfo
 
 from . import core
-
+import torch
 """
 # package init part
 from .registry import (
