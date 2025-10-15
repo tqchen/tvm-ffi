@@ -232,8 +232,8 @@ def test_load_inline_with_env_tensor_allocator() -> None:
               TVM_FFI_ICHECK(x.dtype() == f32_dtype) << "x must be a float tensor";
               // allocate a new tensor with the env tensor allocator
               // it will be redirected to torch.empty when calling the function
-              ffi::Tensor y = ffi::Tensor::FromDLPackAlloc(
-                TVMFFIEnvGetTensorAllocator(), ffi::Shape({x.size(0)}), f32_dtype, x.device());
+              ffi::Tensor y = ffi::Tensor::FromEnvAlloc(
+                TVMFFIEnvTensorAlloc, ffi::Shape({x.size(0)}), f32_dtype, x.device());
               int64_t n = x.size(0);
               for (int i = 0; i < n; ++i) {
                 static_cast<float*>(y.data_ptr())[i] = static_cast<float*>(x.data_ptr())[i] + 1;
@@ -343,8 +343,8 @@ def test_cuda_memory_alloc_noleak() -> None:
             namespace ffi = tvm::ffi;
 
             ffi::Tensor return_tensor(tvm::ffi::TensorView x) {
-                ffi::Tensor y = ffi::Tensor::FromDLPackAlloc(
-                    TVMFFIEnvGetTensorAllocator(), x.shape(), x.dtype(), x.device());
+                ffi::Tensor y = ffi::Tensor::FromEnvAlloc(
+                    TVMFFIEnvTensorAlloc, x.shape(), x.dtype(), x.device());
                 return y;
             }
         """,

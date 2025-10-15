@@ -271,7 +271,7 @@ class TVMFFIPyCallManager {
       }
       if (ctx.c_dlpack_exchange_api != nullptr &&
           ctx.c_dlpack_exchange_api->managed_tensor_allocator != nullptr) {
-        c_api_ret_code[0] = TVMFFIEnvSetTensorAllocator(
+        c_api_ret_code[0] = TVMFFIEnvSetDLPackManagedTensorAllocator(
             ctx.c_dlpack_exchange_api->managed_tensor_allocator, 0, &prev_tensor_allocator);
         if (c_api_ret_code[0] != 0) return 0;
       }
@@ -295,7 +295,8 @@ class TVMFFIPyCallManager {
       }
       if (ctx.c_dlpack_exchange_api != nullptr &&
           prev_tensor_allocator != ctx.c_dlpack_exchange_api->managed_tensor_allocator) {
-        c_api_ret_code[0] = TVMFFIEnvSetTensorAllocator(prev_tensor_allocator, 0, nullptr);
+        c_api_ret_code[0] =
+            TVMFFIEnvSetDLPackManagedTensorAllocator(prev_tensor_allocator, 0, nullptr);
         if (c_api_ret_code[0] != 0) return 0;
       }
       if (optional_out_ctx_dlpack_api != nullptr && ctx.c_dlpack_exchange_api != nullptr) {

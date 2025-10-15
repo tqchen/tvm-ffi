@@ -359,66 +359,39 @@ class Tensor : public ObjectRef {
         std::forward<ExtraArgs>(extra_args)...));
   }
   /*!
-   * \brief Create a Tensor from a DLPackManagedTensorAllocator
+   * \brief Create a Tensor from the TVMFFIEnvTensorAlloc API
    *
-   * This function can be used together with TVMFFIEnvSetTensorAllocator
-   * in the extra/c_env_api.h to create Tensor from the thread-local
-   * environment allocator.
+   * This function can be used together with TVMFFIEnvSetDLPackManagedTensorAllocator
+   * in the extra/c_env_api.h to create a Tensor from the thread-local environment allocator.
+   * We explicitly pass TVMFFIEnvTensorAlloc to maintain explicit dependency on extra/c_env_api.h
    *
    * \code
    *
-   * ffi::Tensor tensor = ffi::Tensor::FromDLPackAlloc(
-   *   TVMFFIEnvGetTensorAllocator(), shape, dtype, device
+   * ffi::Tensor tensor = ffi::Tensor::FromEnvAlloc(
+   *   TVMFFIEnvTensorAlloc, shape, dtype, device
    * );
+   *
    * \endcode
    *
-   * \param allocator The DLPack allocator.
+   * \param env_alloc TVMFFIEnvTensorAlloc function pointer.
    * \param shape The shape of the Tensor.
    * \param dtype The data type of the Tensor.
    * \param device The device of the Tensor.
    * \return The created Tensor.
+   *
+   * \sa TVMFFIEnvTensorAlloc
    */
-  static Tensor FromDLPackAlloc(DLPackManagedTensorAllocator allocator, ffi::ShapeView shape,
-                                DLDataType dtype, DLDevice device) {
-    if (allocator == nullptr) {
-      TVM_FFI_THROW(RuntimeError)
-          << "FromDLPackAlloc: allocator is nullptr, "
-          << "likely because TVMFFIEnvSetTensorAllocator has not been called.";
-    }
-    DLTensor prototype;
+  static Tensor FromEnvAlloc(int (*env_alloc)(DLTensor*, TVMFFIObjectHandle*), ffi::ShapeView shape,
+                             DLDataType dtype, DLDevice device) {
+    TVMFFIObjectHandle out;
+    DLTensor prototype{};
     prototype.device = device;
     prototype.dtype = dtype;
     prototype.shape = const_cast<int64_t*>(shape.data());
     prototype.ndim = static_cast<int>(shape.size());
-    prototype.strides = nullptr;
-    prototype.byte_offset = 0;
-    prototype.data = nullptr;
-    DLManagedTensorVersioned* tensor = nullptr;
-    // error context to be used to propagate error
-    struct ErrorContext {
-      std::string kind;
-      std::string message;
-      static void SetError(void* error_ctx, const char* kind, const char* message) {
-        ErrorContext* error_context = static_cast<ErrorContext*>(error_ctx);
-        error_context->kind = kind;
-        error_context->message = message;
-      }
-    };
-    ErrorContext error_context;
-    int ret = (*allocator)(&prototype, &tensor, &error_context, ErrorContext::SetError);
-    if (ret != 0) {
-      throw ffi::Error(error_context.kind, error_context.message,
-                       TVMFFIBacktrace(__FILE__, __LINE__, __func__, 0));
-    }
-    if (tensor->dl_tensor.strides != nullptr || tensor->dl_tensor.ndim == 0) {
-      return Tensor(make_object<details::TensorObjFromDLPack<DLManagedTensorVersioned>>(
-          tensor, /*extra_strides_at_tail=*/false));
-    } else {
-      return Tensor(
-          make_inplace_array_object<details::TensorObjFromDLPack<DLManagedTensorVersioned>,
-                                    int64_t>(tensor->dl_tensor.ndim, tensor,
-                                             /*extra_strides_at_tail=*/true));
-    }
+    TVM_FFI_CHECK_SAFE_CALL(env_alloc(&prototype, &out));
+    return Tensor(
+        details::ObjectUnsafe::ObjectPtrFromOwned<TensorObj>(static_cast<TVMFFIObject*>(out)));
   }
   /*!
    * \brief Create a Tensor from a DLPack managed tensor, pre v1.0 API.

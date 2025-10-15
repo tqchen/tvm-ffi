@@ -63,26 +63,40 @@ TVM_FFI_DLL int TVMFFIEnvSetStream(int32_t device_type, int32_t device_id,
 TVM_FFI_DLL TVMFFIStreamHandle TVMFFIEnvGetStream(int32_t device_type, int32_t device_id);
 
 /*!
- * \brief FFI function to set the current DLPack allocator in thread-local(TLS) context
+ * \brief Set the current DLPackManagedTensorAllocator in thread-local(TLS) context
  *
  * \param allocator The allocator to set.
  * \param write_to_global_context Whether to also set the allocator to the global context.
  * \param opt_out_original_allocator Output original TLS allocator if the address is not nullptr.
  * \return 0 when success, nonzero when failure happens
  */
-TVM_FFI_DLL int TVMFFIEnvSetTensorAllocator(
+TVM_FFI_DLL int TVMFFIEnvSetDLPackManagedTensorAllocator(
     DLPackManagedTensorAllocator allocator, int write_to_global_context,
     DLPackManagedTensorAllocator* opt_out_original_allocator);
 
 /*!
- * \brief FFI function get the current DLPack allocator stored in context.
+ * \brief FFI function get the current DLPackManagedTensorAllocator stored in context.
  *
  * This function first queries the global context, and if not found,
  * queries the thread-local context.
  *
- * \return The current DLPack allocator.
+ * \return The current setted DLPackManagedTensorAllocator
  */
-TVM_FFI_DLL DLPackManagedTensorAllocator TVMFFIEnvGetTensorAllocator();
+TVM_FFI_DLL DLPackManagedTensorAllocator TVMFFIEnvGetDLPackManagedTensorAllocator();
+
+/*!
+ * \brief Allocate a tensor from the allocator set in thread-local(TLS) context.
+ *
+ * This function redirects to one of environment allocator. As of now, we only
+ * support the DLPackManagedTensorAllocator set in thread-local(TLS) context.
+ *
+ * \param prototype The prototype DLTensor, only the dtype, ndim, shape,
+ *                  and device fields are used, other fields are ignored.
+ * \param out The output tensor in kTVMFFITensor type.
+ * \return 0 when success, nonzero when failure happens
+ * \sa TVMFFIEnvSetDLPackManagedTensorAllocator
+ */
+TVM_FFI_DLL int TVMFFIEnvTensorAlloc(DLTensor* prototype, TVMFFIObjectHandle* out);
 
 /*!
  * \brief Check if there are any signals raised in the surrounding env.

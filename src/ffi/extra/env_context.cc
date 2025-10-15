@@ -22,6 +22,7 @@
  * \brief A minimalistic env context based on ffi values.
  */
 
+#include <tvm/ffi/container/tensor.h>
 #include <tvm/ffi/extra/c_env_api.h>
 #include <tvm/ffi/function.h>
 
@@ -106,16 +107,50 @@ TVMFFIStreamHandle TVMFFIEnvGetStream(int32_t device_type, int32_t device_id) {
   TVM_FFI_LOG_EXCEPTION_CALL_END(TVMFFIEnvGetStream);
 }
 
-int TVMFFIEnvSetTensorAllocator(DLPackManagedTensorAllocator allocator, int write_to_global_context,
-                                DLPackManagedTensorAllocator* opt_out_original_allocator) {
+int TVMFFIEnvSetDLPackManagedTensorAllocator(
+    DLPackManagedTensorAllocator allocator, int write_to_global_context,
+    DLPackManagedTensorAllocator* opt_out_original_allocator) {
   TVM_FFI_SAFE_CALL_BEGIN();
   tvm::ffi::EnvContext::ThreadLocal()->SetDLPackManagedTensorAllocator(
       allocator, write_to_global_context, opt_out_original_allocator);
   TVM_FFI_SAFE_CALL_END();
 }
 
-DLPackManagedTensorAllocator TVMFFIEnvGetTensorAllocator() {
+DLPackManagedTensorAllocator TVMFFIEnvGetDLPackManagedTensorAllocator() {
   TVM_FFI_LOG_EXCEPTION_CALL_BEGIN();
   return tvm::ffi::EnvContext::ThreadLocal()->GetDLPackManagedTensorAllocator();
-  TVM_FFI_LOG_EXCEPTION_CALL_END(TVMFFIEnvGetTensorAllocator);
+  TVM_FFI_LOG_EXCEPTION_CALL_END(TVMFFIEnvGetDLPackManagedTensorAllocator);
+}
+
+void TVMFFIEnvTensorAllocSetError(void* error_ctx, const char* kind, const char* message) {
+  TVMFFIErrorSetRaisedFromCStr(kind, message);
+}
+
+int TVMFFIEnvTensorAlloc(DLTensor* prototype, TVMFFIObjectHandle* out) {
+  TVM_FFI_SAFE_CALL_BEGIN();
+  DLPackManagedTensorAllocator dlpack_alloc =
+      tvm::ffi::EnvContext::ThreadLocal()->GetDLPackManagedTensorAllocator();
+  if (dlpack_alloc == nullptr) {
+    TVMFFIErrorSetRaisedFromCStr(
+        "RuntimeError",
+        "TVMFFIEnvTensorAlloc: allocator is nullptr, "
+        "likely because TVMFFIEnvSetDLPackManagedTensorAllocator has not been called.");
+    return -1;
+  }
+  DLManagedTensorVersioned* dlpack_tensor = nullptr;
+  int ret = (*dlpack_alloc)(prototype, &dlpack_tensor, nullptr, TVMFFIEnvTensorAllocSetError);
+  TVM_FFI_ICHECK(dlpack_tensor != nullptr);
+  if (ret != 0) return ret;
+  if (dlpack_tensor->dl_tensor.strides != nullptr || dlpack_tensor->dl_tensor.ndim == 0) {
+    *out = tvm::ffi::details::ObjectUnsafe::MoveObjectPtrToTVMFFIObjectPtr(
+        tvm::ffi::make_object<tvm::ffi::details::TensorObjFromDLPack<DLManagedTensorVersioned>>(
+            dlpack_tensor, /*extra_strides_at_tail=*/false));
+  } else {
+    *out = tvm::ffi::details::ObjectUnsafe::MoveObjectPtrToTVMFFIObjectPtr(
+        tvm::ffi::make_inplace_array_object<
+            tvm::ffi::details::TensorObjFromDLPack<DLManagedTensorVersioned>, int64_t>(
+            dlpack_tensor->dl_tensor.ndim, dlpack_tensor,
+            /*extra_strides_at_tail=*/true));
+  }
+  TVM_FFI_SAFE_CALL_END();
 }

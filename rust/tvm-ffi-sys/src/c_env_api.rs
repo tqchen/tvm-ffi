@@ -53,13 +53,13 @@ unsafe extern "C" {
 
     pub fn TVMFFIEnvGetStream(device_type: i32, device_id: i32) -> TVMFFIStreamHandle;
 
-    pub fn TVMFFIEnvSetTensorAllocator(
+    pub fn TVMFFIEnvSetDLPackManagedTensorAllocator(
         allocator: DLPackManagedTensorAllocator,
         write_to_global_context: i32,
         opt_out_original_allocator: *mut DLPackManagedTensorAllocator,
     ) -> i32;
 
-    pub fn TVMFFIEnvGetTensorAllocator() -> DLPackManagedTensorAllocator;
+    pub fn TVMFFIEnvGetDLPackManagedTensorAllocator() -> DLPackManagedTensorAllocator;
 
     pub fn TVMFFIEnvCheckSignals() -> i32;
 
