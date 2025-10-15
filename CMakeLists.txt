@@ -50,7 +50,7 @@ target_include_directories(
 
 set(_tvm_ffi_objs_sources
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/backtrace.cc"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/backtrace_win.cc"
+    # "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/backtrace_win.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/object.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/error.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/function.cc"
@@ -120,10 +120,10 @@ endif ()
 
 if (MSVC)
   target_link_libraries(tvm_ffi_objs PRIVATE DbgHelp.lib)
-  target_link_libraries(tvm_ffi_shared PRIVATE DbgHelp.lib)
+  # target_link_libraries(tvm_ffi_shared PRIVATE DbgHelp.lib)
   target_link_libraries(tvm_ffi_static PRIVATE DbgHelp.lib)
   # produce pdb file
-  target_link_options(tvm_ffi_shared PRIVATE /DEBUG)
+  # target_link_options(tvm_ffi_shared PRIVATE /DEBUG)
 endif ()
 
 # expose the headers as public dependencies
