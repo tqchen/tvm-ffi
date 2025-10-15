@@ -187,3 +187,20 @@ const TVMFFIByteArray* TVMFFIBacktrace(const char* filename, int lineno, const c
 }
 #endif  // TVM_FFI_USE_LIBBACKTRACE
 #endif  // _MSC_VER
+
+// fallback implementation simply print out the last trace
+const TVMFFIByteArray* TVMFFIBacktrace(const char* filename, int lineno, const char* func,
+  int cross_ffi_boundary) {
+static thread_local std::string backtrace_str;
+static thread_local TVMFFIByteArray backtrace_array;
+std::ostringstream backtrace_stream;
+if (filename != nullptr && func != nullptr) {
+// python style backtrace
+backtrace_stream << "  File \"" << filename << "\", line " << lineno << ", in " << func
+<< std::endl;
+}
+backtrace_str = backtrace_stream.str();
+backtrace_array.data = backtrace_str.data();
+backtrace_array.size = backtrace_str.size();
+return &backtrace_array;
+}
