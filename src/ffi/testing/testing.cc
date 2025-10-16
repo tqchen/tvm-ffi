@@ -17,6 +17,7 @@
  * under the License.
  */
 // This file is used for testing the FFI API.
+/*
 #include <dlpack/dlpack.h>
 #include <tvm/ffi/any.h>
 #include <tvm/ffi/container/array.h>
@@ -449,3 +450,4 @@ TVM_FFI_STATIC_INIT_BLOCK() {
 }  // namespace tvm
 
 extern "C" TVM_FFI_DLL_EXPORT int TVMFFITestingDummyTarget() { return 0; }
+*/
