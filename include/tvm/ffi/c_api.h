@@ -45,15 +45,26 @@
 #endif
 #if !defined(TVM_FFI_DLL) && defined(_MSC_VER)
 #ifdef TVM_FFI_EXPORTS
-#define TVM_FFI_DLL __declspec(dllexport)
+#define TVM_FFI_DLL
 #else
-#define TVM_FFI_DLL __declspec(dllimport)
+#define TVM_FFI_DLL
 #endif
 #define TVM_FFI_DLL_EXPORT __declspec(dllexport)
 #endif
 #ifndef TVM_FFI_DLL
 #define TVM_FFI_DLL __attribute__((visibility("default")))
 #define TVM_FFI_DLL_EXPORT __attribute__((visibility("default")))
+#endif
+
+#if !defined(TVM_FFI_DLLX) && defined(_MSC_VER)
+#ifdef TVM_FFI_EXPORTS
+#define TVM_FFI_DLLX __declspec(dllexport)
+#else
+#define TVM_FFI_DLLX __declspec(dllimport)
+#endif
+#endif
+#ifndef TVM_FFI_DLL
+#define TVM_FFI_DLL __attribute__((visibility("default")))
 #endif
 
 #ifdef __cplusplus
@@ -248,6 +259,7 @@ typedef struct {
 #endif
 } TVMFFIObject;
 
+TVM_FFI_DLLX int TVMDLLDummyFunction(void);
 /*!
  * \brief C-based type of all on stack Any value.
  *

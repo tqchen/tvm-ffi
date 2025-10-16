@@ -37,33 +37,14 @@ from cpython cimport PyErr_SetNone
 # include "./tensor.pxi"
 # include "./function.pxi"
 
-cdef extern from "tvm/ffi/extra/c_env_api.h":
-    ctypedef void* TVMFFIStreamHandle
+cdef extern from "tvm/ffi/extra/c_api.h":
+    int TVMDLLDummyFunction()
 
-    int TVMFFIEnvRegisterCAPI(const char* name, void* ptr) nogil
-    void* TVMFFIEnvGetStream(int32_t device_type, int32_t device_id) nogil
-    int TVMFFIEnvSetStream(int32_t device_type, int32_t device_id, TVMFFIStreamHandle stream,
-                           TVMFFIStreamHandle* opt_out_original_stream) nogil
-
-
-cdef inline c_str(pystr):
-    """Create ctypes char * from a python string
-
-    Parameters
-    ----------
-    string : string type
-        python string
-
-    Returns
-    -------
-    str : c_char_p
-        A char pointer that can be passed to C API
-    """
-    return pystr.encode("utf-8")
 
 cdef _init_env_api():
     # Initialize env api for signal handling
     # Also registers the gil state release and ensure as PyErr_CheckSignals
-    # function is called with gil released and we need to regrab the gil
-    TVMFFIEnvRegisterCAPI(c_str("PyErr_CheckSignals"), <void*>PyErr_CheckSignals)
+      # function is called with gil released and we need to regrab the gil
+    TVMDLLDummyFunction()
+
 

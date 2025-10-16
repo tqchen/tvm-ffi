@@ -530,3 +530,7 @@ int TVMFFIBytesFromByteArray(const TVMFFIByteArray* input, TVMFFIAny* out) {
   tvm::ffi::TypeTraits<tvm::ffi::Bytes>::MoveToAny(tvm::ffi::Bytes(input->data, input->size), out);
   TVM_FFI_SAFE_CALL_END();
 }
+
+int TVMDLLDummyFunction(void) {
+  return 0;
+}
