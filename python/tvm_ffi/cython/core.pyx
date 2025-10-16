@@ -37,7 +37,7 @@ from cpython cimport PyErr_SetNone
 # include "./tensor.pxi"
 # include "./function.pxi"
 
-cdef extern from "tvm/ffi/extra/c_api.h":
+cdef extern from "tvm/ffi/c_api.h":
     int TVMDLLDummyFunction()
 
 
