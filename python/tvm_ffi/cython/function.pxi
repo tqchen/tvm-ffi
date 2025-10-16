@@ -423,6 +423,18 @@ cdef int TVMFFIPyArgSetterCtypesVoidPtr_(
     return 0
 
 
+cdef int TVMFFIPyArgSetterFFIOpaquePtrCompatible_(
+    TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
+    PyObject* py_arg, TVMFFIAny* out
+) except -1:
+    """Setter for objects that implement the `__tvm_ffi_opaque_ptr__` protocol."""
+    cdef object arg = <object>py_arg
+    cdef long long long_ptr = <long long>arg.__tvm_ffi_opaque_ptr__()
+    out.type_index = kTVMFFIOpaquePtr
+    out.v_ptr = <void*>long_ptr
+    return 0
+
+
 cdef int TVMFFIPyArgSetterObjectRValueRef_(
     TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
     PyObject* py_arg, TVMFFIAny* out
@@ -674,6 +686,9 @@ cdef int TVMFFIPyArgSetterFactory_(PyObject* value, TVMFFIPyArgSetter* out) exce
         return 0
     if isinstance(arg, ctypes.c_void_p):
         out.func = TVMFFIPyArgSetterCtypesVoidPtr_
+        return 0
+    if hasattr(arg_class, "__tvm_ffi_opaque_ptr__"):
+        out.func = TVMFFIPyArgSetterFFIOpaquePtrCompatible_
         return 0
     if callable(arg):
         out.func = TVMFFIPyArgSetterCallable_

@@ -297,3 +297,18 @@ def test_function_subclass() -> None:
     assert isinstance(fechoed, tvm_ffi.Function)
     assert fechoed.__chandle__() == f_sub.__chandle__()
     assert fechoed(10) == 10
+
+
+def test_function_with_opaque_ptr_protocol() -> None:
+    class MyObject:
+        def __init__(self, value: Any) -> None:
+            self.value = value
+
+        def __tvm_ffi_opaque_ptr__(self) -> Any:
+            return self.value
+
+    fecho = tvm_ffi.get_global_func("testing.echo")
+    x = MyObject(10)
+    y = fecho(x)
+    assert isinstance(y, ctypes.c_void_p)
+    assert y.value == 10
