@@ -40,14 +40,3 @@ from cpython cimport PyErr_SetNone
 def dummy_function():
     return 0
 
-#cdef extern from "tvm/ffi/c_api.h":
-#    int TVMDLLDummyFunction()
-
-
-cdef _init_env_api():
-    # Initialize env api for signal handling
-    # Also registers the gil state release and ensure as PyErr_CheckSignals
-      # function is called with gil released and we need to regrab the gil
-    #TVMDLLDummyFunction()
-
-
