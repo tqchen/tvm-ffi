@@ -49,17 +49,19 @@ target_include_directories(
 # ######### Target: `tvm_ffi_objs` ##########
 
 set(_tvm_ffi_objs_sources
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/backtrace.cc"
-   "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/backtrace_win.cc"
+
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/object.cc"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/error.cc"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/function.cc"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/tensor.cc"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/dtype.cc"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/container.cc"
+
 )
 
 set(_tvm_ffi_extra_objs_sources
+"${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/error.cc"
+"${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/function.cc"
+"${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/tensor.cc"
+"${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/dtype.cc"
+"${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/container.cc"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/backtrace.cc"
+   "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/backtrace_win.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/extra/structural_equal.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/extra/structural_hash.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/extra/json_parser.cc"
