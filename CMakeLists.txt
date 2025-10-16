@@ -257,8 +257,8 @@ if (TVM_FFI_BUILD_PYTHON_MODULE)
     tvm_ffi_cython PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/python/tvm_ffi/cython
   )
   target_compile_features(tvm_ffi_cython PRIVATE cxx_std_17)
-  target_link_libraries(tvm_ffi_cython PRIVATE tvm_ffi_header)
-  target_link_libraries(tvm_ffi_cython PRIVATE tvm_ffi_shared)
+  #target_link_libraries(tvm_ffi_cython PRIVATE tvm_ffi_header)
+  # target_link_libraries(tvm_ffi_cython PRIVATE tvm_ffi_shared)
   # link against testing to ensure right unloading order (cython first then testing)
   # Set RPATH for tvm_ffi_cython to find tvm_ffi_shared.so relatively
   if (APPLE)
