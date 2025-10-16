@@ -258,7 +258,6 @@ if (TVM_FFI_BUILD_PYTHON_MODULE)
   target_link_libraries(tvm_ffi_cython PRIVATE tvm_ffi_header)
   target_link_libraries(tvm_ffi_cython PRIVATE tvm_ffi_shared)
   # link against testing to ensure right unloading order (cython first then testing)
-  target_link_libraries(tvm_ffi_cython PRIVATE tvm_ffi_testing)
   # Set RPATH for tvm_ffi_cython to find tvm_ffi_shared.so relatively
   if (APPLE)
     # macOS uses @loader_path
