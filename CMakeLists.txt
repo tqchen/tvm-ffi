@@ -37,6 +37,15 @@ include(${CMAKE_CURRENT_LIST_DIR}/cmake/Utils/Library.cmake)
 # linking
 add_library(tvm_ffi_header INTERFACE)
 target_compile_features(tvm_ffi_header INTERFACE cxx_std_17)
+
+if (CMAKE_CXX_BYTE_ORDER STREQUAL "BIG_ENDIAN")
+  target_compile_definitions(tvm_ffi_header INTERFACE TVM_FFI_CMAKE_LITTLE_ENDIAN=0)
+elseif (CMAKE_CXX_BYTE_ORDER STREQUAL "LITTLE_ENDIAN")
+  target_compile_definitions(tvm_ffi_header INTERFACE TVM_FFI_CMAKE_LITTLE_ENDIAN=1)
+else ()
+  message(STATUS "Endianness could not be determined, skip setting")
+endif ()
+
 target_include_directories(
   tvm_ffi_header INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                            $<INSTALL_INTERFACE:include>
