@@ -430,7 +430,7 @@ class OpaqueObjectImpl : public Object, public TVMFFIOpaqueObjectCell {
 
 }  // namespace ffi
 }  // namespace tvm
-
+/*
 int TVMFFIObjectDecRef(TVMFFIObjectHandle handle) {
   TVM_FFI_SAFE_CALL_BEGIN();
   tvm::ffi::details::ObjectUnsafe::DecRefObjectHandle(handle);
@@ -529,7 +529,7 @@ int TVMFFIBytesFromByteArray(const TVMFFIByteArray* input, TVMFFIAny* out) {
   out->type_index = kTVMFFINone;
   tvm::ffi::TypeTraits<tvm::ffi::Bytes>::MoveToAny(tvm::ffi::Bytes(input->data, input->size), out);
   TVM_FFI_SAFE_CALL_END();
-}
+}*/
 
 int TVMDLLDummyFunction(void) {
   return 0;
