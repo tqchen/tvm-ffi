@@ -23,6 +23,12 @@ github:
     - gpu
     - machine-learning
 
+  features:
+    # Enable issue management
+    issues: true
+    # Enable projects for project management boards
+    projects: true
+
   protected_branches:
     # NOTE: when updating the config
     # make sure to first update the branch protection name
