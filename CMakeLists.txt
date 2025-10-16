@@ -50,7 +50,7 @@ target_include_directories(
 
 set(_tvm_ffi_objs_sources
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/backtrace.cc"
-    # "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/backtrace_win.cc"
+   "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/backtrace_win.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/object.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/error.cc"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/function.cc"
@@ -74,7 +74,7 @@ set(_tvm_ffi_extra_objs_sources
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/extra/env_c_api.cc"
 )
 if (TVM_FFI_USE_EXTRA_CXX_API)
-  list(APPEND _tvm_ffi_objs_sources ${_tvm_ffi_extra_objs_sources})
+  list(APPEND _tvm_ffi_objs_sources)
 endif ()
 
 add_library(tvm_ffi_objs OBJECT ${_tvm_ffi_objs_sources})
