@@ -239,7 +239,7 @@ if (TVM_FFI_BUILD_PYTHON_MODULE)
     VERBATIM
   )
 
-  if (Python_VERSION VERSION_GREATER_EQUAL "3.12" AND NOT PYTHON_IS_FREE_THREADED)
+  if (Python_VERSION VERSION_GREATER_EQUAL "3.18" AND NOT PYTHON_IS_FREE_THREADED)
     # >= Python3.12, use Use_SABI version
     python_add_library(tvm_ffi_cython MODULE "${_core_cpp}" USE_SABI 3.12)
     target_link_libraries(tvm_ffi_cython PRIVATE Python::SABIModule)
