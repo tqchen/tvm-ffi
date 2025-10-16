@@ -36,8 +36,6 @@ jobs:
         include:
           - {os: ubuntu-latest, arch: x86_64}
           - {os: ubuntu-24.04-arm, arch: aarch64}
-          - {os: windows-latest, arch: AMD64}
-          - {os: macos-14, arch: arm64}
 
     steps:
       - uses: astral-sh/setup-uv@v4
@@ -81,30 +79,9 @@ jobs:
           name: cibw-wheels-${{ matrix.os }}-${{ matrix.arch }}-${{ strategy.job-index }}
           path: ./wheelhouse/*.whl
 
-  build_sdist:
-    name: Build source distribution
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || github.ref }}
-          submodules: recursive
-
-      - uses: astral-sh/setup-uv@v4
-
-      - name: Build sdist
-        run: pipx run build --sdist --outdir dist .
-
-      - name: Check metadata
-        run: pipx run twine check dist/*
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: cibw-sdist
-          path: dist/*.tar.gz
 
   upload_pypi:
-    needs: [build_wheels, build_sdist]
+    needs: [build_wheels]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
