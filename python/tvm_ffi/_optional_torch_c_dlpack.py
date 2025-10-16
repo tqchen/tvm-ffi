@@ -39,6 +39,17 @@ from . import libinfo
 
 
 def load_torch_c_dlpack_extension() -> Any:
+    try:
+        import torch  # noqa: PLC0415
+
+        if hasattr(torch.Tensor, "__c_dlpack_exchange_api__"):
+            # skip loading the extension if the __c_dlpack_exchange_api__
+            # attribute is already set so we don't have to do it in
+            # newer version of PyTorch
+            return None
+    except ImportError:
+        return None
+
     """Load the torch c dlpack extension."""
     cpp_source = """
 #include <dlpack/dlpack.h>
