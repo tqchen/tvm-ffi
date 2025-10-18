@@ -56,9 +56,28 @@
 #define TVM_FFI_DLL_EXPORT __attribute__((visibility("default")))
 #endif
 
+/*! \brief TVM FFI major version. */
+#define TVM_FFI_VERSION_MAJOR 0
+/*! \brief TVM FFI minor version. */
+#define TVM_FFI_VERSION_MINOR 1
+/*! \brief TVM FFI patch version. */
+#define TVM_FFI_VERSION_PATCH 0
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/*!
+ * \brief TVM FFI version.
+ */
+typedef struct {
+  /*! \brief TVM FFI major version. */
+  uint32_t major;
+  /*! \brief TVM FFI minor version. */
+  uint32_t minor;
+  /*! \brief TVM FFI patch version. */
+  uint32_t patch;
+} TVMFFIVersion;
 
 #ifdef __cplusplus
 enum TVMFFITypeIndex : int32_t {
@@ -439,6 +458,18 @@ typedef struct {
   /*! \brief The handle of the opaque object, for python it is PyObject* */
   void* handle;
 } TVMFFIOpaqueObjectCell;
+
+//-----------------------------------------------------------------------
+// Section: Version API
+//-----------------------------------------------------------------------
+/*!
+ * \brief Get the TVM FFI version from the current C ABI.
+ *
+ * This function is always stable across all versions of the C ABI.
+ *
+ * \param out_version The output version.
+ */
+TVM_FFI_DLL void TVMFFIGetVersion(TVMFFIVersion* out_version);
 
 //------------------------------------------------------------
 // Section: Basic object API

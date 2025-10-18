@@ -38,3 +38,18 @@ It has the following technical features:
 With these technical solutions, we can enable better **interoperability** across machine learning frameworks,
 libraries, kernel DSLs, and coding agents, **ship one wheel** to support multiple frameworks and Python versions (including free-threaded python),
 and build infrastructure solutions across environments.
+
+## Status and Release Versioning
+
+C ABI stability is the top priority of this effort. We also prioritize minimalism and
+efficiency in the core so it is portable and can be used broadly.
+We are current in the RFC stage, which means the main features are complete and ABI stable.
+We also recognize potential needs for evolution to ensure it works best for the machine
+learning systems community, and would like to work together collectively with the community for such evolution.
+The RFC stage is a period where we are working with the open source communities
+to ensure we evolve the ABI to meet the potential needs of frameworks.
+
+Releases during the RFC stage will be `0.X.Y`, where bumps in `X` indicate C ABI-breaking changes
+and `Y` indicates other changes. We anticipate the RFC stage will last for a few months, then we will start to follow
+[Semantic Versioning](https://packaging.python.org/en/latest/discussions/versioning/)
+(`major.minor.patch`) going forward.

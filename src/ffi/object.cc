@@ -431,6 +431,12 @@ class OpaqueObjectImpl : public Object, public TVMFFIOpaqueObjectCell {
 }  // namespace ffi
 }  // namespace tvm
 
+void TVMFFIGetVersion(TVMFFIVersion* out_version) {
+  out_version->major = TVM_FFI_VERSION_MAJOR;
+  out_version->minor = TVM_FFI_VERSION_MINOR;
+  out_version->patch = TVM_FFI_VERSION_PATCH;
+}
+
 int TVMFFIObjectDecRef(TVMFFIObjectHandle handle) {
   TVM_FFI_SAFE_CALL_BEGIN();
   tvm::ffi::details::ObjectUnsafe::DecRefObjectHandle(handle);
