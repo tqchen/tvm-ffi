@@ -25,7 +25,13 @@ find_package(
   REQUIRED
 )
 
-# Find tvm-ffi automatically
+# Run `tvm_ffi.config --cmakedir` to find tvm-ffi targets
+execute_process(
+  COMMAND "${Python_EXECUTABLE}" -m tvm_ffi.config --cmakedir
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  OUTPUT_VARIABLE tvm_ffi_ROOT
+)
+
 find_package(tvm_ffi CONFIG REQUIRED)
 
 # Build the CPU and C versions of the simple "add one" function that the examples call.
