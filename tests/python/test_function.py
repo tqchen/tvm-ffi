@@ -328,3 +328,19 @@ def test_function_with_dlpack_data_type_protocol() -> None:
     x = DLPackDataTypeProtocol((dtype.type_code, dtype.bits, dtype.lanes))
     y = fecho(x)
     assert y == dtype
+
+
+def test_function_with_dlpack_device_protocol() -> None:
+    device = tvm_ffi.device("cuda:1")
+
+    class DLPackDeviceProtocol:
+        def __init__(self, device: tvm_ffi.Device) -> None:
+            self.device = device
+
+        def __dlpack_device__(self) -> tuple[int, int]:
+            return (self.device.dlpack_device_type(), self.device.index)
+
+    fecho = tvm_ffi.get_global_func("testing.echo")
+    x = DLPackDeviceProtocol(device)
+    y = fecho(x)
+    assert y == device

@@ -324,6 +324,19 @@ cdef int TVMFFIPyArgSetterDevice_(
     out.v_device = (<Device>arg).cdevice
     return 0
 
+cdef int TVMFFIPyArgSetterDLPackDeviceProtocol_(
+    TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
+    PyObject* py_arg, TVMFFIAny* out
+) except -1:
+    """Setter for dlpack device protocol"""
+    cdef object arg = <object>py_arg
+    cdef tuple dlpack_device = arg.__dlpack_device__()
+    out.type_index = kTVMFFIDevice
+    out.v_device = TVMFFIDLDeviceFromIntPair(
+        <int32_t>dlpack_device[0],
+        <int32_t>dlpack_device[1]
+    )
+    return 0
 
 cdef int TVMFFIPyArgSetterStr_(
     TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
@@ -715,6 +728,11 @@ cdef int TVMFFIPyArgSetterFactory_(PyObject* value, TVMFFIPyArgSetter* out) exce
     if hasattr(arg_class, "__dlpack_data_type__"):
         # prefer dlpack as it covers all DLDataType struct
         out.func = TVMFFIPyArgSetterDLPackDataTypeProtocol_
+        return 0
+    if hasattr(arg_class, "__dlpack_device__") and not hasattr(arg_class, "__dlpack__"):
+        # if a class have __dlpack_device__ but not __dlpack__
+        # then it is a DLPack device protocol
+        out.func = TVMFFIPyArgSetterDLPackDeviceProtocol_
         return 0
     if isinstance(arg, Exception):
         out.func = TVMFFIPyArgSetterException_
