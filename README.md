@@ -32,7 +32,7 @@ yet flexible open convention with the following systems in mind:
 
 * **Stable, minimal C ABI** designed for kernels, DSLs, and runtime extensibility.
 * **Zero-copy interop** across PyTorch, JAX, and CuPy using [DLPack protocol](https://data-apis.org/array-api/2024.12/design_topics/data_interchange.html).
-* **Compact value & call convention** covering common data types for ultra low-overhead ML applications.
+* **Compact value and call convention** covering common data types for ultra low-overhead ML applications.
 * **Multi-language support** out of the box: Python, C++, and Rust (with a path towards more languages).
 
 These enable broad **interoperability** across frameworks, libraries, DSLs, and agents; the ability to **ship one wheel** for multiple frameworks and Python versions (including free-threaded Python); and consistent infrastructure across environments.
