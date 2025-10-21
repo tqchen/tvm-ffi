@@ -23,10 +23,10 @@ Apache TVM FFI is an open ABI and FFI for machine learning systems. It is a mini
 yet flexible open convention with the following systems in mind:
 
 - **Kernel libraries** - ship one wheel to support multiple frameworks, Python versions, and different languages.
-- **Kernel DSLs** — reusable open ABI for JIT and AOT kernel exposure frameworks and runtimes.
-- **Frameworks and runtimes** — a uniform extension point for ABI-compliant libraries and DSLs.
-- **ML infrastructure** — out-of-the-box bindings and interop for Python, C++, and Rust.
-- **Coding agents** — a unified mechanism for shipping generated code in production.
+- **Kernel DSLs** - reusable open ABI for JIT and AOT kernel exposure frameworks and runtimes.
+- **Frameworks and runtimes** - a uniform extension point for ABI-compliant libraries and DSLs.
+- **ML infrastructure** - out-of-the-box bindings and interop for Python, C++, and Rust.
+- **Coding agents** - a unified mechanism for shipping generated code in production.
 
 ## Features
 
