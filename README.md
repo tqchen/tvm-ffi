@@ -22,34 +22,30 @@
 Apache TVM FFI is an open ABI and FFI for machine learning systems. It is a minimal, framework-agnostic,
 yet flexible open convention with the following systems in mind:
 
-- Kernel libraries: ship one wheel to support multiple frameworks, Python versions, and different languages.
-- Kernel DSLs: reusable open ABI for JIT and AOT kernel exposure to PyTorch, JAX, and other ML runtimes.
-- ML frameworks and runtimes: unified mechanism to connect libraries and DSLs that adopt the ABI convention.
-- Coding agents: unified mechanism to package and ship generated code to production environments.
-- ML infrastructure: cross-language support for Python, C++, and Rust, and DSLs.
+- **Kernel libraries** - ship one wheel to support multiple frameworks, Python versions, and different languages.
+- **Kernel DSLs** — reusable open ABI for JIT and AOT kernel exposure frameworks and runtimes.
+- **Frameworks and runtimes** — a uniform extension point for ABI-compliant libraries and DSLs.
+- **ML infrastructure** — out-of-the-box bindings and interop for Python, C++, and Rust.
+- **Coding agents** — a unified mechanism for shipping generated code in production.
 
-It has the following technical features:
+## Features
 
-- DLPack-compatible Tensor data ABI to seamlessly support many frameworks such as PyTorch, JAX, CuPy and others that support DLPack convention.
-- Compact value and function calling convention for common data types in machine learning.
-- Stable, minimal, and flexible C ABI to support machine learning system use-cases.
-- Out-of-the-box multi-language support for Python, C++, Rust, and future path for other languages.
+* **Stable, minimal C ABI** designed for kernels, DSLs, and runtime extensibility.
+* **Zero-copy interop** across PyTorch, JAX, and CuPy using [DLPack protocol](https://data-apis.org/array-api/2024.12/design_topics/data_interchange.html).
+* **Compact value & call convention** covering common data types for ultra low-overhead ML applications.
+* **Multi-language support** out of the box: Python, C++, and Rust (with a path towards more languages).
 
-With these technical solutions, we can enable better **interoperability** across machine learning frameworks,
-libraries, kernel DSLs, and coding agents, **ship one wheel** to support multiple frameworks and Python versions (including free-threaded python),
-and build infrastructure solutions across environments.
+These enable broad **interoperability** across frameworks, libraries, DSLs, and agents; the ability to **ship one wheel** for multiple frameworks and Python versions (including free-threaded Python); and consistent infrastructure across environments.
 
 ## Status and Release Versioning
 
-C ABI stability is the top priority of this effort. We also prioritize minimalism and
-efficiency in the core so it is portable and can be used broadly.
-We are current in the RFC stage, which means the main features are complete and ABI stable.
-We also recognize potential needs for evolution to ensure it works best for the machine
-learning systems community, and would like to work together collectively with the community for such evolution.
-The RFC stage is a period where we are working with the open source communities
-to ensure we evolve the ABI to meet the potential needs of frameworks.
+**C ABI stability** is our top priority.
+
+**Status: RFC** Main features are complete and ABI stable. We recognize potential needs for evolution to ensure
+it works best for the machine learning systems community, and would like to work together with the
+community for such evolution. We plan to stay in the RFC stage for three months from the v0.1.0 release.
 
 Releases during the RFC stage will be `0.X.Y`, where bumps in `X` indicate C ABI-breaking changes
-and `Y` indicates other changes. We anticipate the RFC stage will last for a few months, then we will start to follow
+and `Y` indicates other changes. We anticipate the RFC stage will last for three months, then we will start following
 [Semantic Versioning](https://packaging.python.org/en/latest/discussions/versioning/)
 (`major.minor.patch`) going forward.

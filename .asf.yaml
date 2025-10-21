@@ -16,7 +16,7 @@
 # under the License.
 
 github:
-  description: "TVM FFI"
+  description: "Open ABI and FFI for Machine Learning Systems"
   homepage: https://tvm.apache.org/ffi
   labels:
     - ffi
