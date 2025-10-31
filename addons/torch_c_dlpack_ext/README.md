@@ -14,7 +14,7 @@
 <!--- KIND, either express or implied.  See the License for the -->
 <!--- specific language governing permissions and limitations -->
 <!--- under the License. -->
-# torch c dlpack extension
+# Torch C DLPack Extension
 
 This folder contains an AOT wheel to build an optional module to support faster DLPack conversion.
 We likely do not need this module after the latest PyTorch lands DLPack 1.2 support.
