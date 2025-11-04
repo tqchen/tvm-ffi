@@ -74,13 +74,19 @@ TEST(CEnvAPI, TVMFFIEnvTensorAlloc) {
 TEST(CEnvAPI, TVMFFIEnvTensorAllocError) {
   auto old_allocator = TVMFFIEnvGetDLPackManagedTensorAllocator();
   TVMFFIEnvSetDLPackManagedTensorAllocator(TestDLPackManagedTensorAllocatorError, 0, nullptr);
+
   EXPECT_THROW(
       {
-        Tensor::FromEnvAlloc(TVMFFIEnvTensorAlloc, {1, 2, 3}, DLDataType({kDLFloat, 32, 1}),
-                             DLDevice({kDLCPU, 0}));
+        try {
+          Tensor::FromEnvAlloc(TVMFFIEnvTensorAlloc, {1, 2, 3}, DLDataType({kDLFloat, 32, 1}),
+                               DLDevice({kDLCPU, 0}));
+        } catch (const tvm::ffi::Error& e) {
+          EXPECT_EQ(e.kind(), "RuntimeError");
+          EXPECT_EQ(e.message(), "TestDLPackManagedTensorAllocatorError");
+          throw;
+        }
       },
       tvm::ffi::Error);
   TVMFFIEnvSetDLPackManagedTensorAllocator(old_allocator, 0, nullptr);
 }
-
 }  // namespace
