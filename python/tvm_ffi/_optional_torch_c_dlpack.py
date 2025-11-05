@@ -594,6 +594,16 @@ struct TorchDLPackExchangeAPI : public DLPackExchangeAPI {
 int64_t TorchDLPackExchangeAPIPtr() {
   return reinterpret_cast<int64_t>(TorchDLPackExchangeAPI::Global());
 }
+
+int64_t TorchCToDLManagedTensorVersioned(const at::Tensor& tensor) {
+  void* out = at::toDLPackImpl<DLManagedTensorVersioned>(tensor);
+  return reinterpret_cast<int64_t>(out);
+}
+
+at::Tensor TorchCFromDLManagedTensorVersioned(int64_t ptr) {
+  void* out = reinterpret_cast<void*>(ptr);
+  return at::fromDLPackImpl<DLManagedTensorVersioned>(static_cast<DLManagedTensorVersioned*>(out), nullptr);
+}
     """
     try:
         # optionally import torch
@@ -612,12 +622,23 @@ int64_t TorchDLPackExchangeAPIPtr() {
             cpp_sources=cpp_source,
             functions=[
                 "TorchDLPackExchangeAPIPtr",
+                "TorchCToDLManagedTensorVersioned",
+                "TorchCFromDLManagedTensorVersioned",
             ],
             extra_cflags=extra_cflags,
             extra_include_paths=include_paths,
         )
         # Set the DLPackExchangeAPI pointer on the class
         setattr(torch.Tensor, "__c_dlpack_exchange_api__", mod.TorchDLPackExchangeAPIPtr())
+
+        def dlpack_raw(self):
+            return mod.TorchCToDLManagedTensorVersioned(self)
+
+        def from_dlpack_raw(value):
+            return mod.TorchCFromDLManagedTensorVersioned(value)
+
+        setattr(torch.Tensor, "__dlpack_raw__", dlpack_raw)
+        setattr(torch.Tensor, "___from_dlpack_raw__", from_dlpack_raw)
         return mod
     except ImportError:
         pass

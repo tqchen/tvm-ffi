@@ -221,21 +221,24 @@ cdef int TVMFFIPyArgSetterTorchFallback_(
     """Current setter for torch.Tensor, go through python and not as fast as c exporter"""
     # TODO(tqchen): remove this once torch always support fast DLPack importer
     cdef object arg = <object>py_arg
-    is_cuda = arg.is_cuda
-    arg = from_dlpack(torch.utils.dlpack.to_dlpack(arg))
+    cdef TVMFFIObjectHandle temp_chandle
+    cdef long long ptr = arg.__dlpack_raw__()
+    cdef DLManagedTensorVersioned* temp_managed_tensor = <DLManagedTensorVersioned*>ptr
+    if TVMFFITensorFromDLPackVersioned(temp_managed_tensor, 0, 0, &temp_chandle) != 0:
+        raise BufferError("Failed to convert DLManagedTensorVersioned to ffi.Tensor")
     out.type_index = kTVMFFITensor
-    out.v_ptr = (<Tensor>arg).chandle
-    temp_dltensor = TVMFFITensorGetDLTensorPtr((<Tensor>arg).chandle)
+    out.v_ptr = temp_chandle
+    temp_dltensor = TVMFFITensorGetDLTensorPtr(temp_chandle)
     ctx.c_dlpack_exchange_api = GetTorchFallbackExchangeAPI()
     # record the stream and device for torch context
-    if is_cuda and ctx.device_type != -1:
+    if (temp_dltensor.device.device_type != kDLCPU and ctx.device_type == -1):
         ctx.device_type = temp_dltensor.device.device_type
         ctx.device_id = temp_dltensor.device.device_id
         # This is an API that dynamo and other uses to get the raw stream from torch
         temp_ptr = torch._C._cuda_getCurrentRawStream(temp_dltensor.device.device_id)
         ctx.stream = <TVMFFIStreamHandle>temp_ptr
     # push to temp and clear the handle
-    TVMFFIPyPushTempPyObject(ctx, <PyObject*>arg)
+    TVMFFIPyPushTempFFIObject(ctx, temp_chandle)
     return 0
 
 
