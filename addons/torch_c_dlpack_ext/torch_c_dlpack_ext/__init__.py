@@ -16,4 +16,4 @@
 # under the License.
 """torch c dlpack ext pakcage."""
 
-import core
+from . import core

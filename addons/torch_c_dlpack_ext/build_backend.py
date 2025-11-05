@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -83,5 +84,6 @@ def build_wheel(
                     "--build-with-cuda" if torch.cuda.is_available() else "",
                 ],
                 check=True,
+                env={**os.environ, "TVM_FFI_DISABLE_TORCH_C_DLPACK": "1"},
             )
     return orig.build_wheel(wheel_directory, config_settings, metadata_directory)

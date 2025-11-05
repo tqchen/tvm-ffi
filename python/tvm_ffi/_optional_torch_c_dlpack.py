@@ -57,14 +57,12 @@ def load_torch_c_dlpack_extension() -> Any:
     try:
         import torch_c_dlpack_ext  # type: ignore  # noqa: PLC0415, F401
 
-        return None
+        if hasattr(torch.Tensor, "__c_dlpack_exchange_api__"):
+            return None
     except ImportError:
         pass
 
     try:
-        # todo: check whether a prebuilt package is installed, if so, use it.
-        ...
-
         # check whether a JIT shared library is built in cache
         cache_dir = Path(os.environ.get("TVM_FFI_CACHE_DIR", "~/.cache/tvm-ffi")).expanduser()
         addon_output_dir = cache_dir
