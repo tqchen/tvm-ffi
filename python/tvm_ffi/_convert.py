@@ -129,6 +129,10 @@ def convert(value: Any) -> Any:  # noqa: PLR0911,PLR0912
         return value
     elif hasattr(value, "__dlpack_device__"):
         return value
+    elif hasattr(value, "__tvm_ffi_int__"):
+        return value
+    elif hasattr(value, "__tvm_ffi_float__"):
+        return value
     else:
         # in this case, it is an opaque python object
         return core._convert_to_opaque_object(value)

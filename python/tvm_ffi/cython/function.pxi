@@ -17,7 +17,7 @@
 import ctypes
 import threading
 import os
-from numbers import Real, Integral
+from numbers import Integral, Real
 from typing import Any, Callable
 
 
@@ -276,7 +276,33 @@ cdef int TVMFFIPyArgSetterDLPack_(
     return 0
 
 
-cdef int TVMFFIPyArgSetterFFIObjectCompatible_(
+cdef int TVMFFIPyArgSetterIntegral_(
+    TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
+    PyObject* py_arg, TVMFFIAny* out
+) except -1:
+    """Setter for Integral"""
+    cdef object arg = <object>py_arg
+    out.type_index = kTVMFFIInt
+    # keep it in cython so it will also check for fallback cases
+    # where the arg is not exactly the int class
+    out.v_int64 = <long long>arg
+    return 0
+
+
+cdef int TVMFFIPyArgSetterReal_(
+    TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
+    PyObject* py_arg, TVMFFIAny* out
+) except -1:
+    """Setter for Real"""
+    cdef object arg = <object>py_arg
+    out.type_index = kTVMFFIFloat
+    # keep it in cython so it will also check for fallback cases
+    # where the arg is not exactly the float class
+    out.v_float64 = <double>arg
+    return 0
+
+
+cdef int TVMFFIPyArgSetterFFIObjectProtocol_(
     TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
     PyObject* py_arg, TVMFFIAny* out
 ) except -1:
@@ -608,6 +634,7 @@ cdef int TVMFFIPyArgSetterDTypeFromNumpy_(
     out.v_dtype = NUMPY_DTYPE_TO_DL_DATA_TYPE[py_obj]
     return 0
 
+
 cdef int TVMFFIPyArgSetterDLPackDataTypeProtocol_(
     TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
     PyObject* py_arg, TVMFFIAny* out
@@ -620,6 +647,29 @@ cdef int TVMFFIPyArgSetterDLPackDataTypeProtocol_(
     out.v_dtype.bits = <long long>dltype_data_type[1]
     out.v_dtype.lanes = <long long>dltype_data_type[2]
     return 0
+
+
+cdef int TVMFFIPyArgSetterIntProtocol_(
+    TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
+    PyObject* py_arg, TVMFFIAny* out
+) except -1:
+    """Setter for class with __tvm_ffi_int__() method"""
+    cdef object arg = <object>py_arg
+    out.type_index = kTVMFFIInt
+    out.v_int64 = <long long>(arg.__tvm_ffi_int__())
+    return 0
+
+
+cdef int TVMFFIPyArgSetterFloatProtocol_(
+    TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
+    PyObject* py_arg, TVMFFIAny* out
+) except -1:
+    """Setter for class with __tvm_ffi_float__() method"""
+    cdef object arg = <object>py_arg
+    out.type_index = kTVMFFIFloat
+    out.v_float64 = <double>(arg.__tvm_ffi_float__())
+    return 0
+
 
 cdef _DISPATCH_TYPE_KEEP_ALIVE = set()
 cdef _DISPATCH_TYPE_KEEP_ALIVE_LOCK = threading.Lock()
@@ -668,7 +718,7 @@ cdef int TVMFFIPyArgSetterFactory_(PyObject* value, TVMFFIPyArgSetter* out) exce
         # can directly map to tvm ffi object
         # usually used for solutions that takes subclass of ffi.Object
         # as a member variable
-        out.func = TVMFFIPyArgSetterFFIObjectCompatible_
+        out.func = TVMFFIPyArgSetterFFIObjectProtocol_
         return 0
     if os.environ.get("TVM_FFI_SKIP_C_DLPACK_EXCHANGE_API", "0") != "1":
         # Check for DLPackExchangeAPI struct (new approach)
@@ -698,10 +748,15 @@ cdef int TVMFFIPyArgSetterFactory_(PyObject* value, TVMFFIPyArgSetter* out) exce
         out.func = TVMFFIPyArgSetterBool_
         return 0
     if isinstance(arg, Integral):
-        out.func = TVMFFIPyArgSetterInt_
+        # must occur before Real check
+        # cannot simply use TVMFFIPyArgSetterInt
+        # because Integral may not be exactly the int class
+        out.func = TVMFFIPyArgSetterIntegral_
         return 0
     if isinstance(arg, Real):
-        out.func = TVMFFIPyArgSetterFloat_
+        # cannot simply use TVMFFIPyArgSetterFloat
+        # because Real may not be exactly the float class
+        out.func = TVMFFIPyArgSetterReal_
         return 0
     # dtype is a subclass of str, so this check must occur before str
     if isinstance(arg, _CLASS_DTYPE):
@@ -759,6 +814,12 @@ cdef int TVMFFIPyArgSetterFactory_(PyObject* value, TVMFFIPyArgSetter* out) exce
         # if a class have __dlpack_device__ but not __dlpack__
         # then it is a DLPack device protocol
         out.func = TVMFFIPyArgSetterDLPackDeviceProtocol_
+        return 0
+    if hasattr(arg_class, "__tvm_ffi_int__"):
+        out.func = TVMFFIPyArgSetterIntProtocol_
+        return 0
+    if hasattr(arg_class, "__tvm_ffi_float__"):
+        out.func = TVMFFIPyArgSetterFloatProtocol_
         return 0
     if isinstance(arg, Exception):
         out.func = TVMFFIPyArgSetterException_
