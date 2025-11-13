@@ -227,6 +227,12 @@ inline DLDataType StringViewToDLDataType_(std::string_view str) {
     scan = str.data() + 3;
   } else if (str.compare(0, 4, "uint") == 0) {
     dtype.code = kDLUInt;
+    scan = str.data() + 4;  } else if (str.compare(0, 4, "uint") == 0) {
+    dtype.code = kDLUInt;
+    scan = str.data() + 4;
+  } else if (str.compare(0, 4, "bool") == 0) {
+    dtype.code = kDLBool;
+    dtype.bits = 8;
     scan = str.data() + 4;
   } else if (str.compare(0, 5, "float") == 0) {
     if (str.compare(5, 2, "8_") == 0) {
@@ -279,11 +285,6 @@ inline DLDataType StringViewToDLDataType_(std::string_view str) {
     dtype.code = kDLOpaqueHandle;
     dtype.bits = 64;  // handle uses 64 bit by default.
     scan = str.data() + 6;
-  } else if (str == "bool") {
-    dtype.code = kDLBool;
-    dtype.bits = 8;
-    dtype.lanes = 1;
-    return dtype;
   } else if (str.compare(0, 6, "bfloat") == 0) {
     dtype.code = kDLBfloat;
     dtype.bits = 16;
