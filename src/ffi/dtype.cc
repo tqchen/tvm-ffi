@@ -227,7 +227,8 @@ inline DLDataType StringViewToDLDataType_(std::string_view str) {
     scan = str.data() + 3;
   } else if (str.compare(0, 4, "uint") == 0) {
     dtype.code = kDLUInt;
-    scan = str.data() + 4;  } else if (str.compare(0, 4, "uint") == 0) {
+    scan = str.data() + 4;
+  } else if (str.compare(0, 4, "uint") == 0) {
     dtype.code = kDLUInt;
     scan = str.data() + 4;
   } else if (str.compare(0, 4, "bool") == 0) {
