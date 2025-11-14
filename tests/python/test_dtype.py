@@ -169,3 +169,16 @@ def test_dtype_from_dlpack_data_type() -> None:
     assert dtype.type_code == 0
     assert dtype.bits == 8
     assert dtype.lanes == 1
+
+
+def test_dtype_bool() -> None:
+    dtype = tvm_ffi.dtype("bool")
+    assert dtype.type_code == 6
+    assert dtype.bits == 8
+    assert dtype.lanes == 1
+
+    dtype_with_lanes = dtype.with_lanes(4)
+    assert dtype_with_lanes.type_code == 6
+    assert dtype_with_lanes.bits == 8
+    assert dtype_with_lanes.lanes == 4
+    assert dtype_with_lanes == "boolx4"
