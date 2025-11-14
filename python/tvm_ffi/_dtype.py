@@ -33,6 +33,7 @@ class DataTypeCode(IntEnum):
     FLOAT = 2
     HANDLE = 3
     BFLOAT = 4
+    BOOL = 6
     Float8E3M4 = 7
     Float8E4M3 = 8
     Float8E4M3B11FNUZ = 9
