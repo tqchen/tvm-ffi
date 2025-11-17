@@ -602,11 +602,11 @@ def _run_build_on_linux_like(
     default_cflags = ["-std=c++17", "-fPIC", "-O3"]
     # Platform-specific linker flags
     if IS_DARWIN:
-        # macOS doesn't support --no-as-needed and uses @loader_path instead of $ORIGIN
+        # macOS uses @loader_path instead of $ORIGIN
         default_ldflags = ["-shared", "-Wl,-rpath,@loader_path"]
     else:
-        # Linux uses $ORIGIN and supports --no-as-needed
-        default_ldflags = ["-shared", "-Wl,-rpath,$ORIGIN", "-Wl,--no-as-needed"]
+        # Linux uses $ORIGIN
+        default_ldflags = ["-shared", "-Wl,-rpath,$ORIGIN"]
 
     cflags = default_cflags + [flag.strip() for flag in extra_cflags]
     ldflags = default_ldflags + [flag.strip() for flag in extra_ldflags]
