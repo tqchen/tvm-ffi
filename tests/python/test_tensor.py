@@ -131,5 +131,16 @@ def test_tensor_from_pytorch_rocm() -> None:
     assert device_type == "rocm"
 
 
+def test_optional_tensor_view() -> None:
+    optional_tensor_view_has_value = tvm_ffi.get_global_func(
+        "testing.optional_tensor_view_has_value"
+    )
+    assert not optional_tensor_view_has_value(None)
+    x = np.zeros((128,), dtype="float32")
+    if not hasattr(x, "__dlpack__"):
+        return
+    assert optional_tensor_view_has_value(x)
+
+
 if __name__ == "__main__":
     pytest.main([__file__])
