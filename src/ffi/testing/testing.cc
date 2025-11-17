@@ -271,7 +271,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
              return reinterpret_cast<int64_t>(reinterpret_cast<void*>(_mlir_add_one_c_symbol));
            })
       .def("testing.optional_tensor_view_has_value",
-           [](Optional<TensorView> t) { return t.has_value(); })
+           [](const Optional<TensorView>& t) { return t.has_value(); })
       .def_method("testing.TestIntPairSum", &TestIntPair::Sum, "Get sum of the pair");
 }
 

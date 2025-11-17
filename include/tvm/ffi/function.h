@@ -770,7 +770,7 @@ class TypedFunction<R(Args...)> {
    * \param args The arguments
    * \returns The return value.
    */
-  TVM_FFI_INLINE R operator()(Args... args) const {
+  TVM_FFI_INLINE R operator()(Args... args) const {  // NOLINT(performance-unnecessary-value-param)
     if constexpr (std::is_same_v<R, void>) {
       packed_(std::forward<Args>(args)...);
     } else {
