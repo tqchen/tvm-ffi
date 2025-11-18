@@ -599,7 +599,7 @@ def _run_build_on_linux_like(
     """Build the module directly by invoking compiler commands (non-Windows only)."""
     from tvm_ffi.libinfo import find_dlpack_include_path  # noqa: PLC0415
 
-    default_cflags = ["-std=c++17", "-fPIC", "-O3"]
+    default_cflags = ["-std=c++17", "-fPIC", "-O3", "-fvisibility=hidden"]
     # Platform-specific linker flags
     if IS_DARWIN:
         # macOS uses @loader_path instead of $ORIGIN
