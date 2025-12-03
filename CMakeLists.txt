@@ -22,6 +22,7 @@ project(tvm_ffi LANGUAGES CXX C)
 option(TVM_FFI_USE_LIBBACKTRACE "Enable libbacktrace" ON)
 option(TVM_FFI_USE_EXTRA_CXX_API "Enable extra CXX API in shared lib" ON)
 option(TVM_FFI_BACKTRACE_ON_SEGFAULT "Set signal handler to print backtrace on segfault" ON)
+option(TVM_FFI_USE_STATIC_LIBCXX "Statically link libstdc++/libgcc for portable binaries" ON)
 
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/Utils/DetectTargetTriple.cmake)
 
@@ -140,6 +141,10 @@ target_link_libraries(tvm_ffi_objs PUBLIC tvm_ffi_header)
 target_link_libraries(tvm_ffi_shared PUBLIC tvm_ffi_header)
 target_link_libraries(tvm_ffi_static PUBLIC tvm_ffi_header)
 
+if (TVM_FFI_USE_STATIC_LIBCXX)
+  tvm_ffi_linux_target_link_static_libcxx(tvm_ffi_shared)
+endif ()
+
 # ######### Target: `tvm_ffi_testing` ##########
 # Build testing utilities as a separate shared library that can be loaded on demand
 # `tvm_ffi_testing` won't be inlcuded in `libtvm_ffi` and contains functions that are registered
@@ -164,6 +169,10 @@ if (APPLE)
 elseif (UNIX AND NOT APPLE)
   # Linux uses $ORIGIN
   set_target_properties(tvm_ffi_testing PROPERTIES INSTALL_RPATH "\$ORIGIN")
+endif ()
+
+if (TVM_FFI_USE_STATIC_LIBCXX)
+  tvm_ffi_linux_target_link_static_libcxx(tvm_ffi_testing)
 endif ()
 
 # ----------------------------------------------------------------------------
@@ -281,6 +290,11 @@ if (TVM_FFI_BUILD_PYTHON_MODULE)
     # Linux uses $ORIGIN
     set_target_properties(tvm_ffi_cython PROPERTIES INSTALL_RPATH "\$ORIGIN/lib")
   endif ()
+
+  if (TVM_FFI_USE_STATIC_LIBCXX)
+    tvm_ffi_linux_target_link_static_libcxx(tvm_ffi_cython)
+  endif ()
+
   install(TARGETS tvm_ffi_cython DESTINATION .)
 
   # ######### Installing the source ##########

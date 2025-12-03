@@ -137,3 +137,17 @@ function (tvm_ffi_add_target_from_obj target_name obj_target_name)
   tvm_ffi_add_apple_dsymutil(${target_name}_shared)
   tvm_ffi_add_apple_dsymutil(${target_name}_testing)
 endfunction ()
+
+# ~~~
+# tvm_ffi_linux_target_link_static_libcxx(target_name)
+# Statically link libstdc++ and libgcc on Linux to create portable binaries.
+# Only applies on Linux (not macOS). Works with both GCC and Clang (when using libstdc++).
+#
+# Parameters:
+#   target_name: CMake target to add static linking flags
+# ~~~
+function (tvm_ffi_linux_target_link_static_libcxx target_name)
+  if (UNIX AND NOT APPLE)
+    target_link_options(${target_name} PRIVATE -static-libstdc++)
+  endif ()
+endfunction ()
