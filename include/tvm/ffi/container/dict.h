@@ -18,14 +18,16 @@
  */
 
 /*!
- * \file tvm/ffi/container/map.h
- * \brief Immutable map container with copy-on-write semantics.
+ * \file tvm/ffi/container/dict.h
+ * \brief Mutable dictionary container.
  *
- * tvm::ffi::Map<K, V> is an immutable hash map that uses copy-on-write.
+ * tvm::ffi::Dict<K, V> is a mutable hash map that shares its
+ * underlying storage (no copy-on-write).
  */
-#ifndef TVM_FFI_CONTAINER_MAP_H_
-#define TVM_FFI_CONTAINER_MAP_H_
+#ifndef TVM_FFI_CONTAINER_DICT_H_
+#define TVM_FFI_CONTAINER_DICT_H_
 
+#include <tvm/ffi/container/map.h>
 #include <tvm/ffi/container/map_base.h>
 
 #include <sstream>
@@ -35,20 +37,30 @@ namespace tvm {
 namespace ffi {
 
 /*!
- * \brief MapObj is the FFI-visible map object with type index kTVMFFIMap.
+ * \brief DictObj is the FFI type registration for Dict with type index kTVMFFIDict.
  *
- * MapObj is an alias for MapBaseObj since MapBaseObj already carries
- * the kTVMFFIMap type index. SmallMapObj and DenseMapObj inherit from
- * MapBaseObj and are the actual runtime containers.
+ * DictObj inherits from MapBaseObj and registers kTVMFFIDict as a
+ * child type of kTVMFFIMap. The actual runtime containers are
+ * SmallMapObj and DenseMapObj (inheriting from MapBaseObj) with
+ * their type_index overridden to kTVMFFIDict at creation time.
  */
-using MapObj = MapBaseObj;
+class DictObj : public MapBaseObj {
+ public:
+  /// \cond Doxygen_Suppress
+  static constexpr const int32_t _type_index = TypeIndex::kTVMFFIDict;
+  static const constexpr bool _type_final = true;
+  TVM_FFI_DECLARE_OBJECT_INFO_STATIC(StaticTypeKey::kTVMFFIDict, DictObj, MapBaseObj);
+  /// \endcond
+};
 
 /*!
- * \brief Map container - an immutable hash map with copy-on-write semantics.
+ * \brief Dict container - a mutable hash map.
  *
- * Map provides immutable-by-default semantics. The Set and erase operations
- * perform a copy-on-write: if the underlying MapObj is shared with other
- * references, a copy is made before mutation.
+ * Unlike Map, Dict is mutable and does not implement copy-on-write.
+ * Mutations happen directly on the underlying shared DictObj.
+ *
+ * \note Thread safety: Dict is **not** thread-safe. Concurrent reads and writes
+ *       from multiple threads require external synchronization.
  *
  * \tparam K The key type, must be compatible with tvm::ffi::Any
  * \tparam V The value type, must be compatible with tvm::ffi::Any
@@ -56,214 +68,188 @@ using MapObj = MapBaseObj;
 template <typename K, typename V,
           typename = typename std::enable_if_t<details::storage_enabled_v<K> &&
                                                details::storage_enabled_v<V>>>
-class Map : public ObjectRef {
+class Dict : public ObjectRef {
  public:
-  /*! \brief The key type of the map */
+  /*! \brief The key type of the dict */
   using key_type = K;
-  /*! \brief The mapped type of the map */
+  /*! \brief The mapped type of the dict */
   using mapped_type = V;
-  /*! \brief The iterator type of the map */
+  /*! \brief The iterator type of the dict */
   class iterator;
-  /*!
-   * \brief Construct a Map with UnsafeInit
-   */
-  explicit Map(UnsafeInit tag) : ObjectRef(tag) {}
-  /*!
-   * \brief default constructor
-   */
-  Map() { data_ = MapBaseObj::Empty(); }
-  /*!
-   * \brief move constructor
-   * \param other source
-   */
-  Map(Map<K, V>&& other)  // NOLINT(google-explicit-constructor)
+
+  /*! \brief Construct a Dict with UnsafeInit */
+  explicit Dict(UnsafeInit tag) : ObjectRef(tag) {}
+  /*! \brief default constructor */
+  Dict() { data_ = MapBaseObj::Empty(TypeIndex::kTVMFFIDict); }
+  /*! \brief Move constructor */
+  Dict(Dict<K, V>&& other)  // NOLINT(google-explicit-constructor)
       : ObjectRef(std::move(other.data_)) {}
-  /*!
-   * \brief copy constructor
-   * \param other source
-   */
-  Map(const Map<K, V>& other)  // NOLINT(google-explicit-constructor)
+  /*! \brief Copy constructor */
+  Dict(const Dict<K, V>& other)  // NOLINT(google-explicit-constructor)
       : ObjectRef(other.data_) {}
 
   /*!
-   * \brief Move constructor
-   * \param other The other map
-   * \tparam KU The key type of the other map
-   * \tparam VU The mapped type of the other map
+   * \brief Move constructor from another dict
+   * \tparam KU The key type of the other dict
+   * \tparam VU The mapped type of the other dict
    */
   template <typename KU, typename VU,
             typename = std::enable_if_t<details::type_contains_v<K, KU> &&
                                         details::type_contains_v<V, VU>>>
-  Map(Map<KU, VU>&& other)  // NOLINT(google-explicit-constructor)
+  Dict(Dict<KU, VU>&& other)  // NOLINT(google-explicit-constructor)
       : ObjectRef(std::move(other.data_)) {}
 
   /*!
-   * \brief Copy constructor
-   * \param other The other map
-   * \tparam KU The key type of the other map
-   * \tparam VU The mapped type of the other map
+   * \brief Copy constructor from another dict
+   * \tparam KU The key type of the other dict
+   * \tparam VU The mapped type of the other dict
    */
   template <typename KU, typename VU,
             typename = std::enable_if_t<details::type_contains_v<K, KU> &&
                                         details::type_contains_v<V, VU>>>
-  Map(const Map<KU, VU>& other) : ObjectRef(other.data_) {}  // NOLINT(google-explicit-constructor)
+  Dict(const Dict<KU, VU>& other)  // NOLINT(google-explicit-constructor)
+      : ObjectRef(other.data_) {}
 
   /*!
    * \brief Move assignment
-   * \param other The other map
+   * \param other The other dict
    */
-  Map<K, V>& operator=(Map<K, V>&& other) {
+  Dict<K, V>& operator=(Dict<K, V>&& other) {
     data_ = std::move(other.data_);
     return *this;
   }
 
   /*!
    * \brief Copy assignment
-   * \param other The other map
+   * \param other The other dict
    */
-  Map<K, V>& operator=(const Map<K, V>& other) {
+  Dict<K, V>& operator=(const Dict<K, V>& other) {
     data_ = other.data_;
     return *this;
   }
 
   /*!
-   * \brief Move assignment
-   * \param other The other map
-   * \tparam KU The key type of the other map
-   * \tparam VU The mapped type of the other map
+   * \brief Move assignment from another dict
+   * \tparam KU The key type of the other dict
+   * \tparam VU The mapped type of the other dict
    */
   template <typename KU, typename VU,
             typename = std::enable_if_t<details::type_contains_v<K, KU> &&
                                         details::type_contains_v<V, VU>>>
-  Map<K, V>& operator=(Map<KU, VU>&& other) {
+  Dict<K, V>& operator=(Dict<KU, VU>&& other) {
     data_ = std::move(other.data_);
     return *this;
   }
 
   /*!
-   * \brief Copy assignment
-   * \param other The other map
-   * \tparam KU The key type of the other map
-   * \tparam VU The mapped type of the other map
+   * \brief Copy assignment from another dict
+   * \tparam KU The key type of the other dict
+   * \tparam VU The mapped type of the other dict
    */
   template <typename KU, typename VU,
             typename = std::enable_if_t<details::type_contains_v<K, KU> &&
                                         details::type_contains_v<V, VU>>>
-  Map<K, V>& operator=(const Map<KU, VU>& other) {
+  Dict<K, V>& operator=(const Dict<KU, VU>& other) {
     data_ = other.data_;
     return *this;
   }
-  /*!
-   * \brief constructor from pointer
-   * \param n the container pointer
-   */
-  explicit Map(ObjectPtr<Object> n) : ObjectRef(n) {}
+
+  /*! \brief Constructor from pointer */
+  explicit Dict(ObjectPtr<Object> n) : ObjectRef(std::move(n)) {}
+
   /*!
    * \brief constructor from iterator
-   * \param begin begin of iterator
-   * \param end end of iterator
+   * \param first begin of iterator
+   * \param last end of iterator
    * \tparam IterType The type of iterator
    */
   template <typename IterType>
-  Map(IterType begin, IterType end) {
-    data_ = MapBaseObj::CreateFromRange(begin, end);
+  Dict(IterType first, IterType last) {
+    data_ = MapBaseObj::CreateFromRange(first, last, TypeIndex::kTVMFFIDict);
   }
+
   /*!
    * \brief constructor from initializer list
-   * \param init The initalizer list
+   * \param init The initializer list
    */
-  Map(std::initializer_list<std::pair<K, V>> init) {
-    data_ = MapBaseObj::CreateFromRange(init.begin(), init.end());
+  Dict(std::initializer_list<std::pair<K, V>> init) {
+    data_ = MapBaseObj::CreateFromRange(init.begin(), init.end(), TypeIndex::kTVMFFIDict);
   }
+
   /*!
    * \brief constructor from unordered_map
    * \param init The unordered_map
    */
   template <typename Hash, typename Equal>
-  Map(const std::unordered_map<K, V, Hash, Equal>& init) {  // NOLINT(*)
-    data_ = MapBaseObj::CreateFromRange(init.begin(), init.end());
+  Dict(const std::unordered_map<K, V, Hash, Equal>& init) {  // NOLINT(*)
+    data_ = MapBaseObj::CreateFromRange(init.begin(), init.end(), TypeIndex::kTVMFFIDict);
   }
+
   /*!
-   * \brief Read element from map.
+   * \brief Read element from dict.
    * \param key The key
-   * \return the corresonding element.
+   * \return the corresponding element.
    */
   const V at(const K& key) const {
-    return details::AnyUnsafe::CopyFromAnyViewAfterCheck<V>(GetMapObj()->at(key));
+    return details::AnyUnsafe::CopyFromAnyViewAfterCheck<V>(GetDictObj()->at(key));
   }
   /*!
-   * \brief Read element from map.
+   * \brief Read element from dict.
    * \param key The key
-   * \return the corresonding element.
+   * \return the corresponding element.
    */
   const V operator[](const K& key) const { return this->at(key); }
-  /*! \return The size of the array */
+  /*! \return The size of the dict */
   size_t size() const {
-    MapBaseObj* n = GetMapObj();
+    MapBaseObj* n = GetDictObj();
     return n == nullptr ? 0 : n->size();
   }
   /*! \return The number of elements of the key */
   size_t count(const K& key) const {
-    MapBaseObj* n = GetMapObj();
-    return n == nullptr ? 0 : GetMapObj()->count(key);
+    MapBaseObj* n = GetDictObj();
+    return n == nullptr ? 0 : GetDictObj()->count(key);
   }
-  /*! \return whether array is empty */
+  /*! \return whether dict is empty */
   bool empty() const { return size() == 0; }
   /*! \brief Release reference to all the elements */
   void clear() {
-    MapBaseObj* n = GetMapObj();
+    MapBaseObj* n = GetDictObj();
     if (n != nullptr) {
-      data_ = MapBaseObj::Empty();
+      data_ = MapBaseObj::Empty(TypeIndex::kTVMFFIDict);
     }
   }
   /*!
-   * \brief set the Map.
+   * \brief Set an entry in the Dict (mutates in place).
    * \param key The index key.
-   * \param value The value to be setted.
+   * \param value The value to be set.
    */
   void Set(const K& key, const V& value) {
-    CopyOnWrite();
+    EnsureDictObj();
     MapBaseObj::InsertMaybeReHash(MapBaseObj::KVType(key, value), &data_);
   }
   /*! \return begin iterator */
-  iterator begin() const { return iterator(GetMapObj()->begin()); }
+  iterator begin() const { return iterator(GetDictObj()->begin()); }
   /*! \return end iterator */
-  iterator end() const { return iterator(GetMapObj()->end()); }
+  iterator end() const { return iterator(GetDictObj()->end()); }
   /*! \return find the key and returns the associated iterator */
-  iterator find(const K& key) const { return iterator(GetMapObj()->find(key)); }
+  iterator find(const K& key) const { return iterator(GetDictObj()->find(key)); }
   /*! \return The value associated with the key, std::nullopt if not found */
   std::optional<V> Get(const K& key) const {
-    MapBaseObj::iterator iter = GetMapObj()->find(key);
-    if (iter == GetMapObj()->end()) {
+    MapBaseObj::iterator iter = GetDictObj()->find(key);
+    if (iter == GetDictObj()->end()) {
       return std::nullopt;
     }
     return details::AnyUnsafe::CopyFromAnyViewAfterCheck<V>(iter->second);
   }
 
   /*!
-   * \brief Erase the entry associated with the key
+   * \brief Erase the entry associated with the key (mutates in place).
    * \param key The key
    */
-  void erase(const K& key) { CopyOnWrite()->erase(key); }
+  void erase(const K& key) { EnsureDictObj()->erase(key); }
 
-  /*!
-   * \brief copy on write semantics
-   *  Do nothing if current handle is the unique copy of the array.
-   *  Otherwise make a new copy of the array to ensure the current handle
-   *  hold a unique copy.
-   *
-   * \return Handle to the internal node container(which guarantees to be unique)
-   */
-  MapBaseObj* CopyOnWrite() {
-    if (data_.get() == nullptr) {
-      data_ = MapBaseObj::Empty();
-    } else if (!data_.unique()) {
-      data_ = MapBaseObj::CopyFrom(GetMapObj());
-    }
-    return GetMapObj();
-  }
   /*! \brief specify container node */
-  using ContainerType = MapObj;
+  using ContainerType = DictObj;
 
   /// \cond Doxygen_Suppress
   /*! \brief Iterator of the hash map */
@@ -318,7 +304,7 @@ class Map : public ObjectRef {
         : itr(itr) {}
 
     template <typename, typename, typename>
-    friend class Map;
+    friend class Dict;
 
     MapBaseObj::iterator itr;
   };
@@ -326,40 +312,35 @@ class Map : public ObjectRef {
 
  private:
   /*! \brief Return data_ as type of pointer of MapBaseObj */
-  MapBaseObj* GetMapObj() const { return static_cast<MapBaseObj*>(data_.get()); }
+  MapBaseObj* GetDictObj() const { return static_cast<MapBaseObj*>(data_.get()); }
+
+  /*!
+   * \brief Ensure this dict has a container object.
+   * \return MapBaseObj pointer
+   */
+  MapBaseObj* EnsureDictObj() {
+    if (data_ == nullptr) {
+      data_ = MapBaseObj::Empty(TypeIndex::kTVMFFIDict);
+    }
+    return GetDictObj();
+  }
 
   template <typename, typename, typename>
-  friend class Map;
+  friend class Dict;
 };
 
-/*!
- * \brief Merge two Maps.
- * \param lhs the first Map to merge.
- * \param rhs the second Map to merge.
- * @return The merged Array. Original Maps are kept unchanged.
- */
-template <typename K, typename V,
-          typename = typename std::enable_if_t<details::storage_enabled_v<K> &&
-                                               details::storage_enabled_v<V>>>
-inline Map<K, V> Merge(Map<K, V> lhs, const Map<K, V>& rhs) {
-  for (const auto& p : rhs) {
-    lhs.Set(p.first, p.second);
-  }
-  return std::move(lhs);
-}
-
-// Traits for Map
+// Traits for Dict
 template <typename K, typename V>
-inline constexpr bool use_default_type_traits_v<Map<K, V>> = false;
+inline constexpr bool use_default_type_traits_v<Dict<K, V>> = false;
 
 template <typename K, typename V>
-struct TypeTraits<Map<K, V>>
-    : public MapTypeTraitsBase<TypeTraits<Map<K, V>>, Map<K, V>, K, V> {
-  static constexpr int32_t field_static_type_index = TypeIndex::kTVMFFIMap;
-  static constexpr int32_t kPrimaryTypeIndex = TypeIndex::kTVMFFIMap;
-  static constexpr int32_t kOtherTypeIndex = TypeIndex::kTVMFFIDict;
-  static constexpr const char* kTypeName = "Map";
-  static constexpr const char* kStaticTypeKey = StaticTypeKey::kTVMFFIMap;
+struct TypeTraits<Dict<K, V>>
+    : public MapTypeTraitsBase<TypeTraits<Dict<K, V>>, Dict<K, V>, K, V> {
+  static constexpr int32_t field_static_type_index = TypeIndex::kTVMFFIDict;
+  static constexpr int32_t kPrimaryTypeIndex = TypeIndex::kTVMFFIDict;
+  static constexpr int32_t kOtherTypeIndex = TypeIndex::kTVMFFIMap;
+  static constexpr const char* kTypeName = "Dict";
+  static constexpr const char* kStaticTypeKey = StaticTypeKey::kTVMFFIDict;
 
   TVM_FFI_INLINE static std::string TypeSchema() {
     std::ostringstream oss;
@@ -373,10 +354,10 @@ struct TypeTraits<Map<K, V>>
 
 namespace details {
 template <typename K, typename V, typename KU, typename VU>
-inline constexpr bool type_contains_v<Map<K, V>, Map<KU, VU>> =
+inline constexpr bool type_contains_v<Dict<K, V>, Dict<KU, VU>> =
     type_contains_v<K, KU> && type_contains_v<V, VU>;
 }  // namespace details
 
 }  // namespace ffi
 }  // namespace tvm
-#endif  // TVM_FFI_CONTAINER_MAP_H_
+#endif  // TVM_FFI_CONTAINER_DICT_H_

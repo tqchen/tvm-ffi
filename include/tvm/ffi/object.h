@@ -114,6 +114,8 @@ struct StaticTypeKey {
   static constexpr const char* kTVMFFIList = "ffi.List";
   /*! \brief The type key for Map */
   static constexpr const char* kTVMFFIMap = "ffi.Map";
+  /*! \brief The type key for Dict */
+  static constexpr const char* kTVMFFIDict = "ffi.Dict";
   /*! \brief The type key for Module */
   static constexpr const char* kTVMFFIModule = "ffi.Module";
   /*! \brief The type key for OpaquePyObject */

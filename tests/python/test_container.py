@@ -503,6 +503,133 @@ def test_seq_cross_conv_incompatible_array_to_list() -> None:
         testing.schema_id_list_int(arr)  # type: ignore[arg-type]
 
 
+# ---------------------------------------------------------------------------
+# Dict tests
+# ---------------------------------------------------------------------------
+def test_dict_basic() -> None:
+    d = tvm_ffi.Dict({"a": 1, "b": 2, "c": 3})
+    assert isinstance(d, tvm_ffi.Dict)
+    assert len(d) == 3
+    assert d["a"] == 1
+    assert d["b"] == 2
+    assert d["c"] == 3
+
+
+def test_dict_mutation() -> None:
+    d = tvm_ffi.Dict({"a": 1})
+    d["b"] = 2
+    assert len(d) == 2
+    assert d["b"] == 2
+    d["a"] = 10
+    assert d["a"] == 10
+    del d["b"]
+    assert len(d) == 1
+    assert "b" not in d
+
+
+def test_dict_contains() -> None:
+    d = tvm_ffi.Dict({"x": 1, "y": 2})
+    assert "x" in d
+    assert "y" in d
+    assert "z" not in d
+
+
+def test_dict_keys_values_items() -> None:
+    d = tvm_ffi.Dict({"a": 1, "b": 2})
+    assert set(d.keys()) == {"a", "b"}
+    assert set(d.values()) == {1, 2}
+    assert set(d.items()) == {("a", 1), ("b", 2)}
+
+
+def test_dict_iter() -> None:
+    d = tvm_ffi.Dict({"a": 1, "b": 2})
+    keys = list(d)
+    assert set(keys) == {"a", "b"}
+
+
+def test_dict_clear() -> None:
+    d = tvm_ffi.Dict({"a": 1, "b": 2})
+    d.clear()
+    assert len(d) == 0
+    assert "a" not in d
+
+
+def test_dict_pop() -> None:
+    d = tvm_ffi.Dict({"a": 1, "b": 2})
+    v = d.pop("a")
+    assert v == 1
+    assert len(d) == 1
+    assert "a" not in d
+
+    # pop with default
+    v = d.pop("missing", 42)
+    assert v == 42
+
+    # pop without default raises KeyError
+    with pytest.raises(KeyError):
+        d.pop("missing")
+
+
+def test_dict_get() -> None:
+    d = tvm_ffi.Dict({"a": 1})
+    assert d.get("a") == 1
+    assert d.get("b") is None
+    assert d.get("b", 42) == 42
+
+
+def test_dict_bool() -> None:
+    assert bool(tvm_ffi.Dict({"a": 1})) is True
+    assert bool(tvm_ffi.Dict()) is False
+
+
+def test_dict_repr() -> None:
+    d = tvm_ffi.Dict({"a": 1})
+    r = repr(d)
+    assert "'a'" in r
+    assert "1" in r
+
+
+def test_dict_empty() -> None:
+    d = tvm_ffi.Dict()
+    assert len(d) == 0
+    assert list(d) == []
+
+
+def test_dict_key_not_found() -> None:
+    d = tvm_ffi.Dict({"a": 1})
+    with pytest.raises(Exception):
+        d["missing"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-conversion tests: Map <-> Dict via MapTypeTraitsBase
+# ---------------------------------------------------------------------------
+def test_dict_cross_conv_map_to_dict() -> None:
+    """Map<String, int> passed to a function expecting Dict<String, int>."""
+    m = tvm_ffi.Map({"a": 1, "b": 2})
+    result = testing.schema_id_dict_str_int(m)
+    assert isinstance(result, tvm_ffi.Dict)
+    assert result["a"] == 1
+    assert result["b"] == 2
+
+
+def test_dict_cross_conv_dict_to_map() -> None:
+    """Dict<String, int> passed to a function expecting Map<String, int>."""
+    d = tvm_ffi.Dict({"a": 1, "b": 2})
+    result = testing.schema_id_map_str_int(d)
+    assert isinstance(result, tvm_ffi.Map)
+    assert result["a"] == 1
+    assert result["b"] == 2
+
+
+def test_dict_cross_conv_python_dict_to_dict() -> None:
+    """Plain Python dict passed to Dict<String, int> function."""
+    result = testing.schema_id_dict_str_int({"a": 1, "b": 2})
+    assert isinstance(result, tvm_ffi.Dict)
+    assert result["a"] == 1
+    assert result["b"] == 2
+
+
 def test_missing_object() -> None:
     """Test that MISSING is a valid singleton and works with Map.get()."""
     # MISSING should be an Object instance

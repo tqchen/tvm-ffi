@@ -21,6 +21,7 @@
  * \file src/ffi/container.cc
  */
 #include <tvm/ffi/container/array.h>
+#include <tvm/ffi/container/dict.h>
 #include <tvm/ffi/container/list.h>
 #include <tvm/ffi/container/map.h>
 #include <tvm/ffi/function.h>
@@ -65,6 +66,9 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::EnsureTypeAttrColumn("__any_hash__");
   refl::EnsureTypeAttrColumn("__any_equal__");
+  // Ensure DictObj type is registered in the type system so that
+  // TVMFFITypeIsSubType(kTVMFFIDict, kTVMFFIMap) works correctly.
+  DictObj::_GetOrAllocRuntimeTypeIndex();
   refl::GlobalDef()
       .def_packed("ffi.Array",
                   [](ffi::PackedArgs args, Any* ret) {
@@ -163,7 +167,55 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                return GetMissingObject();
              }
            })
-      .def("ffi.GetInvalidObject", []() -> ObjectRef { return GetMissingObject(); });
+      .def("ffi.GetInvalidObject", []() -> ObjectRef { return GetMissingObject(); })
+      .def_packed("ffi.Dict",
+                  [](ffi::PackedArgs args, Any* ret) {
+                    TVM_FFI_ICHECK_EQ(args.size() % 2, 0);
+                    Dict<Any, Any> data;
+                    for (int i = 0; i < args.size(); i += 2) {
+                      data.Set(args[i], args[i + 1]);
+                    }
+                    *ret = data;
+                  })
+      .def("ffi.DictSize",
+           [](const ffi::MapBaseObj* n) -> int64_t { return static_cast<int64_t>(n->size()); })
+      .def("ffi.DictGetItem",
+           [](const ffi::MapBaseObj* n, const Any& k) -> Any { return n->at(k); })
+      .def("ffi.DictSetItem",
+           [](ffi::Dict<Any, Any> d, const Any& k, const Any& v) -> void { d.Set(k, v); })
+      .def("ffi.DictDelItem",
+           [](ffi::Dict<Any, Any> d, const Any& k) -> void { d.erase(k); })
+      .def("ffi.DictCount",
+           [](const ffi::MapBaseObj* n, const Any& k) -> int64_t {
+             return static_cast<int64_t>(n->count(k));
+           })
+      .def("ffi.DictForwardIterFunctor",
+           [](const ffi::MapBaseObj* n) -> ffi::Function {
+             return ffi::Function::FromTyped(MapForwardIterFunctor(n->begin(), n->end()));
+           })
+      .def("ffi.DictGetItemOrMissing",
+           [](const ffi::MapBaseObj* n, const Any& k) -> Any {
+             try {
+               return n->at(k);
+             } catch (const tvm::ffi::Error& e) {
+               return GetMissingObject();
+             }
+           })
+      .def("ffi.DictClear",
+           [](ffi::Dict<Any, Any> d) -> void {
+             // Clear in-place by erasing all items one by one.
+             // We cannot use d.clear() here because it replaces data_ on the
+             // local copy, which does not propagate back to the Python caller.
+             while (d.size() > 0) {
+               d.erase((*d.begin()).first);
+             }
+           })
+      .def("ffi.DictPop",
+           [](ffi::Dict<Any, Any> d, const Any& k) -> Any {
+             Any value = d.at(k);
+             d.erase(k);
+             return value;
+           });
 }
 }  // namespace ffi
 }  // namespace tvm

@@ -42,6 +42,7 @@ if sys.version_info >= (3, 9):
         Iterable,
         Iterator,
         Mapping,
+        MutableMapping,
         MutableSequence,
         Sequence,
     )
@@ -61,6 +62,7 @@ else:  # Python 3.8
         Iterable,
         Iterator,
         Mapping,
+        MutableMapping,
         MutableSequence,
         Sequence,
     )
@@ -71,7 +73,7 @@ else:  # Python 3.8
         ValuesView as ValuesViewBase,
     )
 
-__all__ = ["Array", "List", "Map"]
+__all__ = ["Array", "List", "Map", "Dict"]
 
 
 T = TypeVar("T")
@@ -541,6 +543,136 @@ class Map(core.Object, Mapping[K, V]):
     def __repr__(self) -> str:
         """Return a string representation of the map."""
         # exception safety handling for chandle=None
+        if self.__chandle__() == 0:
+            return type(self).__name__ + "(chandle=None)"
+        return "{" + ", ".join([f"{k.__repr__()}: {v.__repr__()}" for k, v in self.items()]) + "}"
+
+
+@register_object("ffi.Dict")
+class Dict(core.Object, MutableMapping[K, V]):
+    """Mutable dictionary container.
+
+    Unlike Map, Dict is mutable and does not implement copy-on-write.
+    Mutations happen directly on the underlying shared DictObj.
+
+    Parameters
+    ----------
+    input_dict
+        The dictionary of values to be stored in the dict.
+
+    Examples
+    --------
+    .. code-block:: python
+
+        import tvm_ffi
+
+        d = tvm_ffi.Dict({"a": 1, "b": 2})
+        d["c"] = 3
+        assert len(d) == 3
+        del d["a"]
+        assert len(d) == 2
+
+    """
+
+    # tvm-ffi-stubgen(begin): object/ffi.Dict
+    # fmt: off
+    # fmt: on
+    # tvm-ffi-stubgen(end)
+
+    def __init__(self, input_dict: Mapping[K, V] | None = None) -> None:
+        """Construct a Dict from a Python mapping."""
+        list_kvs: list[Any] = []
+        if input_dict is not None:
+            for k, v in input_dict.items():
+                list_kvs.append(k)
+                list_kvs.append(v)
+        self.__init_handle_by_constructor__(_ffi_api.Dict, *list_kvs)
+
+    def __getitem__(self, k: K) -> V:
+        """Return the value for key `k` or raise KeyError."""
+        return cast(V, _ffi_api.DictGetItem(self, k))
+
+    def __setitem__(self, k: K, v: V) -> None:
+        """Set the value for key `k`."""
+        _ffi_api.DictSetItem(self, k, v)
+
+    def __delitem__(self, k: K) -> None:
+        """Delete the entry for key `k`."""
+        _ffi_api.DictDelItem(self, k)
+
+    def __contains__(self, k: object) -> bool:
+        """Return True if the dict contains key `k`."""
+        return _ffi_api.DictCount(self, k) != 0
+
+    def keys(self) -> KeysView[K]:
+        """Return a dynamic view of the dict's keys."""
+        return KeysView(self)
+
+    def values(self) -> ValuesView[V]:
+        """Return a dynamic view of the dict's values."""
+        return ValuesView(self)
+
+    def items(self) -> ItemsView[K, V]:
+        """Get the items from the dict."""
+        return ItemsView(self)
+
+    def __len__(self) -> int:
+        """Return the number of items in the dict."""
+        return _ffi_api.DictSize(self)
+
+    def __bool__(self) -> bool:
+        """Return True if the dict is non-empty."""
+        return len(self) > 0
+
+    def __iter__(self) -> Iterator[K]:
+        """Iterate over the dict's keys."""
+        return iter(self.keys())
+
+    def clear(self) -> None:
+        """Remove all items from the dict."""
+        _ffi_api.DictClear(self)
+
+    def pop(self, key: K, *args: V | _DefaultT) -> V | _DefaultT:
+        """Remove and return value at key (with optional default)."""
+        if len(args) > 1:
+            raise TypeError(f"pop expected at most 2 arguments, got {1 + len(args)}")
+        try:
+            return cast(V, _ffi_api.DictPop(self, key))
+        except Exception:
+            if args:
+                return args[0]
+            raise KeyError(key)
+
+    @overload
+    def get(self, key: K) -> V | None: ...
+
+    @overload
+    def get(self, key: K, default: V | _DefaultT) -> V | _DefaultT: ...
+
+    def get(self, key: K, default: V | _DefaultT | None = None) -> V | _DefaultT | None:
+        """Get an element with a default value.
+
+        Parameters
+        ----------
+        key
+            The attribute key.
+
+        default
+            The default object.
+
+        Returns
+        -------
+        value
+            The result value.
+
+        """
+        ret = _ffi_api.DictGetItemOrMissing(self, key)
+        if MISSING.same_as(ret):
+            return default
+        return ret
+
+    def __repr__(self) -> str:
+        """Return a string representation of the dict."""
         if self.__chandle__() == 0:
             return type(self).__name__ + "(chandle=None)"
         return "{" + ", ".join([f"{k.__repr__()}: {v.__repr__()}" for k, v in self.items()]) + "}"
