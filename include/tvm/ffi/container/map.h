@@ -1115,6 +1115,12 @@ class SmallMapObj : public MapObj {
       other_small_map->size_ = 0;
       other_small_map->slots_ = 0;
     } else {
+      // Reinterpret this SmallMapObj's memory as DenseMapObj to write fields at the
+      // correct offsets. This is raw memory manipulation: SmallMapObj's allocation is
+      // guaranteed large enough (see static_assert in Empty()), and all member access
+      // compiles to fixed-offset stores with no virtual dispatch involved.
+      // The destructor will also cross check and apply the correct deletion.
+      // As a result, we can inplace switch the container storage to dense map
       DenseMapObj* other_dense_map = static_cast<DenseMapObj*>(other_map);
       DenseMapObj* this_dense_map = reinterpret_cast<DenseMapObj*>(this);
       this_dense_map->size_ = other_dense_map->size_;
