@@ -665,6 +665,29 @@ class DenseMapObj : public MapObj {
     }
     ReleaseMemory();
   }
+  /*!
+   * \brief Inplace switch the storage to the other map
+   * \param other The other map
+   * \note The other map will be invalidated after this operation
+   */
+  void InplaceSwitchTo(ObjectPtr<Object>&& other) {
+    this->Reset();
+    MapObj* other_map = static_cast<MapObj*>(other.get());
+    TVM_FFI_ICHECK(!other_map->IsSmallMap());
+    DenseMapObj* other_dense_map = static_cast<DenseMapObj*>(other_map);
+    DenseMapObj* this_dense_map = this;
+    this_dense_map->size_ = other_dense_map->size_;
+    this_dense_map->slots_ = other_dense_map->slots_;
+    this_dense_map->data_ = other_dense_map->data_;
+    this_dense_map->data_deleter_ = other_dense_map->data_deleter_;
+    this_dense_map->fib_shift_ = other_dense_map->fib_shift_;
+    this_dense_map->iter_list_head_ = other_dense_map->iter_list_head_;
+    this_dense_map->iter_list_tail_ = other_dense_map->iter_list_tail_;
+    other_dense_map->data_ = nullptr;
+    other_dense_map->data_deleter_ = nullptr;
+    other_dense_map->size_ = 0;
+    other_dense_map->slots_ = 0;
+  }
   /*! \brief Release the memory acquired by the container without deleting its entries stored inside
    */
   void ReleaseMemory() {
@@ -1032,7 +1055,14 @@ class SmallMapObj : public MapObj {
   uint64_t NumSlots() const { return slots_ & ~kSmallTagMask; }
 
   ~SmallMapObj() {
-    this->Reset();
+    MapObj* base_map = static_cast<MapObj*>(this);
+    if (base_map->IsSmallMap()) {
+      this->Reset();
+    } else {
+      // this map was inplace switched to a dense map.
+      DenseMapObj* this_dense_map = static_cast<DenseMapObj*>(base_map);
+      this_dense_map->Reset();
+    }
   }
   /*
   * \brief Reset original small Storage so it can be ready for switch.
@@ -1051,6 +1081,53 @@ class SmallMapObj : public MapObj {
       data_deleter_(data_);
       // after deletion we have zero slots
       slots_ = 0;
+      data_ = nullptr;
+      data_deleter_ = nullptr;
+    }
+  }
+  /*!
+   * \brief Inplace switch the storage to the other map
+   * \param other The other map
+   * \note The other map will be invalidated after this operation
+   */
+  void InplaceSwitchTo(ObjectPtr<Object>&& other) {
+    // invariant this map have not been inplace switched to a dense map
+    TVM_FFI_ICHECK(this->IsSmallMap());
+    this->Reset();
+    MapObj* other_map = static_cast<MapObj*>(other.get());
+    if (other_map->IsSmallMap()) {
+      SmallMapObj* other_small_map = static_cast<SmallMapObj*>(other_map);
+      SmallMapObj* this_small_map = this;
+      this_small_map->size_ = other_small_map->size_;
+      this_small_map->slots_ = other_small_map->slots_;
+      this_small_map->data_ = other_small_map->data_;
+      if (other_small_map->data_deleter_ != nullptr) {
+        this_small_map->data_deleter_ = other_small_map->data_deleter_;
+        other_small_map->data_deleter_ = nullptr;
+      } else {
+        // we switch to the inplace deleter from the data
+        this_small_map->data_deleter_ = InplaceSmallMapDeleterFromData;
+        // move out other from the ptr so the deletion can only be triggered
+        // via InplaceSmallMapDeleterFromData
+        details::ObjectUnsafe::MoveObjectPtrToTVMFFIObjectPtr(std::move(other));
+      }
+      other_small_map->data_ = nullptr;
+      other_small_map->size_ = 0;
+      other_small_map->slots_ = 0;
+    } else {
+      DenseMapObj* other_dense_map = static_cast<DenseMapObj*>(other_map);
+      DenseMapObj* this_dense_map = reinterpret_cast<DenseMapObj*>(this);
+      this_dense_map->size_ = other_dense_map->size_;
+      this_dense_map->slots_ = other_dense_map->slots_;
+      this_dense_map->data_ = other_dense_map->data_;
+      this_dense_map->data_deleter_ = other_dense_map->data_deleter_;
+      this_dense_map->fib_shift_ = other_dense_map->fib_shift_;
+      this_dense_map->iter_list_head_ = other_dense_map->iter_list_head_;
+      this_dense_map->iter_list_tail_ = other_dense_map->iter_list_tail_;
+      other_dense_map->data_ = nullptr;
+      other_dense_map->data_deleter_ = nullptr;
+      other_dense_map->size_ = 0;
+      other_dense_map->slots_ = 0;
     }
   }
   /*!
@@ -1108,11 +1185,11 @@ class SmallMapObj : public MapObj {
   void erase(const iterator& position) { Erase(position.index); }
 
  private:
- static void InplaceSmallMapDeleterFromData(void* data) {
+  static void InplaceSmallMapDeleterFromData(void* data) {
     details::ObjectUnsafe::ObjectPtrFromOwned<SmallMapObj>(
-      reinterpret_cast<Object*>(reinterpret_cast<char*>(data) - sizeof(SmallMapObj))
-    ).reset();
- }
+        reinterpret_cast<Object*>(reinterpret_cast<char*>(data) - sizeof(SmallMapObj)))
+        .reset();
+  }
 
   /*!
    * \brief Set the number of slots and attach tags bit.
