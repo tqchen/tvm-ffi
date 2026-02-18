@@ -247,215 +247,11 @@ class MapObj : public Object {
   template <typename, typename, typename>
   friend class Map;
 
+  friend class SmallMapObj;
+  friend class DenseMapObj;
+
   template <typename, typename>
   friend struct TypeTraits;
-};
-
-/*! \brief A specialization of small-sized hash map */
-class SmallMapObj : public MapObj,
-                    public details::InplaceArrayBase<SmallMapObj, MapObj::KVRawStorageType> {
- private:
-  static constexpr uint64_t kInitSize = 2;
-  static constexpr uint64_t kMaxSize = 4;
-
- public:
-  using MapObj::iterator;
-  using MapObj::KVType;
-
-  // Return the number of usable slots for Small layout (mask off tag).
-  /*!
-   * \brief Return the number of usable slots for Small layout (mask off tag).
-   * \return The number of usable slots
-   */
-  uint64_t NumSlots() const { return slots_ & ~kSmallTagMask; }
-
-  ~SmallMapObj() {
-    KVType* begin = static_cast<KVType*>(data_);
-    for (uint64_t index = 0; index < size_; ++index) {
-      // call destructor to destroy the item in `begin + index`
-      // Explicit call Any::~Any() to destroy the Any object
-      // Favor this over ~KVType as MSVC may not support ~KVType (need the original name)
-      (begin + index)->first.Any::~Any();
-      (begin + index)->second.Any::~Any();
-    }
-    if (data_deleter_ != nullptr) {
-      data_deleter_(data_);
-    }
-  }
-  /*!
-   * \brief Count the number of times a key exists in the SmallMapObj
-   * \param key The indexing key
-   * \return The result, 0 or 1
-   */
-  size_t count(const key_type& key) const { return find(key).index < size_; }
-  /*!
-   * \brief Index value associated with a key, throw exception if the key does not exist
-   * \param key The indexing key
-   * \return The const reference to the value
-   */
-  const mapped_type& at(const key_type& key) const {
-    iterator itr = find(key);
-    if (itr.index >= size_) {
-      TVM_FFI_THROW(KeyError) << "key is not in Map";
-    }
-    return itr->second;
-  }
-  /*!
-   * \brief Index value associated with a key, throw exception if the key does not exist
-   * \param key The indexing key
-   * \return The mutable reference to the value
-   */
-  mapped_type& at(const key_type& key) {
-    iterator itr = find(key);
-    if (itr.index >= size_) {
-      TVM_FFI_THROW(KeyError) << "key is not in Map";
-    }
-    return itr->second;
-  }
-  /*! \return begin iterator */
-  iterator begin() const { return iterator(0, this); }
-  /*! \return end iterator */
-  iterator end() const { return iterator(size_, this); }
-  /*!
-   * \brief Index value associated with a key
-   * \param key The indexing key
-   * \return The iterator of the entry associated with the key, end iterator if not exists
-   */
-  iterator find(const key_type& key) const {
-    KVType* ptr = static_cast<KVType*>(data_);
-    for (uint64_t i = 0; i < size_; ++i, ++ptr) {
-      if (AnyEqual()(ptr->first, key)) {
-        return iterator(i, this);
-      }
-    }
-    return iterator(size_, this);
-  }
-  /*!
-   * \brief Erase the entry associated with the iterator
-   * \param position The iterator
-   */
-  void erase(const iterator& position) { Erase(position.index); }
-
- private:
-  /*!
-   * \brief Set the number of slots and attach tags bit.
-   * \param n The number of slots
-   */
-  void SetSlotsAndSmallLayoutTag(uint64_t n) { slots_ = (n & ~kSmallTagMask) | kSmallTagMask; }
-  /*!
-   * \brief Remove a position in SmallMapObj
-   * \param index The position to be removed
-   */
-  void Erase(const uint64_t index) {
-    if (index >= size_) {
-      return;
-    }
-    KVType* begin = static_cast<KVType*>(data_);
-    // call destructor to destroy the item in `begin + index`
-    // Explicit call Any::~Any() to destroy the Any object
-    // Favor this over ~KVType as MSVC may not support ~KVType (need the original name)
-    (begin + index)->first.Any::~Any();
-    (begin + index)->second.Any::~Any();
-    // IMPORTANT: We do direct raw memmove to bring later items to the current position
-    // to preserve the order of insertion.
-    // This works because direct memory copy preserves the Any's move semantics.
-    if (index + 1 < size_) {
-      std::memmove(reinterpret_cast<char*>(begin + index),
-                   reinterpret_cast<char*>(begin + index + 1),
-                   (size_ - index - 1) * sizeof(KVType));
-    }
-    size_ -= 1;
-  }
-  /*!
-   * \brief Create an empty container
-   * \param n Number of empty slots
-   * \return The object created
-   */
-  static ObjectPtr<SmallMapObj> Empty(uint64_t n = kInitSize) {
-    using ::tvm::ffi::make_inplace_array_object;
-    ObjectPtr<SmallMapObj> p = make_inplace_array_object<SmallMapObj, KVType>(n);
-    p->data_ = p->AddressOf(0);
-    p->size_ = 0;
-    p->SetSlotsAndSmallLayoutTag(n);
-    return p;
-  }
-  /*!
-   * \brief Create an empty container initialized with a given range
-   * \param n Number of empty slots
-   * \param first begin of iterator
-   * \param last end of iterator
-   * \tparam IterType The type of iterator
-   * \return The object created
-   */
-  template <typename IterType>
-  static ObjectPtr<SmallMapObj> CreateFromRange(uint64_t n, IterType first, IterType last) {
-    ObjectPtr<SmallMapObj> p = Empty(n);
-    KVType* ptr = static_cast<KVType*>(p->data_);
-    for (; first != last; ++first, ++p->size_) {
-      new (ptr++) KVType(*first);
-    }
-    return p;
-  }
-  /*!
-   * \brief Create an empty container with elements copying from another SmallMapObj
-   * \param from The source container
-   * \return The object created
-   */
-  static ObjectPtr<SmallMapObj> CopyFrom(SmallMapObj* from) {
-    KVType* first = static_cast<KVType*>(from->data_);
-    KVType* last = first + from->size_;
-    return CreateFromRange(from->size_, first, last);
-  }
-  /*!
-   * \brief InsertMaybeReHash an entry into the given hash map
-   * \param kv The entry to be inserted
-   * \param map The pointer to the map, can be changed if re-hashing happens
-   */
-  static void InsertMaybeReHash(KVType&& kv, ObjectPtr<Object>* map) {
-    SmallMapObj* map_node = static_cast<SmallMapObj*>(map->get());
-    iterator itr = map_node->find(kv.first);
-    if (itr.index < map_node->size_) {
-      itr->second = kv.second;
-      return;
-    }
-    if (map_node->size_ < map_node->NumSlots()) {
-      KVType* ptr = static_cast<KVType*>(map_node->data_) + map_node->size_;
-      new (ptr) KVType(std::move(kv));
-      ++map_node->size_;
-      return;
-    }
-    uint64_t next_size = std::max(map_node->NumSlots() * 2, kInitSize);
-    next_size = std::min(next_size, kMaxSize);
-    TVM_FFI_ICHECK_GT(next_size, map_node->NumSlots());
-    ObjectPtr<Object> new_map = CreateFromRange(next_size, map_node->begin(), map_node->end());
-    InsertMaybeReHash(std::move(kv), &new_map);
-    *map = std::move(new_map);
-  }
-  /*!
-   * \brief Increment the pointer
-   * \param index The pointer to be incremented
-   * \return The increased pointer
-   */
-  uint64_t IncItr(uint64_t index) const { return index + 1 < size_ ? index + 1 : size_; }
-  /*!
-   * \brief Decrement the pointer
-   * \param index The pointer to be decremented
-   * \return The decreased pointer
-   */
-  uint64_t DecItr(uint64_t index) const { return index > 0 ? index - 1 : size_; }
-  /*!
-   * \brief De-reference the pointer
-   * \param index The pointer to be dereferenced
-   * \return The result
-   */
-  KVType* DeRefItr(uint64_t index) const { return static_cast<KVType*>(data_) + index; }
-  /*! \brief A size function used by InplaceArrayBase */
-  uint64_t GetSize() const { return size_; }
-
- protected:
-  friend class MapObj;
-  friend class DenseMapObj;
-  friend class details::InplaceArrayBase<SmallMapObj, MapObj::KVType>;
 };
 
 /*! \brief A specialization of hash map that implements the idea of array-based hash map.
@@ -889,7 +685,6 @@ class DenseMapObj : public MapObj {
    * \return The object created
    */
   static ObjectPtr<DenseMapObj> Empty(uint32_t fib_shift, uint64_t n_slots) {
-    TVM_FFI_ICHECK_GT(n_slots, uint64_t(SmallMapObj::kMaxSize));
     // Ensure even slot count (power-of-two expected by callers; this guard
     // makes the method robust if a non-even value slips through).
     ObjectPtr<DenseMapObj> p = make_object<DenseMapObj>();
@@ -1206,6 +1001,7 @@ class DenseMapObj : public MapObj {
     return kNextProbeLocation[index];
   }
   friend class MapObj;
+  friend class SmallMapObj;
 
  private:
   /*!
@@ -1216,6 +1012,230 @@ class DenseMapObj : public MapObj {
     TVM_FFI_ICHECK(((n & kSmallTagMask) == 0ull)) << "DenseMap expects MSB clear";
     slots_ = n;
   }
+};
+
+/*! \brief A specialization of small-sized hash map */
+class SmallMapObj : public MapObj {
+ private:
+  static constexpr uint64_t kInitSize = 2;
+  static constexpr uint64_t kMaxSize = 4;
+
+ public:
+  using MapObj::iterator;
+  using MapObj::KVType;
+
+  // Return the number of usable slots for Small layout (mask off tag).
+  /*!
+   * \brief Return the number of usable slots for Small layout (mask off tag).
+   * \return The number of usable slots
+   */
+  uint64_t NumSlots() const { return slots_ & ~kSmallTagMask; }
+
+  ~SmallMapObj() {
+    this->Reset();
+  }
+  /*
+  * \brief Reset original small Storage so it can be ready for switch.
+  */
+  void Reset() {
+    KVType* begin = static_cast<KVType*>(data_);
+    for (uint64_t index = 0; index < size_; ++index) {
+      // call destructor to destroy the item in `begin + index`
+      // Explicit call Any::~Any() to destroy the Any object
+      // Favor this over ~KVType as MSVC may not support ~KVType (need the original name)
+      (begin + index)->first.Any::~Any();
+      (begin + index)->second.Any::~Any();
+    }
+    size_ = 0;
+    if (data_deleter_ != nullptr) {
+      data_deleter_(data_);
+      // after deletion we have zero slots
+      slots_ = 0;
+    }
+  }
+  /*!
+   * \brief Count the number of times a key exists in the SmallMapObj
+   * \param key The indexing key
+   * \return The result, 0 or 1
+   */
+  size_t count(const key_type& key) const { return find(key).index < size_; }
+  /*!
+   * \brief Index value associated with a key, throw exception if the key does not exist
+   * \param key The indexing key
+   * \return The const reference to the value
+   */
+  const mapped_type& at(const key_type& key) const {
+    iterator itr = find(key);
+    if (itr.index >= size_) {
+      TVM_FFI_THROW(KeyError) << "key is not in Map";
+    }
+    return itr->second;
+  }
+  /*!
+   * \brief Index value associated with a key, throw exception if the key does not exist
+   * \param key The indexing key
+   * \return The mutable reference to the value
+   */
+  mapped_type& at(const key_type& key) {
+    iterator itr = find(key);
+    if (itr.index >= size_) {
+      TVM_FFI_THROW(KeyError) << "key is not in Map";
+    }
+    return itr->second;
+  }
+  /*! \return begin iterator */
+  iterator begin() const { return iterator(0, this); }
+  /*! \return end iterator */
+  iterator end() const { return iterator(size_, this); }
+  /*!
+   * \brief Index value associated with a key
+   * \param key The indexing key
+   * \return The iterator of the entry associated with the key, end iterator if not exists
+   */
+  iterator find(const key_type& key) const {
+    KVType* ptr = static_cast<KVType*>(data_);
+    for (uint64_t i = 0; i < size_; ++i, ++ptr) {
+      if (AnyEqual()(ptr->first, key)) {
+        return iterator(i, this);
+      }
+    }
+    return iterator(size_, this);
+  }
+  /*!
+   * \brief Erase the entry associated with the iterator
+   * \param position The iterator
+   */
+  void erase(const iterator& position) { Erase(position.index); }
+
+ private:
+ static void InplaceSmallMapDeleterFromData(void* data) {
+    details::ObjectUnsafe::ObjectPtrFromOwned<SmallMapObj>(
+      reinterpret_cast<Object*>(reinterpret_cast<char*>(data) - sizeof(SmallMapObj))
+    ).reset();
+ }
+
+  /*!
+   * \brief Set the number of slots and attach tags bit.
+   * \param n The number of slots
+   */
+  void SetSlotsAndSmallLayoutTag(uint64_t n) { slots_ = (n & ~kSmallTagMask) | kSmallTagMask; }
+  /*!
+   * \brief Remove a position in SmallMapObj
+   * \param index The position to be removed
+   */
+  void Erase(const uint64_t index) {
+    if (index >= size_) {
+      return;
+    }
+    KVType* begin = static_cast<KVType*>(data_);
+    // call destructor to destroy the item in `begin + index`
+    // Explicit call Any::~Any() to destroy the Any object
+    // Favor this over ~KVType as MSVC may not support ~KVType (need the original name)
+    (begin + index)->first.Any::~Any();
+    (begin + index)->second.Any::~Any();
+    // IMPORTANT: We do direct raw memmove to bring later items to the current position
+    // to preserve the order of insertion.
+    // This works because direct memory copy preserves the Any's move semantics.
+    if (index + 1 < size_) {
+      std::memmove(reinterpret_cast<char*>(begin + index),
+                   reinterpret_cast<char*>(begin + index + 1),
+                   (size_ - index - 1) * sizeof(KVType));
+    }
+    size_ -= 1;
+  }
+  /*!
+   * \brief Create an empty container
+   * \param n Number of empty slots
+   * \return The object created
+   */
+  static ObjectPtr<SmallMapObj> Empty(uint64_t n = kInitSize) {
+    static_assert(alignof(SmallMapObj) % alignof(KVType) == 0);
+    static_assert(sizeof(SmallMapObj)  + kInitSize * sizeof(KVType) >= sizeof(DenseMapObj));
+    // need to allocate large enough to be able to inplace switch to DenseMapObj
+    n = std::max(n, static_cast<uint64_t>(kInitSize));
+    ObjectPtr<SmallMapObj> p = ffi::make_inplace_array_object<SmallMapObj, KVType>(n);
+    // data_ is after the SmallMapObj header
+    p->data_ = reinterpret_cast<char*>(p.get()) + sizeof(SmallMapObj);
+    p->size_ = 0;
+    p->SetSlotsAndSmallLayoutTag(n);
+    return p;
+  }
+  /*!
+   * \brief Create an empty container initialized with a given range
+   * \param n Number of empty slots
+   * \param first begin of iterator
+   * \param last end of iterator
+   * \tparam IterType The type of iterator
+   * \return The object created
+   */
+  template <typename IterType>
+  static ObjectPtr<SmallMapObj> CreateFromRange(uint64_t n, IterType first, IterType last) {
+    ObjectPtr<SmallMapObj> p = Empty(n);
+    KVType* ptr = static_cast<KVType*>(p->data_);
+    for (; first != last; ++first, ++p->size_) {
+      new (ptr++) KVType(*first);
+    }
+    return p;
+  }
+  /*!
+   * \brief Create an empty container with elements copying from another SmallMapObj
+   * \param from The source container
+   * \return The object created
+   */
+  static ObjectPtr<SmallMapObj> CopyFrom(SmallMapObj* from) {
+    KVType* first = static_cast<KVType*>(from->data_);
+    KVType* last = first + from->size_;
+    return CreateFromRange(from->size_, first, last);
+  }
+  /*!
+   * \brief InsertMaybeReHash an entry into the given hash map
+   * \param kv The entry to be inserted
+   * \param map The pointer to the map, can be changed if re-hashing happens
+   */
+  static void InsertMaybeReHash(KVType&& kv, ObjectPtr<Object>* map) {
+    SmallMapObj* map_node = static_cast<SmallMapObj*>(map->get());
+    iterator itr = map_node->find(kv.first);
+    if (itr.index < map_node->size_) {
+      itr->second = kv.second;
+      return;
+    }
+    if (map_node->size_ < map_node->NumSlots()) {
+      KVType* ptr = static_cast<KVType*>(map_node->data_) + map_node->size_;
+      new (ptr) KVType(std::move(kv));
+      ++map_node->size_;
+      return;
+    }
+    uint64_t next_size = std::max(map_node->NumSlots() * 2, kInitSize);
+    next_size = std::min(next_size, kMaxSize);
+    TVM_FFI_ICHECK_GT(next_size, map_node->NumSlots());
+    ObjectPtr<Object> new_map = CreateFromRange(next_size, map_node->begin(), map_node->end());
+    InsertMaybeReHash(std::move(kv), &new_map);
+    *map = std::move(new_map);
+  }
+  /*!
+   * \brief Increment the pointer
+   * \param index The pointer to be incremented
+   * \return The increased pointer
+   */
+  uint64_t IncItr(uint64_t index) const { return index + 1 < size_ ? index + 1 : size_; }
+  /*!
+   * \brief Decrement the pointer
+   * \param index The pointer to be decremented
+   * \return The decreased pointer
+   */
+  uint64_t DecItr(uint64_t index) const { return index > 0 ? index - 1 : size_; }
+  /*!
+   * \brief De-reference the pointer
+   * \param index The pointer to be dereferenced
+   * \return The result
+   */
+  KVType* DeRefItr(uint64_t index) const { return static_cast<KVType*>(data_) + index; }
+  /*! \brief A size function used by InplaceArrayBase */
+  uint64_t GetSize() const { return size_; }
+
+ protected:
+  friend class MapObj;
+  friend class DenseMapObj;
 };
 
 /// \cond
