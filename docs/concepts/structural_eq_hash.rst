@@ -618,14 +618,14 @@ Use for:
   redundant to compare.
 - **Debug annotations** — names, comments, metadata for human consumption.
 
-``structural_eq="def"`` — Definition region
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``structural_eq="def-recursive"`` / ``"def-non-recursive"`` — Definition region
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
    @py_class(structural_eq="tree")
    class Lambda(Object):
-       params: list[Var] = field(structural_eq="def")
+       params: list[Var] = field(structural_eq="def-recursive")
        body: Expr
 
 **Meaning**: "This field introduces new variable bindings. When comparing
@@ -633,15 +633,44 @@ or hashing this field, allow new variable correspondences to be
 established."
 
 This is the counterpart to ``"var"``. A ``"var"`` type says "I am a
-variable"; ``structural_eq="def"`` says "this field is where variables are
-defined." Together they enable alpha-equivalence: comparing functions up
-to consistent variable renaming.
+variable"; the ``"def-*"`` flags on a field say "this field is where
+variables are defined." Together they enable alpha-equivalence:
+comparing functions up to consistent variable renaming.
+
+There are two flavors of definition region, distinguished by what
+happens when a ``"var"`` reached through the field carries its own
+sub-fields (for example, a shape annotation in the var's type):
+
+- ``"def-recursive"`` (alias: ``"def"``) — the variable's sub-fields
+  stay inside the definition region. Any free variables encountered
+  in those sub-fields are themselves treated as fresh definitions at
+  the same site. One example is **function parameter lists**, where
+  the value var and any shape parameters in its type are co-introduced
+  together at the function boundary.
+
+- ``"def-non-recursive"`` — only the immediate variable(s) reached
+  through the field bind. The variable's sub-fields are walked
+  outside the definition region, so any free variables there are
+  *use* references that must resolve against an outer-scope binding.
+  One example is a **normal binding** whose value type references
+  outer-scope shape parameters (a ``let v = expr`` where ``v``'s
+  type refers to vars defined earlier).
+
+When the distinction does not matter (no nested free vars under the
+bound variable), either flavor works and ``"def-recursive"`` is the
+conventional default — that's why the bare ``"def"`` alias resolves
+to it.
 
 Use for:
 
-- **Function parameter lists**
-- **Let-binding left-hand sides**
-- **Any field that introduces names into scope**
+- **Function parameter lists** — ``"def-recursive"`` so shape
+  parameters in each param's type co-introduce at the same site.
+- **Normal binding left-hand sides** (let bindings, for-loop
+  iterators) whose value type references outer-scope vars —
+  ``"def-non-recursive"`` so those references don't rebind.
+- **Any field that introduces names into scope** — pick the flavor
+  that matches the binding form's contract; default to
+  ``"def-recursive"`` when in doubt.
 
 
 .. _sequal-shash:
@@ -679,7 +708,7 @@ Signatures
 
    (self, other, eq_cb) -> bool
 
-   eq_cb(lhs, rhs, def_region: bool, field_name: str) -> bool
+   eq_cb(lhs, rhs, def_region_kind: int, field_name: str) -> bool
 
 ``__s_hash__``:
 
@@ -687,12 +716,25 @@ Signatures
 
    (self, init_hash: int, hash_cb) -> int
 
-   hash_cb(value, init_hash: int, def_region: bool) -> int
+   hash_cb(value, init_hash: int, def_region_kind: int) -> int
 
-The ``def_region`` flag on each recursive call controls whether the
-sub-value is compared/hashed in a definition region (enabling new
-variable bindings, just like ``field(structural_eq="def")``).  The
-``field_name`` argument on ``eq_cb`` is used only for mismatch path
+The ``def_region_kind`` argument on each recursive call mirrors the
+field-level ``"def-*"`` flags and controls whether the sub-value is
+compared/hashed inside a definition region:
+
+- ``0`` — not in a def region (matches ``None`` on a field).
+- ``1`` — recursive def region (matches ``"def-recursive"``, alias
+  ``"def"``).
+- ``2`` — non-recursive def region (matches ``"def-non-recursive"``).
+
+For back-compat with the original single-flag API, the callback also
+accepts a plain ``bool``: ``True`` is treated as ``1`` (recursive) and
+``False`` as ``0`` (not in a def region). The Python examples below
+use ``True`` / ``False`` for that reason; pass an explicit ``2`` (or
+the ``kTVMFFIDefRegionKindNonRecursive`` enum value from C++) when the
+non-recursive kind is needed.
+
+The ``field_name`` argument on ``eq_cb`` is used only for mismatch path
 reporting from :py:func:`~tvm_ffi.get_first_structural_mismatch`.
 
 Example (Python)

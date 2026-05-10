@@ -858,11 +858,13 @@ typedef enum {
    */
   kTVMFFIFieldFlagBitMaskSEqHashIgnore = 1 << 3,
   /*!
-   * \brief The field enters a def region where var can be defined/matched.
+   * \brief The field enters a recursive def region.
    *
    * This is an optional meta-data for structural eq/hash.
+   *
+   * \sa TVMFFIDefRegionKind for the def-region semantics.
    */
-  kTVMFFIFieldFlagBitMaskSEqHashDef = 1 << 4,
+  kTVMFFIFieldFlagBitMaskSEqHashDefRecursive = 1 << 4,
   /*!
    * \brief The default_value_or_factory is a callable factory function () -> Any.
    *
@@ -922,6 +924,17 @@ typedef enum {
    * ``(field_addr_as_OpaquePtr, value_as_AnyView)``.
    */
   kTVMFFIFieldFlagBitSetterIsFunctionObj = 1 << 11,
+  /*!
+   * \brief The field enters a non-recursive def region.
+   *
+   * This is an optional meta-data for structural eq/hash.
+   *
+   * \sa TVMFFIDefRegionKind for the def-region semantics.
+   *
+   * \note Bit 1 << 12 is used here because bits 1 << 5 .. 1 << 11 are
+   *       already taken by other field flags above.
+   */
+  kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive = 1 << 12,
 #ifdef __cplusplus
 };
 #else
@@ -991,6 +1004,57 @@ typedef enum {
 };
 #else
 } TVMFFISEqHashKind;
+#endif
+
+/*!
+ * \brief Kind of def region a structural-equal / structural-hash callback is
+ *        currently in when visiting a field.
+ */
+#ifdef __cplusplus
+enum TVMFFIDefRegionKind : int32_t {
+#else
+typedef enum {
+#endif
+  /*!
+   * \brief Not in a def region.
+   *
+   * Free vars reachable through this field are uses; they must already
+   * be bound by an enclosing def region or equality / hashing falls
+   * back to pointer identity.
+   */
+  kTVMFFIDefRegionKindNone = 0,
+  /*!
+   * \brief In a recursive def region.
+   *
+   * When we see a free var for the first time, we define the var, and
+   * the sub-fields of the var (e.g. its struct_info / type_annotation /
+   * shape) are also still in the def region — any free vars discovered
+   * inside those sub-fields are themselves treated as fresh defs at the
+   * same site.
+   *
+   * One example is function parameter lists: the value var and any
+   * shape parameters in its type are co-introduced at the same binding
+   * site.
+   */
+  kTVMFFIDefRegionKindRecursive = 1,
+  /*!
+   * \brief In a non-recursive def region.
+   *
+   * When we see a free var for the first time, we define the var, but
+   * the sub-fields of the var are NOT in the def region — they are
+   * treated as use references that must resolve against an outer
+   * binding. Free vars found in those sub-fields therefore do not
+   * rebind; if they are not already bound, equality fails.
+   *
+   * One example is a normal binding whose value type contains shape
+   * parameters: the value var is introduced fresh, but its shape
+   * parameters reference vars defined in an outer scope.
+   */
+  kTVMFFIDefRegionKindNonRecursive = 2,
+#ifdef __cplusplus
+};
+#else
+} TVMFFIDefRegionKind;
 #endif
 
 /*!

@@ -87,9 +87,19 @@ class Field:
           structural comparison and hashing.
         - ``"ignore"``: the field is excluded from structural equality
           and hashing entirely (e.g. source spans, caches).
-        - ``"def"``: the field is a **definition region** that introduces
-          new variable bindings.  Free variables encountered inside this
-          field are mapped by position, enabling alpha-equivalence.
+        - ``"def-recursive"`` (alias: ``"def"``): the field is a
+          **recursive definition region** that introduces new variable
+          bindings.  Free variables encountered anywhere in this field's
+          subtree (including inside the var's own sub-fields) are
+          mapped by position. One example is function parameter lists,
+          where the value var and any shape parameters in its type are
+          co-introduced at the same site.
+        - ``"def-non-recursive"``: the field is a **non-recursive
+          definition region**.  Only the immediate free var(s) at this
+          field's value bind; free vars inside their sub-fields must
+          resolve against an outer binding (use semantics). One example
+          is a normal binding whose value type contains shape
+          parameters that reference outer-scope vars.
     doc : str | None
         Optional docstring for the field.
 
@@ -125,8 +135,12 @@ class Field:
     doc: str | None
 
     #: Valid values for the *structural_eq* parameter.
+    #:
+    #: ``"def"`` is kept as a Python-side alias for ``"def-recursive"`` to
+    #: preserve back-compat with code written against the old single-flag
+    #: ``SEqHashDef`` API.
     _VALID_STRUCTURAL_EQ_VALUES: ClassVar[frozenset[str | None]] = frozenset(
-        {None, "ignore", "def"}
+        {None, "ignore", "def", "def-recursive", "def-non-recursive"}
     )
 
     def __init__(  # noqa: PLR0913
@@ -226,8 +240,12 @@ def field(
     structural_eq
         Structural equality/hashing annotation. ``None`` (default) means
         the field participates normally. ``"ignore"`` excludes the field
-        from structural comparison and hashing. ``"def"`` marks the field
-        as a definition region for variable binding.
+        from structural comparison and hashing. ``"def-recursive"``
+        (alias ``"def"``) marks the field as a recursive definition
+        region: free vars in the field's whole subtree bind. ``"def-non-recursive"``
+        marks it as a non-recursive definition region: only immediate
+        free vars bind; nested free vars must resolve against an outer
+        binding.
     doc
         Optional docstring for the field.
 

@@ -206,6 +206,81 @@ class TVar : public ObjectRef {
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TVar, ObjectRef, TVarObj);
 };
 
+// FreeVar test object that has a sub-field referencing another FreeVar.
+// This models the "var with nested vars" case (analogous to a relax::Var
+// whose struct_info contains tir shape vars). It is used to exercise the
+// difference between SEqHashDefRecursive and SEqHashDefNonRecursive at the
+// FFI layer: under recursive semantics the nested ``dep`` var rebinds
+// transitively; under non-recursive semantics it is treated as a use of an
+// outer-scope binding and equality fails when no such outer binding exists.
+class TVarWithDepObj : public Object {
+ public:
+  std::string name;
+  // Optional dependency var; when null, this object behaves like a plain
+  // FreeVar with no nested free vars.
+  Optional<ObjectRef> dep;
+
+  TVarWithDepObj(std::string name, Optional<ObjectRef> dep)
+      : name(std::move(name)), dep(std::move(dep)) {}
+  explicit TVarWithDepObj(UnsafeInit) {}
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<TVarWithDepObj>()
+        .def_ro("name", &TVarWithDepObj::name, refl::AttachFieldFlag::SEqHashIgnore())
+        // ``dep`` participates in structural equality without any def flag,
+        // so it is a USE position. Whether the FreeVar in ``dep`` may rebind
+        // is decided by the def flag on whichever outer field reaches this
+        // object.
+        .def_ro("dep", &TVarWithDepObj::dep);
+  }
+
+  static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindFreeVar;
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("test.VarWithDep", TVarWithDepObj, Object);
+};
+
+class TVarWithDep : public ObjectRef {
+ public:
+  explicit TVarWithDep(std::string name, Optional<ObjectRef> dep = std::nullopt) {
+    data_ = make_object<TVarWithDepObj>(std::move(name), std::move(dep));
+  }
+
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TVarWithDep, ObjectRef, TVarWithDepObj);
+};
+
+// Holder with one recursive-def field and one non-recursive-def field.
+// Used by StructuralEqualHash.NonRecursiveDef tests below.
+class TDefHolderObj : public Object {
+ public:
+  TVarWithDep def_recursive;
+  TVarWithDep def_non_recursive;
+
+  TDefHolderObj(TVarWithDep def_recursive, TVarWithDep def_non_recursive)
+      : def_recursive(std::move(def_recursive)), def_non_recursive(std::move(def_non_recursive)) {}
+  explicit TDefHolderObj(UnsafeInit) {}
+
+  static void RegisterReflection() {
+    namespace refl = tvm::ffi::reflection;
+    refl::ObjectDef<TDefHolderObj>()
+        .def_ro("def_recursive", &TDefHolderObj::def_recursive,
+                refl::AttachFieldFlag::SEqHashDefRecursive())
+        .def_ro("def_non_recursive", &TDefHolderObj::def_non_recursive,
+                refl::AttachFieldFlag::SEqHashDefNonRecursive());
+  }
+
+  static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindTreeNode;
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("test.DefHolder", TDefHolderObj, Object);
+};
+
+class TDefHolder : public ObjectRef {
+ public:
+  explicit TDefHolder(TVarWithDep def_recursive, TVarWithDep def_non_recursive) {
+    data_ = make_object<TDefHolderObj>(std::move(def_recursive), std::move(def_non_recursive));
+  }
+
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TDefHolder, ObjectRef, TDefHolderObj);
+};
+
 class TFuncObj : public Object {
  public:
   Array<TVar> params;
@@ -220,7 +295,7 @@ class TFuncObj : public Object {
   static void RegisterReflection() {
     namespace refl = tvm::ffi::reflection;
     refl::ObjectDef<TFuncObj>()
-        .def_ro("params", &TFuncObj::params, refl::AttachFieldFlag::SEqHashDef())
+        .def_ro("params", &TFuncObj::params, refl::AttachFieldFlag::SEqHashDefRecursive())
         .def_ro("body", &TFuncObj::body)
         .def_ro("comment", &TFuncObj::comment, refl::AttachFieldFlag::SEqHashIgnore());
   }

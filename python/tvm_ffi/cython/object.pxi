@@ -541,11 +541,13 @@ cdef _type_info_create_from_type_key(object type_cls, str type_key):
                 c_default_factory = make_ret(owned_default)
             else:
                 c_default = make_ret(owned_default)
-        # Decode SEqHashIgnore / SEqHashDef into the Field.structural_eq vocabulary.
+        # Decode SEqHashIgnore / SEqHashDef* into the Field.structural_eq vocabulary.
         if (field.flags & kTVMFFIFieldFlagBitMaskSEqHashIgnore) != 0:
             c_structural_eq = "ignore"
-        elif (field.flags & kTVMFFIFieldFlagBitMaskSEqHashDef) != 0:
-            c_structural_eq = "def"
+        elif (field.flags & kTVMFFIFieldFlagBitMaskSEqHashDefRecursive) != 0:
+            c_structural_eq = "def-recursive"
+        elif (field.flags & kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive) != 0:
+            c_structural_eq = "def-non-recursive"
         else:
             c_structural_eq = None
         fields.append(

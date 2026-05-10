@@ -133,7 +133,7 @@ class StructEqualHandler {
     }
   }
 
-  bool CompareObject(ObjectRef lhs, ObjectRef rhs) {
+  bool CompareObject(const ObjectRef& lhs, const ObjectRef& rhs) {
     // NOTE: invariant: lhs and rhs are already the same type
     const TVMFFITypeInfo* type_info = TVMFFIGetTypeInfo(lhs->type_index());
     if (type_info->metadata == nullptr) {
@@ -171,6 +171,41 @@ class StructEqualHandler {
       }
     }
 
+    if (structural_eq_hash_kind != kTVMFFISEqHashKindFreeVar) {
+      bool success = CompareFields(lhs, rhs, type_info);
+      if (success && structural_eq_hash_kind == kTVMFFISEqHashKindDAGNode) {
+        // record the equality mapping for DAG nodes
+        equal_map_lhs_[lhs] = rhs;
+        equal_map_rhs_[rhs] = lhs;
+      }
+      return success;
+    }
+    // FreeVar path. In a non-recursive def region the FreeVar's own
+    // sub-fields are walked outside the def region (nested free vars
+    // there must resolve against an outer binding, not rebind), so we
+    // clamp ``def_region_kind_`` to ``kNone`` around the CompareFields
+    // call and restore before the binding decision below.
+    TVMFFIDefRegionKind saved_def_region_kind = def_region_kind_;
+    if (def_region_kind_ == kTVMFFIDefRegionKindNonRecursive) {
+      def_region_kind_ = kTVMFFIDefRegionKindNone;
+    }
+    bool success = CompareFields(lhs, rhs, type_info);
+    def_region_kind_ = saved_def_region_kind;
+    if (!success) return false;
+    // FreeVar that is not yet mapped: bind it iff identity-equal or we
+    // are inside a def region.
+    if (lhs.same_as(rhs) || def_region_kind_ != kTVMFFIDefRegionKindNone) {
+      equal_map_lhs_[lhs] = rhs;
+      equal_map_rhs_[rhs] = lhs;
+      return true;
+    }
+    return false;
+  }
+
+  // Compare an object's fields (generic walk or via the custom
+  // __ffi_s_equal__ callback). Does not touch the FreeVar def-region
+  // clamp — the caller (CompareObject) handles that for the FreeVar case.
+  bool CompareFields(const ObjectRef& lhs, const ObjectRef& rhs, const TVMFFITypeInfo* type_info) {
     static reflection::TypeAttrColumn custom_s_equal =
         reflection::TypeAttrColumn(reflection::type_attr::kSEqual);
 
@@ -184,12 +219,17 @@ class StructEqualHandler {
         reflection::FieldGetter getter(field_info);
         Any lhs_value = getter(lhs);
         Any rhs_value = getter(rhs);
-        // field is in def region, enable free var mapping
-        if (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDef) {
-          bool allow_free_var = true;
-          std::swap(allow_free_var, map_free_vars_);
+        // Dispatch on the def-region flags.
+        constexpr int64_t kSEqHashDefAny = kTVMFFIFieldFlagBitMaskSEqHashDefRecursive |
+                                           kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive;
+        if (field_info->flags & kSEqHashDefAny) {
+          TVMFFIDefRegionKind new_kind =
+              (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive)
+                  ? kTVMFFIDefRegionKindNonRecursive
+                  : kTVMFFIDefRegionKindRecursive;
+          std::swap(new_kind, def_region_kind_);
           success = CompareAny(lhs_value, rhs_value);
-          std::swap(allow_free_var, map_free_vars_);
+          std::swap(new_kind, def_region_kind_);
         } else {
           success = CompareAny(lhs_value, rhs_value);
         }
@@ -212,19 +252,20 @@ class StructEqualHandler {
       // run custom equal function defined via __s_equal__ type attribute
       if (s_equal_callback_ == nullptr) {
         s_equal_callback_ = ffi::Function::FromTyped(
-            [this](AnyView lhs, AnyView rhs, bool def_region, AnyView field_name) {
+            // Third parameter is a ``TVMFFIDefRegionKind`` (passed on the wire
+            // as ``int`` to keep the FFI signature stable across language
+            // boundaries).
+            [this](AnyView inner_lhs, AnyView inner_rhs, int def_region_kind, AnyView field_name) {
               // NOTE: we explicitly make field_name as AnyView to avoid copy overhead initially
               // and only cast to string if mismatch happens
-              bool success = true;
-              if (def_region) {
-                bool allow_free_var = true;
-                std::swap(allow_free_var, map_free_vars_);
-                success = CompareAny(lhs, rhs);
-                std::swap(allow_free_var, map_free_vars_);
-              } else {
-                success = CompareAny(lhs, rhs);
-              }
-              if (!success) {
+              TVMFFIDefRegionKind new_kind =
+                  (def_region_kind == kTVMFFIDefRegionKindNone)
+                      ? def_region_kind_
+                      : static_cast<TVMFFIDefRegionKind>(def_region_kind);
+              std::swap(new_kind, def_region_kind_);
+              bool sub_success = CompareAny(inner_lhs, inner_rhs);
+              std::swap(new_kind, def_region_kind_);
+              if (!sub_success) {
                 if (mismatch_lhs_reverse_path_ != nullptr) {
                   String field_name_str = field_name.cast<String>();
                   mismatch_lhs_reverse_path_->emplace_back(
@@ -233,38 +274,14 @@ class StructEqualHandler {
                       reflection::AccessStep::Attr(field_name_str));
                 }
               }
-              return success;
+              return sub_success;
             });
       }
       success = custom_s_equal[type_info->type_index]
                     .cast<ffi::Function>()(lhs, rhs, s_equal_callback_)
                     .cast<bool>();
     }
-
-    if (success) {
-      if (structural_eq_hash_kind == kTVMFFISEqHashKindFreeVar) {
-        // we are in a free var case that is not yet mapped.
-        // in this case, either map_free_vars_ should be set to true, or map_free_vars_ should be
-        // set
-        if (lhs.same_as(rhs) || map_free_vars_) {
-          // record the equality
-          equal_map_lhs_[lhs] = rhs;
-          equal_map_rhs_[rhs] = lhs;
-          return true;
-        } else {
-          return false;
-        }
-      }
-      // if we have a success mapping and in graph/var mode, record the equality mapping
-      if (structural_eq_hash_kind == kTVMFFISEqHashKindDAGNode) {
-        // record the equality
-        equal_map_lhs_[lhs] = rhs;
-        equal_map_rhs_[rhs] = lhs;
-      }
-      return true;
-    } else {
-      return false;
-    }
+    return success;
   }
 
   template <typename MapType>
@@ -413,8 +430,12 @@ class StructEqualHandler {
     }
     return rhs_obj;
   }
-  // whether we map free variables that are not defined
-  bool map_free_vars_{false};
+  // Current def-region kind. ``kNone`` means we are not in a def region;
+  // free vars discovered here do not bind (they must already be bound by an
+  // outer scope or comparison falls back to pointer identity). ``kRecursive``
+  // and ``kNonRecursive`` enable binding for the field-flag-driven walk and
+  // for the custom-callback path respectively (see CompareObject).
+  TVMFFIDefRegionKind def_region_kind_{kTVMFFIDefRegionKindNone};
   // whether we compare tensor data
   bool skip_tensor_content_{false};
   // the root lhs for result printing
@@ -431,7 +452,8 @@ class StructEqualHandler {
 bool StructuralEqual::Equal(const Any& lhs, const Any& rhs, bool map_free_vars,
                             bool skip_tensor_content) {
   StructEqualHandler handler;
-  handler.map_free_vars_ = map_free_vars;
+  handler.def_region_kind_ =
+      map_free_vars ? kTVMFFIDefRegionKindRecursive : kTVMFFIDefRegionKindNone;
   handler.skip_tensor_content_ = skip_tensor_content;
   return handler.CompareAny(lhs, rhs);
 }
@@ -441,7 +463,8 @@ Optional<reflection::AccessPathPair> StructuralEqual::GetFirstMismatch(const Any
                                                                        bool map_free_vars,
                                                                        bool skip_tensor_content) {
   StructEqualHandler handler;
-  handler.map_free_vars_ = map_free_vars;
+  handler.def_region_kind_ =
+      map_free_vars ? kTVMFFIDefRegionKindRecursive : kTVMFFIDefRegionKindNone;
   handler.skip_tensor_content_ = skip_tensor_content;
   std::vector<reflection::AccessStep> lhs_reverse_path;
   std::vector<reflection::AccessStep> rhs_reverse_path;

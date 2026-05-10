@@ -102,7 +102,7 @@ class StructuralHashHandler {
     }
   }
 
-  uint64_t HashObject(ObjectRef obj) {
+  uint64_t HashObject(const ObjectRef& obj) {
     // NOTE: invariant: lhs and rhs are already the same type
     const TVMFFITypeInfo* type_info = TVMFFIGetTypeInfo(obj->type_index());
     if (type_info->metadata == nullptr) {
@@ -127,63 +127,37 @@ class StructuralHashHandler {
       return it->second;
     }
 
-    static reflection::TypeAttrColumn custom_s_hash =
-        reflection::TypeAttrColumn(reflection::type_attr::kSHash);
-
-    // compute the hash value
-    uint64_t hash_value = obj->GetTypeKeyHash();
-    if (custom_s_hash[type_info->type_index] == nullptr) {
-      // go over the content and hash the fields
-      reflection::ForEachFieldInfo(type_info, [&](const TVMFFIFieldInfo* field_info) {
-        // skip fields that are marked as structural eq hash ignore
-        if (!(field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashIgnore)) {
-          // get the field value from both side
-          reflection::FieldGetter getter(field_info);
-          Any field_value = getter(obj);
-          // field is in def region, enable free var mapping
-          if (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDef) {
-            bool allow_free_var = true;
-            std::swap(allow_free_var, map_free_vars_);
-            hash_value = details::StableHashCombine(hash_value, HashAny(field_value));
-            std::swap(allow_free_var, map_free_vars_);
-          } else {
-            hash_value = details::StableHashCombine(hash_value, HashAny(field_value));
-          }
-        }
-      });
+    uint64_t hash_value;
+    if (structural_eq_hash_kind != kTVMFFISEqHashKindFreeVar) {
+      hash_value = HashFields(obj, type_info, obj->GetTypeKeyHash());
     } else {
-      if (s_hash_callback_ == nullptr) {
-        s_hash_callback_ =
-            ffi::Function::FromTyped([this](AnyView val, uint64_t init_hash, bool def_region) {
-              if (def_region) {
-                bool allow_free_var = true;
-                std::swap(allow_free_var, map_free_vars_);
-                uint64_t hash_value = HashAny(val);
-                std::swap(allow_free_var, map_free_vars_);
-                return static_cast<int64_t>(details::StableHashCombine(init_hash, hash_value));
-              } else {
-                // we explicitly bitcast the result from `uint64_t` to `int64_t`.
-                // The range of `uint64_t` is too large to fit as `int64_t`, so if we don't bitcast,
-                // it will trigger an overflow error in `uint64_t` -> `Any` conversion.
-                return static_cast<int64_t>(details::StableHashCombine(init_hash, HashAny(val)));
-              }
-            });
+      // FreeVar path. In a non-recursive def region the FreeVar's own
+      // sub-fields are walked outside the def region (nested free vars
+      // there hash by pointer, matching use semantics), so we clamp
+      // ``def_region_kind_`` to ``kNone`` around the HashFields call and
+      // restore before the FreeVar-level injection below.
+      //
+      // We always call HashFields, even in use mode where the returned
+      // ``hash_value`` is discarded by the pointer-hash fallback. The
+      // walk's side effect on ``free_var_counter_`` (incremented for
+      // every nested FreeVar reached via SEqHashDef-tagged sub-fields)
+      // is observable to FreeVars hashed later in the same traversal;
+      // skipping the walk would silently change those subsequent hashes.
+      TVMFFIDefRegionKind saved_def_region_kind = def_region_kind_;
+      if (def_region_kind_ == kTVMFFIDefRegionKindNonRecursive) {
+        def_region_kind_ = kTVMFFIDefRegionKindNone;
       }
-      hash_value =
-          custom_s_hash[type_info->type_index]
-              .cast<ffi::Function>()(obj, static_cast<int64_t>(hash_value), s_hash_callback_)
-              .cast<uint64_t>();
-    }
-
-    if (structural_eq_hash_kind == kTVMFFISEqHashKindFreeVar) {
-      if (map_free_vars_) {
+      hash_value = HashFields(obj, type_info, obj->GetTypeKeyHash());
+      def_region_kind_ = saved_def_region_kind;
+      if (def_region_kind_ != kTVMFFIDefRegionKindNone) {
         // use lexical order of free var and its type
         hash_value = details::StableHashCombine(hash_value, free_var_counter_++);
       } else {
-        // Fallback to pointer hash, we are not mapping free var.
+        // Fallback to pointer hash; we are not in a def region.
         hash_value = std::hash<const Object*>()(obj.get());
       }
     }
+
     // if it is a DAG node, also record the lexical order of graph counter
     // this helps to distinguish DAG from trees.
     if (structural_eq_hash_kind == kTVMFFISEqHashKindDAGNode) {
@@ -192,6 +166,63 @@ class StructuralHashHandler {
     // record the hash value for this object
     hash_memo_[obj] = hash_value;
     return hash_value;
+  }
+
+  // Hash an object's fields (generic walk or via the custom __ffi_s_hash__
+  // callback). Does not touch the FreeVar def-region clamp — that lives
+  // inline in HashObject's FreeVar branch, which wraps this helper.
+  uint64_t HashFields(const ObjectRef& obj, const TVMFFITypeInfo* type_info, uint64_t init_hash) {
+    static reflection::TypeAttrColumn custom_s_hash =
+        reflection::TypeAttrColumn(reflection::type_attr::kSHash);
+
+    if (custom_s_hash[type_info->type_index] == nullptr) {
+      // go over the content and hash the fields
+      reflection::ForEachFieldInfo(type_info, [&](const TVMFFIFieldInfo* field_info) {
+        // skip fields that are marked as structural eq hash ignore
+        if (!(field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashIgnore)) {
+          reflection::FieldGetter getter(field_info);
+          Any field_value = getter(obj);
+          // Dispatch on the def-region flags (mirror of the equality side).
+          constexpr int64_t kSEqHashDefAny = kTVMFFIFieldFlagBitMaskSEqHashDefRecursive |
+                                             kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive;
+          if (field_info->flags & kSEqHashDefAny) {
+            TVMFFIDefRegionKind new_kind =
+                (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive)
+                    ? kTVMFFIDefRegionKindNonRecursive
+                    : kTVMFFIDefRegionKindRecursive;
+            std::swap(new_kind, def_region_kind_);
+            init_hash = details::StableHashCombine(init_hash, HashAny(field_value));
+            std::swap(new_kind, def_region_kind_);
+          } else {
+            init_hash = details::StableHashCombine(init_hash, HashAny(field_value));
+          }
+        }
+      });
+    } else {
+      if (s_hash_callback_ == nullptr) {
+        s_hash_callback_ =
+            // Third parameter is a ``TVMFFIDefRegionKind`` (passed on the wire
+            // as ``int`` to keep the FFI signature stable across language
+            // boundaries).
+            ffi::Function::FromTyped([this](AnyView val, uint64_t inner_init, int def_region_kind) {
+              TVMFFIDefRegionKind new_kind =
+                  (def_region_kind == kTVMFFIDefRegionKindNone)
+                      ? def_region_kind_
+                      : static_cast<TVMFFIDefRegionKind>(def_region_kind);
+              std::swap(new_kind, def_region_kind_);
+              uint64_t hv = HashAny(val);
+              std::swap(new_kind, def_region_kind_);
+              // we explicitly bitcast the result from `uint64_t` to `int64_t`.
+              // The range of `uint64_t` is too large to fit as `int64_t`, so if we don't bitcast,
+              // it will trigger an overflow error in `uint64_t` -> `Any` conversion.
+              return static_cast<int64_t>(details::StableHashCombine(inner_init, hv));
+            });
+      }
+      init_hash = custom_s_hash[type_info->type_index]
+                      .cast<ffi::Function>()(obj, static_cast<int64_t>(init_hash), s_hash_callback_)
+                      .cast<uint64_t>();
+    }
+    return init_hash;
   }
 
   // NOLINTNEXTLINE(performance-unnecessary-value-param)
@@ -317,7 +348,11 @@ class StructuralHashHandler {
     return hash_value;
   }
 
-  bool map_free_vars_{false};
+  // Current def-region kind. ``kNone`` means we are not in a def region; free
+  // vars hash by pointer. ``kRecursive`` and ``kNonRecursive`` enable
+  // ``free_var_counter_``-based hashing for the field-flag-driven walk and
+  // for the custom-callback path respectively (see HashObject).
+  TVMFFIDefRegionKind def_region_kind_{kTVMFFIDefRegionKindNone};
   bool skip_tensor_content_{false};
   // free var counter.
   uint32_t free_var_counter_{0};
@@ -331,7 +366,8 @@ class StructuralHashHandler {
 
 uint64_t StructuralHash::Hash(const Any& value, bool map_free_vars, bool skip_tensor_content) {
   StructuralHashHandler handler;
-  handler.map_free_vars_ = map_free_vars;
+  handler.def_region_kind_ =
+      map_free_vars ? kTVMFFIDefRegionKindRecursive : kTVMFFIDefRegionKindNone;
   handler.skip_tensor_content_ = skip_tensor_content;
   return handler.HashAny(value);
 }

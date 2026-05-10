@@ -229,6 +229,70 @@ TEST(StructuralEqualHash, CustomTreeNode) {
   EXPECT_TRUE(StructuralEqual()(diff_fa_fc, expected_diff_fa_fc));
 }
 
+// Regression tests for the SEqHashDefRecursive vs SEqHashDefNonRecursive
+// distinction. ``TDefHolder`` has two sibling fields:
+//   - ``def_recursive``     tagged AttachFieldFlag::SEqHashDefRecursive()
+//   - ``def_non_recursive`` tagged AttachFieldFlag::SEqHashDefNonRecursive()
+// each holding a ``TVarWithDep`` (a FreeVar with a sub-field ``dep`` that
+// can itself reference another FreeVar). The four sub-cases below cover
+// the observable behaviors of the two flags.
+TEST(StructuralEqualHash, NonRecursiveDef) {
+  {
+    // (a) Recursive flag rebinds nested FreeVars transitively.
+    // ``def_non_recursive`` is the same object on both sides so it equates
+    // by pointer; the case isolates the recursive field's rebinding.
+    SCOPED_TRACE("recursive flag rebinds nested FreeVars");
+    TVarWithDep a("a", TVar("m"));
+    TVarWithDep b("b", TVar("n"));
+    TDefHolder lhs(/*def_recursive=*/a, /*def_non_recursive=*/a);
+    TDefHolder rhs(/*def_recursive=*/b, /*def_non_recursive=*/b);
+    EXPECT_TRUE(StructuralEqual()(lhs, rhs));
+    EXPECT_EQ(StructuralHash::Hash(lhs, /*map_free_vars=*/true),
+              StructuralHash::Hash(rhs, /*map_free_vars=*/true));
+  }
+  {
+    // (b) Non-recursive flag does NOT rebind nested FreeVars: the top-level
+    // FreeVar binds but the nested ``dep`` is clamped out of the def region.
+    // With no outer binding for "p"/"q", equality must fail.
+    SCOPED_TRACE("non-recursive flag does not rebind nested FreeVars");
+    TVarWithDep shared("shared", std::nullopt);
+    TVarWithDep c_with_dep("c", TVar("p"));
+    TVarWithDep d_with_dep("d", TVar("q"));
+    TDefHolder lhs(/*def_recursive=*/shared, /*def_non_recursive=*/c_with_dep);
+    TDefHolder rhs(/*def_recursive=*/shared, /*def_non_recursive=*/d_with_dep);
+    EXPECT_FALSE(StructuralEqual::Equal(lhs, rhs, /*map_free_vars=*/false));
+  }
+  {
+    // (c) Non-recursive flag works if nested FreeVars resolve via an outer
+    // binding — here we cheat by wiring the same pointer, so the nested
+    // FreeVar passes the same-as pointer check without needing the def
+    // region to be on inside its sub-field walk.
+    SCOPED_TRACE("nested FreeVars resolve via outer pointer identity");
+    TVar shared_dep("dep");
+    TVarWithDep c_with_dep("c", shared_dep);
+    TVarWithDep d_with_dep("d", shared_dep);
+    TVarWithDep shared("shared", std::nullopt);
+    TDefHolder lhs(/*def_recursive=*/shared, /*def_non_recursive=*/c_with_dep);
+    TDefHolder rhs(/*def_recursive=*/shared, /*def_non_recursive=*/d_with_dep);
+    EXPECT_TRUE(StructuralEqual()(lhs, rhs));
+    EXPECT_EQ(StructuralHash()(lhs), StructuralHash()(rhs));
+  }
+  {
+    // (d) Top-level FreeVar still binds under non-recursive — only the
+    // FreeVar's sub-fields are clamped out; the binding step itself for
+    // the immediate FreeVar is not suppressed.
+    SCOPED_TRACE("top-level FreeVar still binds under non-recursive flag");
+    TVarWithDep shared("shared", std::nullopt);
+    TVarWithDep c_no_dep("c", std::nullopt);
+    TVarWithDep d_no_dep("d", std::nullopt);
+    TDefHolder lhs(/*def_recursive=*/shared, /*def_non_recursive=*/c_no_dep);
+    TDefHolder rhs(/*def_recursive=*/shared, /*def_non_recursive=*/d_no_dep);
+    EXPECT_TRUE(StructuralEqual()(lhs, rhs));
+    EXPECT_EQ(StructuralHash::Hash(lhs, /*map_free_vars=*/true),
+              StructuralHash::Hash(rhs, /*map_free_vars=*/true));
+  }
+}
+
 TEST(StructuralEqualHash, List) {
   List<int> a = {1, 2, 3};
   List<int> b = {1, 2, 3};

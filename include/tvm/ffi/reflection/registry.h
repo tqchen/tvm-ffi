@@ -213,10 +213,25 @@ class AttachFieldFlag : public InfoTrait {
   explicit AttachFieldFlag(int32_t flag) : flag_(flag) {}
 
   /*!
-   * \brief Attach kTVMFFIFieldFlagBitMaskSEqHashDef
+   * \brief Attach kTVMFFIFieldFlagBitMaskSEqHashDefRecursive
+   *
+   * The field enters a recursive def region: free vars discovered both at
+   * the field's value and inside that value's sub-fields bind as fresh
+   * defs at the same site. Use for "function-style" bindings.
    */
-  TVM_FFI_INLINE static AttachFieldFlag SEqHashDef() {
-    return AttachFieldFlag(kTVMFFIFieldFlagBitMaskSEqHashDef);
+  TVM_FFI_INLINE static AttachFieldFlag SEqHashDefRecursive() {
+    return AttachFieldFlag(kTVMFFIFieldFlagBitMaskSEqHashDefRecursive);
+  }
+  /*!
+   * \brief Attach kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive
+   *
+   * The field enters a non-recursive def region: only the immediate free
+   * var at the field's value binds; free vars in its sub-fields are uses
+   * that must already be bound by an outer def region. Use for "let-style"
+   * bindings whose sub-fields reference outer-scope vars.
+   */
+  TVM_FFI_INLINE static AttachFieldFlag SEqHashDefNonRecursive() {
+    return AttachFieldFlag(kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive);
   }
   /*!
    * \brief Attach kTVMFFIFieldFlagBitMaskSEqHashIgnore

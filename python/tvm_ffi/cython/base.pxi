@@ -207,7 +207,7 @@ cdef extern from "tvm/ffi/c_api.h":
         kTVMFFIFieldFlagBitMaskHasDefault = 1 << 1
         kTVMFFIFieldFlagBitMaskIsStaticMethod = 1 << 2
         kTVMFFIFieldFlagBitMaskSEqHashIgnore = 1 << 3
-        kTVMFFIFieldFlagBitMaskSEqHashDef = 1 << 4
+        kTVMFFIFieldFlagBitMaskSEqHashDefRecursive = 1 << 4
         kTVMFFIFieldFlagBitMaskDefaultFromFactory = 1 << 5
         kTVMFFIFieldFlagBitMaskReprOff = 1 << 6
         kTVMFFIFieldFlagBitMaskCompareOff = 1 << 7
@@ -215,6 +215,7 @@ cdef extern from "tvm/ffi/c_api.h":
         kTVMFFIFieldFlagBitMaskInitOff = 1 << 9
         kTVMFFIFieldFlagBitMaskKwOnly = 1 << 10
         kTVMFFIFieldFlagBitSetterIsFunctionObj = 1 << 11
+        kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive = 1 << 12
 
     ctypedef int (*TVMFFIFieldGetter)(void* field, TVMFFIAny* result) noexcept
     ctypedef int (*TVMFFIFieldSetter)(void* field, const TVMFFIAny* value) noexcept
@@ -247,6 +248,11 @@ cdef extern from "tvm/ffi/c_api.h":
         kTVMFFISEqHashKindDAGNode = 3
         kTVMFFISEqHashKindConstTreeNode = 4
         kTVMFFISEqHashKindUniqueInstance = 5
+
+    cdef enum TVMFFIDefRegionKind:
+        kTVMFFIDefRegionKindNone = 0
+        kTVMFFIDefRegionKindRecursive = 1
+        kTVMFFIDefRegionKindNonRecursive = 2
 
     ctypedef struct TVMFFITypeMetadata:
         TVMFFIByteArray doc

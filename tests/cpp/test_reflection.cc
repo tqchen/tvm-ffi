@@ -66,6 +66,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   TFloatObj::RegisterReflection();
   TPrimExprObj::RegisterReflection();
   TVarObj::RegisterReflection();
+  TVarWithDepObj::RegisterReflection();
+  TDefHolderObj::RegisterReflection();
   TFuncObj::RegisterReflection();
   TCustomFuncObj::RegisterReflection();
   TAllFieldsObj::RegisterReflection();
