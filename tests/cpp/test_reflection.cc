@@ -625,4 +625,112 @@ TEST(Reflection, AutoInitSimpleTooManyArgs) {
   EXPECT_THROW(auto_init(int64_t{1}, int64_t{2}, int64_t{3}), std::exception);
 }
 
+// ---------------------------------------------------------------------------
+// overload_cast — pick an overload by prefix-matching its parameter types.
+// ---------------------------------------------------------------------------
+
+namespace overload_cast_test {
+
+struct Cat {};
+struct Dog {};
+
+// Pet: each Feed overload has a unique first arg plus a trailing context
+// (`int amount`) that the caller doesn't have to spell out. Get is const
+// vs non-const overloaded with identical params (selected via const_ tag).
+struct Pet {
+  int Feed(const Cat*, int amount) { return 100 + amount; }
+  int Feed(const Dog*, int amount) { return 200 + amount; }
+  int Get(int x) { return 4000 + x; }
+  int Get(int x) const { return 5000 + x; }
+};
+
+// Mix: overloads share a leading prefix — spelling more parameters
+// disambiguates against the longer variant.
+struct Mix {
+  int Run(int, int) { return 1000; }
+  int Run(int, double) { return 2000; }
+  int Run(int, int, int) { return 3000; }
+};
+
+int FreeFeed(const Cat*, int x) { return 6000 + x; }
+int FreeFeed(const Dog*, int x) { return 7000 + x; }
+
+template <auto Method>
+struct CallVia {
+  template <typename Self, typename... Args>
+  static auto Run(Self&& self, Args&&... args) {
+    return (std::forward<Self>(self).*Method)(std::forward<Args>(args)...);
+  }
+};
+
+}  // namespace overload_cast_test
+
+TEST(OverloadCast, PrefixMatch) {
+  using namespace overload_cast_test;
+  namespace refl = tvm::ffi::reflection;
+  Pet p;
+  Cat cat;
+  Dog dog;
+
+  // (a) Member with unique first arg per overload: spelling only the
+  //     disambiguating prefix picks the overload and deduces the
+  //     trailing `int amount` from the picked signature.
+  auto p_cat = refl::overload_cast<const Cat*>(&Pet::Feed);
+  static_assert(std::is_same_v<decltype(p_cat), int (Pet::*)(const Cat*, int)>,
+                "prefix match must deduce trailing arg types");
+  EXPECT_EQ((p.*p_cat)(&cat, 7), 107);
+
+  auto p_dog = refl::overload_cast<const Dog*>(&Pet::Feed);
+  EXPECT_EQ((p.*p_dog)(&dog, 12), 212);
+
+  // (b) Free function with the same shape — trailing arg deduced.
+  auto p_free_cat = refl::overload_cast<const Cat*>(&FreeFeed);
+  EXPECT_EQ(p_free_cat(&cat, 7), 6007);
+  auto p_free_dog = refl::overload_cast<const Dog*>(&FreeFeed);
+  EXPECT_EQ(p_free_dog(&dog, 7), 7007);
+}
+
+TEST(OverloadCast, AmbiguousPrefixRequiresMoreSpelling) {
+  using namespace overload_cast_test;
+  namespace refl = tvm::ffi::reflection;
+  Mix m;
+
+  // Mix::Run has three overloads:
+  //   Run(int, int), Run(int, double), Run(int, int, int)
+  // Spelling only <int> would be ambiguous (all three start with int).
+  // Spelling enough parameters to identify exactly one overload picks it.
+  EXPECT_EQ((m.*refl::overload_cast<int, int>(&Mix::Run))(0, 0), 1000);
+  EXPECT_EQ((m.*refl::overload_cast<int, double>(&Mix::Run))(0, 0.0), 2000);
+  EXPECT_EQ((m.*refl::overload_cast<int, int, int>(&Mix::Run))(0, 0, 0), 3000);
+}
+
+TEST(OverloadCast, ConstQualifiedMember) {
+  using namespace overload_cast_test;
+  namespace refl = tvm::ffi::reflection;
+  Pet p;
+  const Pet& cp = p;
+
+  // Non-const overload — no tag.
+  EXPECT_EQ((p.*refl::overload_cast<int>(&Pet::Get))(7), 4007);
+
+  // Const overload — const_ tag required (even when the const overload
+  // is the only one with that signature, address-of-overload alone
+  // cannot select it from the operator() overload set).
+  EXPECT_EQ((cp.*refl::overload_cast<int>(&Pet::Get, refl::const_))(7), 5007);
+}
+
+TEST(OverloadCast, NonTypeTemplateArgument) {
+  using namespace overload_cast_test;
+  namespace refl = tvm::ffi::reflection;
+  Pet p;
+  Mix m;
+  Cat cat;
+
+  // Prefix match composed as a non-type template argument.
+  EXPECT_EQ((CallVia<refl::overload_cast<const Cat*>(&Pet::Feed)>::Run(p, &cat, 7)), 107);
+
+  // Disambiguated 3-arg overload as a non-type template argument.
+  EXPECT_EQ((CallVia<refl::overload_cast<int, int, int>(&Mix::Run)>::Run(m, 0, 0, 0)), 3000);
+}
+
 }  // namespace

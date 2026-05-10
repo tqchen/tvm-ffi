@@ -1034,6 +1034,123 @@ inline void EnsureTypeAttrColumn(std::string_view name) {
                                                  reinterpret_cast<const TVMFFIAny*>(&any_view)));
 }
 
+/// \cond Doxygen_Suppress
+namespace details {
+
+/*!
+ * \brief Implementation struct for overload_cast.
+ *
+ * Provides operator() overloads for each callable kind (free function,
+ * non-const member, const member), in two flavors: full match where Args...
+ * is the entire parameter list, and prefix match where Args... is a leading
+ * prefix and the trailing parameters Rest... are deduced from the picked
+ * overload's signature.
+ */
+template <typename... Args>
+struct OverloadCastImpl {
+  // The first triplet handles the case where Args... is the complete
+  // parameter list of the picked overload. The second triplet handles
+  // the prefix-match case where the picked overload has additional
+  // trailing parameters Rest... beyond Args...; partial ordering picks
+  // the first triplet when both apply, which lets the caller
+  // disambiguate against shared-prefix overload sets by spelling the
+  // full parameter list.
+
+  template <typename Ret>
+  constexpr auto operator()(Ret (*fn)(Args...)) const noexcept {
+    return fn;
+  }
+  template <typename Ret, typename Cls>
+  constexpr auto operator()(Ret (Cls::*pmf)(Args...), std::false_type = {}) const noexcept {
+    return pmf;
+  }
+  template <typename Ret, typename Cls>
+  constexpr auto operator()(Ret (Cls::*pmf)(Args...) const, std::true_type) const noexcept {
+    return pmf;
+  }
+
+  template <typename Ret, typename... Rest>
+  constexpr auto operator()(Ret (*fn)(Args..., Rest...)) const noexcept {
+    return fn;
+  }
+  template <typename Ret, typename Cls, typename... Rest>
+  constexpr auto operator()(Ret (Cls::*pmf)(Args..., Rest...),
+                            std::false_type = {}) const noexcept {
+    return pmf;
+  }
+  template <typename Ret, typename Cls, typename... Rest>
+  constexpr auto operator()(Ret (Cls::*pmf)(Args..., Rest...) const,
+                            std::true_type) const noexcept {
+    return pmf;
+  }
+};
+
+}  // namespace details
+/// \endcond
+
+/*!
+ * \brief Cast an overloaded callable to a specific overload, picked by
+ *        spelling out a parameter-type prefix that uniquely identifies it.
+ *
+ * `Args...` is matched against the leading parameters of each candidate
+ * overload; the trailing parameter types (if any) are deduced from the
+ * picked overload's signature. The returned value is a constexpr function
+ * pointer (member or free) and can be used wherever a typed function
+ * pointer is required, including as a non-type template argument.
+ *
+ * If the prefix matches multiple overloads (e.g. two overloads share the
+ * same leading parameters), the call is ambiguous and the caller must
+ * spell more parameters until exactly one overload matches.
+ *
+ * \note When picking a const-qualified member function, `refl::const_` must
+ *       be passed as the second argument even when it is the only overload
+ *       of its name. Without the tag the call does not compile.
+ *
+ * \note This helper can be more permissive than some `overload_cast` variants
+ *       in existing packages that require the full parameter list to be
+ *       spelled out: here a parameter-type prefix is accepted and the
+ *       trailing types are deduced from the picked overload.
+ *
+ * \code{.cpp}
+ *   class Pet {
+ *    public:
+ *     void Set(int);
+ *     void Set(const std::string&);
+ *     int  Feed(const Cat*, int amount);
+ *     int  Feed(const Dog*, int amount);
+ *     int  Get(int);
+ *     int  Get(int) const;
+ *   };
+ *
+ *   namespace refl = tvm::ffi::reflection;
+ *
+ *   // Spell only the disambiguating first arg; the trailing `int amount`
+ *   // is deduced from the picked overload's signature.
+ *   auto p_feed_cat = refl::overload_cast<const Cat*>(&Pet::Feed);
+ *   //   decltype(p_feed_cat) == int (Pet::*)(const Cat*, int)
+ *
+ *   // Spell the full parameter list when overloads share a prefix.
+ *   auto p_set_int = refl::overload_cast<int>(&Pet::Set);
+ *
+ *   // Const-qualified member — opt in via the const_ tag:
+ *   auto p_get_const = refl::overload_cast<int>(&Pet::Get, refl::const_);
+ *
+ *   // Use directly as a non-type template argument:
+ *   template <auto F> struct UseAsTemplateArg { ... };
+ *   using U = UseAsTemplateArg<refl::overload_cast<const Cat*>(&Pet::Feed)>;
+ * \endcode
+ */
+template <typename... Args>
+inline constexpr details::OverloadCastImpl<Args...> overload_cast = {};
+
+/// \cond Doxygen_Suppress
+// `const_`'s trailing underscore triggers RST hyperlink-reference syntax in
+// the exhale-generated per-variable page; suppress doc emission for it.
+// The symbol is still referenced (and rendered as inline literal) from the
+// overload_cast docstring above.
+inline constexpr auto const_ = std::true_type{};
+/// \endcond
+
 }  // namespace reflection
 }  // namespace ffi
 }  // namespace tvm
