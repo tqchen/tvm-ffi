@@ -20,6 +20,7 @@
  * \file src/ffi/error.cc
  * \brief Error handling implementation
  */
+#include <tvm/ffi/base_details.h>
 #include <tvm/ffi/c_api.h>
 #include <tvm/ffi/error.h>
 

@@ -101,7 +101,7 @@ namespace ffi {
 #define TVM_FFI_CHECK_SAFE_CALL(func)                      \
   {                                                        \
     int ret_code = (func);                                 \
-    if (ret_code != 0) {                                   \
+    if (TVM_FFI_PREDICT_FALSE(ret_code != 0)) {            \
       throw ::tvm::ffi::details::MoveFromSafeCallRaised(); \
     }                                                      \
   }

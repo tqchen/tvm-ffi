@@ -76,6 +76,44 @@
 #define TVM_FFI_UNREACHABLE() __builtin_unreachable()
 #endif
 
+/*!
+ * \brief Mark a function as cold so the toolchain places it in a
+ *        separate cold region of `.text`. Apply to functions that only
+ *        run on error / setup / teardown paths.
+ *
+ * On GCC and Clang, expands to `[[gnu::cold]]`, which emits the
+ * function into a per-TU `.text.unlikely` section. The default GNU
+ * linker script gathers `.text.unlikely.*` into a contiguous slot
+ * inside `.text`, so cold-marked functions cluster away from hot
+ * code without any additional CMake flags. On MSVC the attribute
+ * does not exist and the macro is a no-op.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#define TVM_FFI_COLD_CODE [[gnu::cold]]
+#else
+#define TVM_FFI_COLD_CODE
+#endif
+
+/*!
+ * \brief Branch-prediction / layout hint that the condition is unlikely
+ *        to be true. Use on error-checking branches to keep the hot
+ *        fall-through contiguous and push the error-handling block to
+ *        the function tail.
+ *
+ *   if (TVM_FFI_PREDICT_FALSE(rc != 0)) { ...error... }
+ *
+ * On GCC/Clang, expands to `__builtin_expect((cond), 0)`. On MSVC,
+ * expands to `(cond)` (no equivalent builtin; modern MSVC does its own
+ * profile-driven block reordering).
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#define TVM_FFI_PREDICT_FALSE(cond) (__builtin_expect(static_cast<bool>(cond), 0))
+#define TVM_FFI_PREDICT_TRUE(cond) (__builtin_expect(static_cast<bool>(cond), 1))
+#else
+#define TVM_FFI_PREDICT_FALSE(cond) (cond)
+#define TVM_FFI_PREDICT_TRUE(cond) (cond)
+#endif
+
 #define TVM_FFI_STR_CONCAT_(__x, __y) __x##__y
 #define TVM_FFI_STR_CONCAT(__x, __y) TVM_FFI_STR_CONCAT_(__x, __y)
 

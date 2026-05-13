@@ -36,6 +36,29 @@
 #endif
 #endif
 
+// Local mirror of TVM_FFI_COLD_CODE / TVM_FFI_PREDICT_* from
+// <tvm/ffi/base_details.h>. The Cython helper deliberately avoids that header
+// (keeps the include surface c-headers-only), so we duplicate the macro
+// definitions here. Keep these in sync with base_details.h: same expansion on
+// GCC/Clang, no-op on MSVC.
+#ifndef TVM_FFI_COLD_CODE
+#if defined(__GNUC__) || defined(__clang__)
+#define TVM_FFI_COLD_CODE [[gnu::cold]]
+#else
+#define TVM_FFI_COLD_CODE
+#endif
+#endif
+
+#ifndef TVM_FFI_PREDICT_FALSE
+#if defined(__GNUC__) || defined(__clang__)
+#define TVM_FFI_PREDICT_FALSE(cond) (__builtin_expect(static_cast<bool>(cond), 0))
+#define TVM_FFI_PREDICT_TRUE(cond) (__builtin_expect(static_cast<bool>(cond), 1))
+#else
+#define TVM_FFI_PREDICT_FALSE(cond) (cond)
+#define TVM_FFI_PREDICT_TRUE(cond) (cond)
+#endif
+#endif
+
 #include <cstring>
 #include <exception>
 #include <iostream>
@@ -252,7 +275,7 @@ int TVMFFIPyArgSetterInt_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* ar
   out->type_index = kTVMFFIInt;
   out->v_int64 = PyLong_AsLongLongAndOverflow(arg, &overflow);
 
-  if (overflow != 0) {
+  if (TVM_FFI_PREDICT_FALSE(overflow != 0)) {
     PyErr_SetString(PyExc_OverflowError, "Python int too large to convert to int64_t");
     return -1;
   }
@@ -454,7 +477,7 @@ class TVMFFIPyCallManager {
                               int* c_api_ret_code, bool release_gil,
                               const DLPackExchangeAPI** optional_out_ctx_dlpack_api) {
     int64_t num_args = PyTuple_Size(py_arg_tuple);
-    if (num_args == -1) return -1;
+    if (TVM_FFI_PREDICT_FALSE(num_args == -1)) return -1;
     try {
       // allocate a call stack
       TVMFFIPyCallContext ctx(&call_stack_, num_args);
@@ -462,7 +485,7 @@ class TVMFFIPyCallManager {
       for (int64_t i = 0; i < num_args; ++i) {
         PyObject* py_arg = PyTuple_GetItem(py_arg_tuple, i);
         TVMFFIAny* c_arg = ctx.packed_args + i;
-        if (SetArgument(&ctx, py_arg, c_arg) != 0) return -1;
+        if (TVM_FFI_PREDICT_FALSE(SetArgument(&ctx, py_arg, c_arg) != 0)) return -1;
       }
       TVMFFIStreamHandle prev_stream = nullptr;
       DLPackManagedTensorAllocator prev_tensor_allocator = nullptr;
@@ -471,13 +494,13 @@ class TVMFFIPyCallManager {
         c_api_ret_code[0] =
             TVMFFIEnvSetStream(ctx.device_type, ctx.device_id, ctx.stream, &prev_stream);
         // setting failed, directly return
-        if (c_api_ret_code[0] != 0) return 0;
+        if (TVM_FFI_PREDICT_FALSE(c_api_ret_code[0] != 0)) return 0;
       }
       if (ctx.dlpack_c_exchange_api != nullptr &&
           ctx.dlpack_c_exchange_api->managed_tensor_allocator != nullptr) {
         c_api_ret_code[0] = TVMFFIEnvSetDLPackManagedTensorAllocator(
             ctx.dlpack_c_exchange_api->managed_tensor_allocator, 0, &prev_tensor_allocator);
-        if (c_api_ret_code[0] != 0) return 0;
+        if (TVM_FFI_PREDICT_FALSE(c_api_ret_code[0] != 0)) return 0;
       }
       // call the function
       if (release_gil) {
@@ -491,7 +514,8 @@ class TVMFFIPyCallManager {
       // restore the original stream
       if (ctx.device_type != -1 && prev_stream != ctx.stream) {
         // always try recover first, even if error happens
-        if (TVMFFIEnvSetStream(ctx.device_type, ctx.device_id, prev_stream, nullptr) != 0) {
+        if (TVM_FFI_PREDICT_FALSE(
+                TVMFFIEnvSetStream(ctx.device_type, ctx.device_id, prev_stream, nullptr) != 0)) {
           // recover failed, set python error
           PyErr_SetString(PyExc_RuntimeError, "Failed to recover stream");
           return -1;
@@ -502,12 +526,13 @@ class TVMFFIPyCallManager {
           prev_tensor_allocator != ctx.dlpack_c_exchange_api->managed_tensor_allocator) {
         // note: we cannot set the error value to c_api_ret_code[0] here because it
         // will be overwritten by the error value from the function call
-        if (TVMFFIEnvSetDLPackManagedTensorAllocator(prev_tensor_allocator, 0, nullptr) != 0) {
+        if (TVM_FFI_PREDICT_FALSE(
+                TVMFFIEnvSetDLPackManagedTensorAllocator(prev_tensor_allocator, 0, nullptr) != 0)) {
           PyErr_SetString(PyExc_RuntimeError, "Failed to recover DLPack managed tensor allocator");
           return -1;
         }
         // return error after
-        if (c_api_ret_code[0] != 0) return 0;
+        if (TVM_FFI_PREDICT_FALSE(c_api_ret_code[0] != 0)) return 0;
       }
       if (optional_out_ctx_dlpack_api != nullptr && ctx.dlpack_c_exchange_api != nullptr) {
         *optional_out_ctx_dlpack_api = ctx.dlpack_c_exchange_api;
@@ -540,7 +565,7 @@ class TVMFFIPyCallManager {
   TVM_FFI_INLINE int ConstructorCall(void* func_handle, PyObject* py_arg_tuple, TVMFFIAny* result,
                                      int* c_api_ret_code, TVMFFIPyCallContext* parent_ctx) {
     int64_t num_args = PyTuple_Size(py_arg_tuple);
-    if (num_args == -1) return -1;
+    if (TVM_FFI_PREDICT_FALSE(num_args == -1)) return -1;
     try {
       // allocate a call stack
       TVMFFIPyCallContext ctx(&call_stack_, num_args);
@@ -548,7 +573,7 @@ class TVMFFIPyCallManager {
       for (int64_t i = 0; i < num_args; ++i) {
         PyObject* py_arg = PyTuple_GetItem(py_arg_tuple, i);
         TVMFFIAny* c_arg = ctx.packed_args + i;
-        if (SetArgument(&ctx, py_arg, c_arg) != 0) return -1;
+        if (TVM_FFI_PREDICT_FALSE(SetArgument(&ctx, py_arg, c_arg) != 0)) return -1;
       }
       c_api_ret_code[0] = TVMFFIFunctionCall(func_handle, ctx.packed_args, num_args, result);
       // propagate the call context to the parent context
@@ -577,7 +602,7 @@ class TVMFFIPyCallManager {
     try {
       TVMFFIPyCallContext ctx(&call_stack_, 1);
       TVMFFIAny* c_arg = ctx.packed_args;
-      if (SetArgument(&ctx, py_arg, c_arg) != 0) return -1;
+      if (TVM_FFI_PREDICT_FALSE(SetArgument(&ctx, py_arg, c_arg) != 0)) return -1;
       if (!(field_flags & kTVMFFIFieldFlagBitSetterIsFunctionObj)) {
         auto setter = reinterpret_cast<TVMFFIFieldSetter>(field_setter);
         c_api_ret_code[0] = (*setter)(field_ptr, c_arg);
@@ -603,7 +628,7 @@ class TVMFFIPyCallManager {
     try {
       TVMFFIPyCallContext ctx(&call_stack_, 1);
       TVMFFIAny* c_arg = ctx.packed_args;
-      if (SetArgument(&ctx, py_arg, c_arg) != 0) return -1;
+      if (TVM_FFI_PREDICT_FALSE(SetArgument(&ctx, py_arg, c_arg) != 0)) return -1;
       c_api_ret_code[0] = TVMFFIAnyViewToOwnedAny(c_arg, out);
       return 0;
     } catch (const std::exception& ex) {
@@ -629,20 +654,20 @@ class TVMFFIPyCallManager {
     // find the pre-cached setter
     // This class is thread-local, so we don't need to worry about race condition
     auto it = arg_dispatch_map_.find(py_type);
-    if (it != arg_dispatch_map_.end()) {
+    if (TVM_FFI_PREDICT_TRUE(it != arg_dispatch_map_.end())) {
       TVMFFIPyArgSetter setter = it->second;
       // if error happens, propagate it back
-      if (setter(ctx, py_arg, out) != 0) return -1;
+      if (TVM_FFI_PREDICT_FALSE(setter(ctx, py_arg, out) != 0)) return -1;
     } else {
       // no dispatch found, query and create a new one.
       TVMFFIPyArgSetter setter;
       // propagate python error back
-      if (TVMFFICyArgSetterFactory(py_arg, &setter) != 0) {
+      if (TVM_FFI_PREDICT_FALSE(TVMFFICyArgSetterFactory(py_arg, &setter) != 0)) {
         return -1;
       }
       // update dispatch table
       arg_dispatch_map_.emplace(py_type, setter);
-      if (setter(ctx, py_arg, out) != 0) return -1;
+      if (TVM_FFI_PREDICT_FALSE(setter(ctx, py_arg, out) != 0)) return -1;
     }
     return 0;
   }
@@ -706,8 +731,8 @@ class TVMFFIPyCallManager {
       TVMFFIPyCallbackContext cb_ctx(&call_stack_, num_args);
       // Step 1: Convert each packed arg (borrowed AnyView) to a PyObject*
       for (int32_t i = 0; i < num_args; ++i) {
-        if (SetPyCallbackArg(closure->dlpack_exchange_api, &packed_args[i], &cb_ctx.py_args[i]) !=
-            0) {
+        if (TVM_FFI_PREDICT_FALSE(SetPyCallbackArg(closure->dlpack_exchange_api, &packed_args[i],
+                                                   &cb_ctx.py_args[i]) != 0)) {
           ForwardPyErrorToFFI();
           return -1;
         }
@@ -749,7 +774,7 @@ class TVMFFIPyCallManager {
         // The guard's destructor runs AFTER the return value is computed.
         TVMFFIPyCallContext ret_ctx(&call_stack_, 1);
         TVMFFIAny* view = ret_ctx.packed_args;
-        if (SetArgument(&ret_ctx, py_result.p, view) != 0) {
+        if (TVM_FFI_PREDICT_FALSE(SetArgument(&ret_ctx, py_result.p, view) != 0)) {
           ForwardPyErrorToFFI();
           return -1;
         }
@@ -776,7 +801,7 @@ class TVMFFIPyCallManager {
    * returned by PyErr_Occurred()) so that set_last_ffi_error can access the
    * message and traceback.
    */
-  static void ForwardPyErrorToFFI() noexcept {
+  TVM_FFI_COLD_CODE static void ForwardPyErrorToFFI() noexcept {
 #if PY_VERSION_HEX >= 0x030C0000
     // Python 3.12+: PyErr_Fetch / PyErr_NormalizeException are deprecated.
     // PyErr_GetRaisedException returns an already-normalized exception

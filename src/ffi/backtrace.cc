@@ -147,6 +147,7 @@ const TVMFFIByteArray* TVMFFIBacktrace(const char* filename, int lineno, const c
 }
 
 #if TVM_FFI_BACKTRACE_ON_SEGFAULT
+TVM_FFI_COLD_CODE
 void TVMFFISegFaultHandler(int sig) {
   // Technically we shouldn't do any allocation in a signal handler, but
   // Backtrace may allocate. What's the worst it could do? We're already
@@ -163,6 +164,7 @@ void TVMFFISegFaultHandler(int sig) {
   raise(sig);
 }
 
+TVM_FFI_COLD_CODE
 __attribute__((constructor)) void TVMFFIInstallSignalHandler() {
   // this may override already installed signal handlers
   std::signal(SIGSEGV, TVMFFISegFaultHandler);
