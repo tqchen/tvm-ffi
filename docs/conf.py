@@ -90,6 +90,8 @@ exhaleDoxygenStdin = """
 INPUT = ../include
 PREDEFINED             += TVM_FFI_DLL= TVM_FFI_DLL_EXPORT= TVM_FFI_INLINE= \
                           TVM_FFI_EXTRA_CXX_API= TVM_FFI_WEAK= TVM_FFI_DOXYGEN_MODE \
+                          TVM_FFI_COLD_CODE= \
+                          TVM_FFI_PREDICT_FALSE(x)=x TVM_FFI_PREDICT_TRUE(x)=x \
                           __cplusplus=201703
 EXCLUDE_SYMBOLS        += *details*  *TypeTraits* std \
                          *use_default_type_traits_v* *is_optional_type_v* *operator* \
@@ -124,6 +126,7 @@ cpp_id_attributes = [
     "TVM_FFI_INLINE",
     "TVM_FFI_EXTRA_CXX_API",
     "TVM_FFI_WEAK",
+    "TVM_FFI_COLD_CODE",
 ]
 
 c_id_attributes = [

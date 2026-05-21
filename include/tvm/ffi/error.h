@@ -349,6 +349,14 @@ class ErrorBuilder {
       : ErrorBuilder(std::move(kind), std::string(backtrace->data, backtrace->size),
                      log_before_throw) {}
 
+  TVM_FFI_COLD_CODE
+  explicit ErrorBuilder(std::string kind, const TVMFFIByteArray* backtrace, bool log_before_throw,
+                        std::optional<Error> cause_chain, std::optional<ObjectRef> extra_context)
+      : ErrorBuilder(std::move(kind), backtrace, log_before_throw) {
+    cause_chain_ = std::move(cause_chain);
+    extra_context_ = std::move(extra_context);
+  }
+
 // MSVC disable warning in error builder as it is exepected
 #ifdef _MSC_VER
 #pragma warning(push)
@@ -356,7 +364,8 @@ class ErrorBuilder {
 #endif
   // avoid inline to reduce binary size, error throw path do not need to be fast
   [[noreturn]] TVM_FFI_COLD_CODE ~ErrorBuilder() noexcept(false) {
-    ::tvm::ffi::Error error(std::move(kind_), stream_.str(), std::move(backtrace_));
+    ::tvm::ffi::Error error(std::move(kind_), stream_.str(), std::move(backtrace_),
+                            std::move(cause_chain_), std::move(extra_context_));
     if (log_before_throw_) {
       std::cerr << error.FullMessage();
     }
@@ -373,6 +382,8 @@ class ErrorBuilder {
   std::ostringstream stream_;
   std::string backtrace_;
   bool log_before_throw_;
+  std::optional<Error> cause_chain_;
+  std::optional<ObjectRef> extra_context_;
 };
 
 }  // namespace details
