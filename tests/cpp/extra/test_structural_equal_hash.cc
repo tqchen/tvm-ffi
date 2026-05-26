@@ -280,18 +280,21 @@ TEST(StructuralEqualHash, FFIGlobalStructuralEqual) {
   Array<int> a = {1, 2, 3};
   Array<int> b = {1, 2, 3};
   EXPECT_TRUE(ffi_equal(a, b, false, false).cast<bool>());
-  EXPECT_FALSE(ffi_mismatch(a, b, false, false).cast<Optional<reflection::AccessPathPair>>());
+  EXPECT_FALSE(
+      ffi_mismatch(a, b, false, false).cast<Optional<reflection::AccessPathPair>>().has_value());
 
   // Unequal arrays: FFI global returns false; GetFirstMismatch returns a value.
   Array<int> c = {1, 2, 4};
   EXPECT_FALSE(ffi_equal(a, c, false, false).cast<bool>());
-  EXPECT_TRUE(ffi_mismatch(a, c, false, false).cast<Optional<reflection::AccessPathPair>>());
+  EXPECT_TRUE(
+      ffi_mismatch(a, c, false, false).cast<Optional<reflection::AccessPathPair>>().has_value());
 
   // Consistency: bool result from FFI global matches (mismatch is None) for equal objects.
   Array<int> d = {10, 20};
   Array<int> e = {10, 20};
   bool equal_result = ffi_equal(d, e, false, false).cast<bool>();
-  bool no_mismatch = !ffi_mismatch(d, e, false, false).cast<Optional<reflection::AccessPathPair>>();
+  bool no_mismatch =
+      !ffi_mismatch(d, e, false, false).cast<Optional<reflection::AccessPathPair>>().has_value();
   EXPECT_EQ(equal_result, no_mismatch);
 }
 
