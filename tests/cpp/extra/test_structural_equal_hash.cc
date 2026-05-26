@@ -24,6 +24,7 @@
 #include <tvm/ffi/container/map.h>
 #include <tvm/ffi/extra/structural_equal.h>
 #include <tvm/ffi/extra/structural_hash.h>
+#include <tvm/ffi/function.h>
 #include <tvm/ffi/object.h>
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/ffi/string.h>
@@ -267,6 +268,31 @@ TEST(StructuralEqualHash, ArraySelfInsertProducesSnapshot) {
 
   EXPECT_TRUE(StructuralEqual()(arr, arr));
   EXPECT_EQ(StructuralHash()(arr), StructuralHash()(arr));
+}
+
+// Test the FFI global "ffi.StructuralEqual" — the cheap boolean path that
+// avoids constructing AccessPath mismatch pairs (unlike GetFirstMismatch).
+TEST(StructuralEqualHash, FFIGlobalStructuralEqual) {
+  Function ffi_equal = Function::GetGlobalRequired("ffi.StructuralEqual");
+  Function ffi_mismatch = Function::GetGlobalRequired("ffi.GetFirstStructuralMismatch");
+
+  // Equal arrays: both the FFI global and GetFirstMismatch must agree.
+  Array<int> a = {1, 2, 3};
+  Array<int> b = {1, 2, 3};
+  EXPECT_TRUE(ffi_equal(a, b, false, false).cast<bool>());
+  EXPECT_FALSE(ffi_mismatch(a, b, false, false).cast<Optional<reflection::AccessPathPair>>());
+
+  // Unequal arrays: FFI global returns false; GetFirstMismatch returns a value.
+  Array<int> c = {1, 2, 4};
+  EXPECT_FALSE(ffi_equal(a, c, false, false).cast<bool>());
+  EXPECT_TRUE(ffi_mismatch(a, c, false, false).cast<Optional<reflection::AccessPathPair>>());
+
+  // Consistency: bool result from FFI global matches (mismatch is None) for equal objects.
+  Array<int> d = {10, 20};
+  Array<int> e = {10, 20};
+  bool equal_result = ffi_equal(d, e, false, false).cast<bool>();
+  bool no_mismatch = !ffi_mismatch(d, e, false, false).cast<Optional<reflection::AccessPathPair>>();
+  EXPECT_EQ(equal_result, no_mismatch);
 }
 
 }  // namespace
