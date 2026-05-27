@@ -26,6 +26,8 @@
 #include <tvm/ffi/reflection/accessor.h>
 #include <tvm/ffi/reflection/registry.h>
 
+#include <sstream>
+
 namespace tvm {
 namespace ffi {
 namespace reflection {
@@ -104,6 +106,41 @@ inline void AccessStepRegisterReflection() {
   refl::ObjectDef<AccessStepObj>(refl::init(false))
       .def_ro("kind", &AccessStepObj::kind)
       .def_ro("key", &AccessStepObj::key);
+  // Register __ffi_repr__ for AccessStep: format one step fragment.
+  //   kAttr             -> ".name"
+  //   kArrayItem        -> "[index]"
+  //   kMapItem          -> "[<repr(key)>]"    (string keys are quoted via fn_repr)
+  //   kAttrMissing      -> "[<missing:"name">]"
+  //   kArrayItemMissing -> "[<missing:index>]"
+  //   kMapItemMissing   -> "[<missing:<repr(key)>>]"
+  refl::TypeAttrDef<AccessStepObj>().def(
+      refl::type_attr::kRepr,
+      [](const AccessStep& step, const ffi::Function& fn_repr) -> ffi::String {
+        std::ostringstream os;
+        switch (step->kind) {
+          case AccessKind::kAttr:
+            os << "." << step->key.cast<ffi::String>();
+            break;
+          case AccessKind::kArrayItem:
+            os << "[" << step->key.cast<int64_t>() << "]";
+            break;
+          case AccessKind::kMapItem:
+            os << "[" << fn_repr(step->key).cast<ffi::String>() << "]";
+            break;
+          case AccessKind::kAttrMissing:
+            os << "[<missing:" << fn_repr(step->key).cast<ffi::String>() << ">]";
+            break;
+          case AccessKind::kArrayItemMissing:
+            os << "[<missing:" << step->key.cast<int64_t>() << ">]";
+            break;
+          case AccessKind::kMapItemMissing:
+            os << "[<missing:" << fn_repr(step->key).cast<ffi::String>() << ">]";
+            break;
+          default:
+            TVM_FFI_UNREACHABLE();
+        }
+        return os.str();
+      });
 }
 
 inline void AccessPathRegisterReflection() {
@@ -125,6 +162,19 @@ inline void AccessPathRegisterReflection() {
       .def("_to_steps", &AccessPathObj::ToSteps)
       .def("_path_equal",
            [](const AccessPath& self, const AccessPath& other) { return self->PathEqual(other); });
+  // Register __ffi_repr__ for AccessPath: flatten via ToSteps() and walk the resulting vector.
+  // Root (depth == 0) emits "<root>"; non-root nodes concatenate each step's fragment.
+  refl::TypeAttrDef<AccessPathObj>().def(
+      refl::type_attr::kRepr,
+      [](const AccessPath& path, const ffi::Function& fn_repr) -> ffi::String {
+        Array<AccessStep> steps = path->ToSteps();
+        std::ostringstream os;
+        os << "<root>";
+        for (const AccessStep& step : steps) {
+          os << fn_repr(step).cast<ffi::String>();
+        }
+        return os.str();
+      });
 }
 
 int64_t StructuralKeyHash(const Any& key) {
