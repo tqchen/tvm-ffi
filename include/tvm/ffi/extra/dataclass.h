@@ -24,8 +24,12 @@
 #define TVM_FFI_EXTRA_DATACLASS_H_
 
 #include <tvm/ffi/any.h>
+#include <tvm/ffi/container/variant.h>
 #include <tvm/ffi/extra/base.h>
+#include <tvm/ffi/optional.h>
 #include <tvm/ffi/string.h>
+
+#include <ostream>
 
 namespace tvm {
 namespace ffi {
@@ -107,6 +111,30 @@ TVM_FFI_EXTRA_CXX_API bool RecursiveGt(const Any& lhs, const Any& rhs);
  * \return true if lhs is structurally greater than or equal to rhs.
  */
 TVM_FFI_EXTRA_CXX_API bool RecursiveGe(const Any& lhs, const Any& rhs);
+
+// std::ostream overloads
+
+/*! \brief Stream an ffi::Any using its canonical repr form. */
+inline std::ostream& operator<<(std::ostream& os, const Any& value) {
+  return os << ReprPrint(value);
+}
+
+/*! \brief Stream an ffi::ObjectRef using its canonical repr form. */
+inline std::ostream& operator<<(std::ostream& os, const ObjectRef& value) {
+  return os << ReprPrint(Any(value));
+}
+
+/*! \brief Stream an ffi::Variant<...> using its canonical repr form. */
+template <typename... V>
+inline std::ostream& operator<<(std::ostream& os, const Variant<V...>& value) {
+  return os << ReprPrint(Any(value));
+}
+
+/*! \brief Stream an ffi::Optional<T> using its canonical repr form. */
+template <typename T>
+inline std::ostream& operator<<(std::ostream& os, const Optional<T>& value) {
+  return os << ReprPrint(Any(value));
+}
 
 }  // namespace ffi
 }  // namespace tvm
