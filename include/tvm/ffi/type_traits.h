@@ -215,6 +215,7 @@ struct TypeTraits<StrictBool> : public TypeTraitsBase {
   }
 
   TVM_FFI_INLINE static StrictBool CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    TVM_FFI_UNSAFE_ASSUME(src->type_index == TypeIndex::kTVMFFIBool);
     return static_cast<bool>(src->v_int64);
   }
 
@@ -254,6 +255,7 @@ struct TypeTraits<bool> : public TypeTraitsBase {
   }
 
   TVM_FFI_INLINE static bool CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    TVM_FFI_UNSAFE_ASSUME(src->type_index == TypeIndex::kTVMFFIBool);
     return static_cast<bool>(src->v_int64);
   }
 
@@ -301,6 +303,7 @@ struct TypeTraits<Int, std::enable_if_t<std::is_integral_v<Int>>> : public TypeT
   }
 
   TVM_FFI_INLINE static Int CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    TVM_FFI_UNSAFE_ASSUME(src->type_index == TypeIndex::kTVMFFIInt);
     return static_cast<Int>(src->v_int64);
   }
 
@@ -356,6 +359,7 @@ struct TypeTraits<IntEnum, std::enable_if_t<is_integeral_enum_v<IntEnum>>> : pub
   }
 
   TVM_FFI_INLINE static IntEnum CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    TVM_FFI_UNSAFE_ASSUME(src->type_index == TypeIndex::kTVMFFIInt);
     return static_cast<IntEnum>(src->v_int64);
   }
 
@@ -397,6 +401,7 @@ struct TypeTraits<Float, std::enable_if_t<std::is_floating_point_v<Float>>>
   }
 
   TVM_FFI_INLINE static Float CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    TVM_FFI_UNSAFE_ASSUME(src->type_index == TypeIndex::kTVMFFIFloat);
     return static_cast<Float>(src->v_float64);
   }
 
@@ -440,7 +445,10 @@ struct TypeTraits<void*> : public TypeTraitsBase {
     return src->type_index == TypeIndex::kTVMFFIOpaquePtr;
   }
 
-  TVM_FFI_INLINE static void* CopyFromAnyViewAfterCheck(const TVMFFIAny* src) { return src->v_ptr; }
+  TVM_FFI_INLINE static void* CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    TVM_FFI_UNSAFE_ASSUME(src->type_index == TypeIndex::kTVMFFIOpaquePtr);
+    return src->v_ptr;
+  }
 
   TVM_FFI_INLINE static void* MoveFromAnyAfterCheck(TVMFFIAny* src) {
     // POD type, we can just copy the value
@@ -485,6 +493,7 @@ struct TypeTraits<DLDevice> : public TypeTraitsBase {
   }
 
   TVM_FFI_INLINE static DLDevice CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    TVM_FFI_UNSAFE_ASSUME(src->type_index == TypeIndex::kTVMFFIDevice);
     return src->v_device;
   }
 
@@ -525,6 +534,7 @@ struct TypeTraits<DLTensor*> : public TypeTraitsBase {
   }
 
   TVM_FFI_INLINE static DLTensor* CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    TVM_FFI_UNSAFE_ASSUME(src->type_index == TypeIndex::kTVMFFIDLTensorPtr);
     return static_cast<DLTensor*>(src->v_ptr);
   }
 

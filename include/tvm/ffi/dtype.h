@@ -164,7 +164,13 @@ struct TypeTraits<DLDataType> : public TypeTraitsBase {
   }
 
   TVM_FFI_INLINE static DLDataType CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    TVM_FFI_UNSAFE_ASSUME(src->type_index == TypeIndex::kTVMFFIDataType);
     return src->v_dtype;
+  }
+
+  TVM_FFI_INLINE static DLDataType MoveFromAnyAfterCheck(TVMFFIAny* src) {
+    // POD type — move is just copy.
+    return CopyFromAnyViewAfterCheck(src);
   }
 
   TVM_FFI_INLINE static std::optional<DLDataType> TryCastFromAnyView(const TVMFFIAny* src) {

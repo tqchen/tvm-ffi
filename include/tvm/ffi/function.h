@@ -914,6 +914,10 @@ struct TypeTraits<TypedFunction<FType>> : public TypeTraitsBase {
     return TypedFunction<FType>(TypeTraits<Function>::CopyFromAnyViewAfterCheck(src));
   }
 
+  TVM_FFI_INLINE static TypedFunction<FType> MoveFromAnyAfterCheck(TVMFFIAny* src) {
+    return TypedFunction<FType>(TypeTraits<Function>::MoveFromAnyAfterCheck(src));
+  }
+
   TVM_FFI_INLINE static std::optional<TypedFunction<FType>> TryCastFromAnyView(
       const TVMFFIAny* src) {
     std::optional<Function> opt = TypeTraits<Function>::TryCastFromAnyView(src);

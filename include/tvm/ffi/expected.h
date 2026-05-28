@@ -113,62 +113,80 @@ class Expected {
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
   Expected(Unexpected<E> unexpected) : data_(Any(std::move(unexpected).error())) {}
 
-  /*!
-   * \brief Check if the Expected contains a success value.
-   * \return True if contains success value, false if contains error.
-   * \note Checks for Error first to handle cases where T is a base class of Error.
-   */
-  TVM_FFI_INLINE bool is_ok() const { return !data_.as<Error>().has_value(); }
+  /*! \brief Returns true if the Expected contains a success value. */
+  TVM_FFI_INLINE bool is_ok() const noexcept {
+    return data_.type_index() != TypeIndex::kTVMFFIError;
+  }
 
-  /*!
-   * \brief Check if the Expected contains an error.
-   * \return True if contains error, false if contains success value.
-   */
-  TVM_FFI_INLINE bool is_err() const { return !is_ok(); }
+  /*! \brief Returns true if the Expected contains an error. */
+  TVM_FFI_INLINE bool is_err() const noexcept {
+    return data_.type_index() == TypeIndex::kTVMFFIError;
+  }
 
-  /*!
-   * \brief Alias for is_ok().
-   * \return True if contains success value.
-   */
-  TVM_FFI_INLINE bool has_value() const { return is_ok(); }
+  /*! \brief Alias for is_ok(). */
+  TVM_FFI_INLINE bool has_value() const noexcept { return is_ok(); }
 
-  /*! \brief Access the success value. Throws the contained error if is_err(). */
+  /*! \brief Returns the success value, or throws the contained error. */
   TVM_FFI_INLINE T value() const& {
-    if (is_err()) throw data_.cast<Error>();
-    return data_.cast<T>();
-  }
-  /*! \brief Access the success value (rvalue). Throws the contained error if is_err(). */
-  TVM_FFI_INLINE T value() && {
-    if (is_err()) throw std::move(data_).template cast<Error>();
-    return std::move(data_).template cast<T>();
+    if (TVM_FFI_PREDICT_TRUE(is_ok())) {
+      return details::AnyUnsafe::CopyFromAnyViewAfterCheck<T>(data_);
+    }
+    throw details::AnyUnsafe::CopyFromAnyViewAfterCheck<Error>(data_);
   }
 
-  /*! \brief Access the error. Throws RuntimeError if is_ok(). */
-  TVM_FFI_INLINE Error error() const& {
-    if (!is_err()) TVM_FFI_THROW(RuntimeError) << "Bad expected access: contains value, not error";
-    return data_.cast<Error>();
+  /*! \brief Returns the success value (moved out), or throws the contained error. */
+  TVM_FFI_INLINE T value() && {
+    if (TVM_FFI_PREDICT_TRUE(is_ok())) {
+      return details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
+    }
+    throw details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(data_));
   }
-  /*! \brief Access the error (rvalue). Throws RuntimeError if is_ok(). */
+
+  /*! \brief Returns the contained error, or throws RuntimeError if is_ok(). */
+  TVM_FFI_INLINE Error error() const& {
+    // No branch hint: error() is itself a cold path — callers only invoke it
+    // after observing !is_ok(), so the branch direction here doesn't matter.
+    if (is_ok()) {
+      TVM_FFI_THROW(RuntimeError) << "Bad expected access: contains value, not error";
+    }
+    return details::AnyUnsafe::CopyFromAnyViewAfterCheck<Error>(data_);
+  }
+
+  /*! \brief Returns the contained error (moved out), or throws RuntimeError if is_ok(). */
   TVM_FFI_INLINE Error error() && {
-    if (!is_err()) TVM_FFI_THROW(RuntimeError) << "Bad expected access: contains value, not error";
-    return std::move(data_).template cast<Error>();
+    // No branch hint: error() is itself a cold path — callers only invoke it
+    // after observing !is_ok(), so the branch direction here doesn't matter.
+    if (is_ok()) {
+      TVM_FFI_THROW(RuntimeError) << "Bad expected access: contains value, not error";
+    }
+    return details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(data_));
   }
 
   /*!
-   * \brief Get the success value or a default value.
-   * \param default_value The value to return if Expected contains an error.
-   * \return The success value if present, otherwise the default value.
+   * \brief Returns the success value, or \p default_value if the Expected holds an error.
    */
   template <typename U = std::remove_cv_t<T>>
-  TVM_FFI_INLINE T value_or(U&& default_value) const {
-    if (is_ok()) {
-      return data_.cast<T>();
+  TVM_FFI_INLINE T value_or(U&& default_value) const& {
+    if (TVM_FFI_PREDICT_TRUE(is_ok())) {
+      return details::AnyUnsafe::CopyFromAnyViewAfterCheck<T>(data_);
+    }
+    return T(std::forward<U>(default_value));
+  }
+
+  /*!
+   * \brief Returns the success value (moved out), or \p default_value if the Expected holds an
+   * error.
+   */
+  template <typename U = std::remove_cv_t<T>>
+  TVM_FFI_INLINE T value_or(U&& default_value) && {
+    if (TVM_FFI_PREDICT_TRUE(is_ok())) {
+      return details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
     }
     return T(std::forward<U>(default_value));
   }
 
  private:
-  Any data_;  // Holds either T or Error
+  Any data_;  // Invariant: holds a T (type_index != kTVMFFIError) or an Error.
 };
 
 // TypeTraits specialization for Expected<T>

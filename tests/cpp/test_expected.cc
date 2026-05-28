@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 #include <tvm/ffi/any.h>
 #include <tvm/ffi/container/array.h>
+#include <tvm/ffi/dtype.h>
 #include <tvm/ffi/error.h>
 #include <tvm/ffi/expected.h>
 #include <tvm/ffi/function.h>
@@ -340,6 +341,40 @@ TEST(Expected, TryCastIncompatible) {
   Any any_str = String("hello");
   auto result = any_str.try_cast<Expected<int>>();
   EXPECT_FALSE(result.has_value());  // Cannot convert String to Expected<int>
+}
+
+// Test that Expected<DLDataType>::value() && compiles and runs correctly.
+// Requires TypeTraits<DLDataType>::MoveFromAnyAfterCheck to be defined.
+TEST(ExpectedRvalueMove, DLDataTypeMoveCompiles) {
+  Expected<DLDataType> e = DLDataType{kDLFloat, 32, 1};
+  DLDataType moved = std::move(e).value();
+  EXPECT_EQ(moved.code, kDLFloat);
+  EXPECT_EQ(moved.bits, 32);
+  EXPECT_EQ(moved.lanes, 1);
+}
+
+// Test that value_or() && moves rather than copies for Object types.
+TEST(ExpectedRvalueMove, ValueOrMovesNotCopies) {
+  Expected<String> e = String("hello");
+  String moved = std::move(e).value_or(String("default"));
+  EXPECT_EQ(moved, "hello");
+}
+
+// Test value_or() && on error path returns default.
+TEST(ExpectedRvalueMove, ValueOrRvalueErrorPath) {
+  Expected<String> e = Error("ValueError", "oops", "");
+  String result = std::move(e).value_or(String("fallback"));
+  EXPECT_EQ(result, "fallback");
+}
+
+// Test POD types compile and run correctly with rvalue value().
+TEST(ExpectedRvalueMove, PodTypesCompile) {
+  EXPECT_EQ(std::move(Expected<int64_t>(42)).value(), 42);
+  EXPECT_EQ(std::move(Expected<double>(3.14)).value(), 3.14);
+  EXPECT_EQ(std::move(Expected<bool>(true)).value(), true);
+  DLDataType dtype{kDLInt, 64, 1};
+  EXPECT_EQ(std::move(Expected<DLDataType>(dtype)).value().code, kDLInt);
+  EXPECT_EQ(std::move(Expected<DLDataType>(dtype)).value().bits, 64);
 }
 
 }  // namespace
