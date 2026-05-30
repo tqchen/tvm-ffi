@@ -83,16 +83,8 @@ class AnyView {
   /*! \brief Copy assignment operator */
   AnyView& operator=(const AnyView&) = default;
   /*! \brief Move constructor */
-  AnyView(AnyView&& other) noexcept : data_(other.data_) {
-    other.data_.type_index = TypeIndex::kTVMFFINone;
-    other.data_.zero_padding = 0;
-    other.data_.v_int64 = 0;
-  }
-  TVM_FFI_INLINE AnyView& operator=(AnyView&& other) noexcept {
-    // copy-and-swap idiom
-    AnyView(std::move(other)).swap(*this);  // NOLINT(*)
-    return *this;
-  }
+  AnyView(AnyView&& other) noexcept = default;
+  AnyView& operator=(AnyView&& other) noexcept = default;
   /*!
    * \brief Constructor from a general type.
    * \tparam T The type to convert from.
@@ -498,6 +490,12 @@ class Any {
 // layout assert to ensure we can freely cast between the two types
 static_assert(sizeof(AnyView) == sizeof(TVMFFIAny));
 static_assert(sizeof(Any) == sizeof(TVMFFIAny));
+// AnyView is a non-owning, POD-shaped view of TVMFFIAny. Keeping it
+// trivially copyable lets the C++ ABI pass it through registers and
+// match the C ABI for struct passing. Any user-defined copy/move ctor
+// or non-trivial destructor on AnyView would silently regress this
+// calling convention — catch it here at compile time.
+static_assert(std::is_trivially_copyable_v<AnyView>, "AnyView must be trivially copyable.");
 
 namespace details {
 
