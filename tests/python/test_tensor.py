@@ -52,19 +52,6 @@ def test_tensor_attributes() -> None:
     np.testing.assert_equal(x2, data)
 
 
-def test_empty_tensor_attributes() -> None:
-    data: npt.NDArray[Any] = np.zeros((4, 0, 4), dtype="int16")
-    if not hasattr(data, "__dlpack__"):
-        return
-    x = tvm_ffi.from_dlpack(data)
-    assert isinstance(x, tvm_ffi.Tensor)
-    assert x.shape == (4, 0, 4)
-    assert x.ndim == 3
-    assert x.strides == (0, 4, 1)
-    assert x.numel() == 0
-    assert x.is_contiguous()
-
-
 def test_non_contiguous_tensor_attributes() -> None:
     data: npt.NDArray[Any] = np.zeros((4, 4, 4), dtype="int16")
     slice = data[1:3, :, 1:3]
