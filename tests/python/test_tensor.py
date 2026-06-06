@@ -52,6 +52,18 @@ def test_tensor_attributes() -> None:
     np.testing.assert_equal(x2, data)
 
 
+def test_empty_tensor_is_contiguous() -> None:
+    # Empty tensors are trivially contiguous regardless of what
+    # strides the producer reports (numpy 2.3+ via __dlpack__ now
+    # reports (0, 0, 0) for shape (4, 0, 4)). See PR #607 review
+    # comment for context.
+    data: npt.NDArray[Any] = np.zeros((4, 0, 4), dtype="int16")
+    if not hasattr(data, "__dlpack__"):
+        return
+    x = tvm_ffi.from_dlpack(data)
+    assert x.is_contiguous()
+
+
 def test_non_contiguous_tensor_attributes() -> None:
     data: npt.NDArray[Any] = np.zeros((4, 4, 4), dtype="int16")
     slice = data[1:3, :, 1:3]
