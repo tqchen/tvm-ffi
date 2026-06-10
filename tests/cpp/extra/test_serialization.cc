@@ -820,6 +820,56 @@ TEST(Serialization, ErrorMissingNodes) {
 }
 
 // ---------------------------------------------------------------------------
+// Malformed-input validation: every case below must THROW an ffi::Error rather
+// than read out of bounds when deserializing an object graph.
+// ---------------------------------------------------------------------------
+TEST(Serialization, MalformedInput) {
+  // NOTE: use EXPECT_ANY_THROW rather than EXPECT_THROW(..., tvm::ffi::Error).
+  // FromJSONGraph is compiled into the shared library, so the tvm::ffi::Error it
+  // throws carries the library's typeinfo. On macOS (hidden-visibility typeinfo)
+  // that does not match the test executable's typeinfo, so an exact-type match
+  // spuriously fails even though the error is thrown correctly. This matches the
+  // other Serialization.Error* tests in this file, which also use EXPECT_ANY_THROW.
+  auto expect_throws = [](const json::Object& graph) { EXPECT_ANY_THROW(FromJSONGraph(graph)); };
+
+  // root_index points past the end of the nodes array.
+  expect_throws({{"root_index", 99}, {"nodes", json::Array{json::Object{{"type", "None"}}}}});
+
+  // root_index is negative.
+  expect_throws({{"root_index", -5}, {"nodes", json::Array{json::Object{{"type", "None"}}}}});
+
+  // A child reference inside an array node is out of range.
+  expect_throws(
+      {{"root_index", 0},
+       {"nodes", json::Array{json::Object{{"type", "ffi.Array"}, {"data", json::Array{42}}}}}});
+
+  // A key/value reference inside a map node is out of range.
+  expect_throws(
+      {{"root_index", 0},
+       {"nodes", json::Array{json::Object{{"type", "ffi.Map"}, {"data", json::Array{5, 6}}}}}});
+
+  // Map data has an odd number of entries (would read one past the end).
+  expect_throws({{"root_index", 0},
+                 {"nodes", json::Array{json::Object{{"type", "ffi.Map"}, {"data", json::Array{0}}},
+                                       json::Object{{"type", "int"}, {"data", 1}}}}});
+
+  // Device data has the wrong number of elements.
+  expect_throws(
+      {{"root_index", 0},
+       {"nodes", json::Array{json::Object{{"type", "Device"}, {"data", json::Array{1}}}}}});
+
+  // A node is missing the required "type" key.
+  expect_throws({{"root_index", 0}, {"nodes", json::Array{json::Object{{"data", 1}}}}});
+
+  // A node has the wrong value type for a child reference (string where an int
+  // index is expected).
+  expect_throws(
+      {{"root_index", 0},
+       {"nodes", json::Array{json::Object{{"type", "ffi.Array"},
+                                          {"data", json::Array{String("not-an-index")}}}}}});
+}
+
+// ---------------------------------------------------------------------------
 // String serialization roundtrip (json::Stringify / json::Parse)
 // ---------------------------------------------------------------------------
 TEST(Serialization, StringRoundTrip) {

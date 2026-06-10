@@ -270,6 +270,12 @@ class ObjectGraphDeserializer {
   }
 
   Any GetOrDecodeNode(int64_t node_index) {
+    // node_index comes from the input (root_index and child references), so
+    // validate it before indexing into decoded_nodes_ / nodes_, which would
+    // otherwise read out of bounds.
+    if (node_index < 0 || node_index >= static_cast<int64_t>(nodes_.size())) {
+      TVM_FFI_THROW(ValueError) << "Invalid JSON Object Graph: invalid node index " << node_index;
+    }
     // already decoded null index
     if (node_index == decoded_null_index_) {
       return Any(nullptr);
@@ -312,6 +318,11 @@ class ObjectGraphDeserializer {
       }
       case TypeIndex::kTVMFFIDevice: {
         Array<int32_t> data = node["data"].cast<Array<int32_t>>();
+        if (data.size() != 2) {
+          TVM_FFI_THROW(ValueError)
+              << "Invalid JSON Object Graph: Device data must be an array of "
+              << "[device_type, device_id], got " << data.size() << " element(s)";
+        }
         return DLDevice{static_cast<DLDeviceType>(data[0]), data[1]};
       }
       case TypeIndex::kTVMFFIStr: {
@@ -356,6 +367,13 @@ class ObjectGraphDeserializer {
   MapType DecodeMapLikeData(const json::Array& data) {
     MapType result;
     const int64_t n = static_cast<int64_t>(data.size());
+    // Map/Dict data is a flat array of alternating [key, value] indices, so the
+    // length must be even; an odd length means the input is malformed and would
+    // otherwise read data[i + 1] past the end on the final iteration.
+    if (n % 2 != 0) {
+      TVM_FFI_THROW(ValueError) << "Invalid JSON Object Graph: Map/Dict data must contain an even "
+                                << "number of [key, value] entries, got " << n;
+    }
     for (int64_t i = 0; i < n; i += 2) {
       int64_t key_index = data[i].cast<int64_t>();
       int64_t value_index = data[i + 1].cast<int64_t>();
