@@ -123,6 +123,7 @@ ALLOW_SPECIFIC_FILE = {
     "NOTICE",
     "KEYS",
     "DISCLAIMER",
+    ".claude/skills",
     "addons/torch_c_dlpack_ext/LICENSE",
     "addons/torch_c_dlpack_ext/NOTICE",
 }
