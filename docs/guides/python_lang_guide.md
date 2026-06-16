@@ -110,6 +110,59 @@ def add_one(a):
 assert tvm_ffi.get_global_func("example.add_one")(1) == 2
 ```
 
+(python-argument-conversion-protocols)=
+
+### Argument conversion protocols
+
+When Python calls a {py:class}`tvm_ffi.Function`, each argument is converted into the
+TVM FFI `Any` calling convention. Most common Python values are handled directly:
+`int`, `float`, `str`, `bytes`, `list`, `tuple`, `dict`, Python callables,
+{py:class}`tvm_ffi.Object`, {py:class}`tvm_ffi.Tensor`, DLPack-compatible tensors,
+and exceptions all have built-in conversions.
+
+Function calls also recognize the following special protocols that define
+argument conversion behavior. {py:func}`tvm_ffi.convert` also recognizes some
+of them, but it may preserve protocol objects whose final target type is only
+known when a function is called.
+
+For DLPack-compatible objects, TVM-FFI follows the
+[DLPack protocol](https://dmlc.github.io/dlpack/latest/).
+
+| Protocol | Expected return | Behavior |
+| -------- | --------------- | -------- |
+| `__tvm_ffi_object__(self)` | A {py:class}`tvm_ffi.Object` instance | Passes the returned FFI object handle directly. Use this for wrapper classes that own or expose an existing FFI object. |
+| `__tvm_ffi_value__(self)` | Another Python value | Recursively converts the returned value. This is useful for lightweight wrappers around values such as strings, arrays, maps, objects, or scalars. Conversion detects recursive cycles and reports them as conversion/type errors. |
+| `__tvm_ffi_opaque_ptr__(self)` | An integer pointer value | Passes the value as an opaque pointer. This is for low-level interop with raw memory structs. |
+| `__tvm_ffi_int__(self)` | An integer | Passes the value as an FFI integer. |
+| `__tvm_ffi_float__(self)` | A float | Passes the value as an FFI float. |
+| `__tvm_ffi_env_stream__(self)` | An integer stream handle | Used with non-CPU tensor inputs that expose DLPack. The stream is recorded in the FFI call context so the callee can observe the producer framework's current stream. |
+| `__cuda_stream__(self)` | A [CUDA stream protocol](https://nvidia.github.io/cuda-python/cuda-core/latest/interoperability.html) value | Passes the stream as an opaque pointer. |
+
+The protocols above should be implemented on the class, not installed dynamically
+on a single object instance. The converter checks the value's type for most
+protocols so dispatch can be cached efficiently.
+
+For example, a DSL compiler can use `__tvm_ffi_opaque_ptr__` to pass objects
+that map to raw memory pointers:
+
+```python
+import ctypes
+import tvm_ffi
+
+
+class Workspace:
+    def __init__(self, size: int):
+        self.buffer = (ctypes.c_uint8 * size)()
+
+    def __tvm_ffi_opaque_ptr__(self) -> int:
+        return ctypes.addressof(self.buffer)
+
+
+workspace = Workspace(4096)
+compile_kernel = tvm_ffi.get_global_func("my_compiler.compile_kernel")
+compile_kernel(workspace)
+```
+
 ## Container Types
 
 TVM FFI provides five container types that split into **immutable** (copy-on-write) and

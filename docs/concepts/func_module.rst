@@ -189,6 +189,13 @@ to a :py:class:`tvm_ffi.Function` at the ABI boundary. The example below demonst
    func_add = tvm_ffi.convert(add)
    print(func_add(1, 2))
 
+When Python values are passed to a :py:class:`tvm_ffi.Function`, the Python
+binding converts them into the TVM FFI ``Any`` calling convention. See
+:ref:`Python argument conversion protocols <python-argument-conversion-protocols>`
+for the supported ``__tvm_ffi_*`` hooks, including
+``__tvm_ffi_object__``, ``__tvm_ffi_value__``, and
+``__tvm_ffi_opaque_ptr__``.
+
 
 .. _sec:function:
 
