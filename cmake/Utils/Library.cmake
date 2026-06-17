@@ -78,6 +78,29 @@ function (tvm_ffi_add_msvc_flags target_name)
 endfunction ()
 
 # ~~~
+# tvm_ffi_hide_static_linked_lib_symbols(target_name)
+# Prevent symbols from static archives linked into a shared library from being exported by that
+# shared library.
+#
+# This matters when a toolchain links helper archives into a shared target, for example
+# libstdc++_nonshared.a. Without this guard, symbols pulled from those archives can become dynamic
+# exports of libtvm_ffi.so and unexpectedly interpose with symbols from downstream libraries.
+#
+# Linux, Android, and BSD targets generally use GNU-compatible linkers that support this through
+# `--exclude-libs,ALL`. Other platforms are left unchanged.
+#
+# Parameters:
+#   target_name: CMake target to modify
+# ~~~
+function (tvm_ffi_hide_static_linked_lib_symbols target_name)
+  if (CMAKE_SYSTEM_NAME MATCHES "Linux|Android|FreeBSD|NetBSD|OpenBSD"
+      AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"
+  )
+    target_link_options(${target_name} PRIVATE "-Wl,--exclude-libs,ALL")
+  endif ()
+endfunction ()
+
+# ~~~
 # tvm_ffi_add_target_from_obj(target_name, obj_target_name)
 # Create static and shared library targets from an object library and set output directories
 # consistently across platforms. Also runs dsymutil on Apple for the shared target.

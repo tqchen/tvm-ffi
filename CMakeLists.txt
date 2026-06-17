@@ -127,6 +127,7 @@ endif ()
 
 tvm_ffi_add_msvc_flags(tvm_ffi_objs)
 tvm_ffi_add_target_from_obj(tvm_ffi tvm_ffi_objs)
+tvm_ffi_hide_static_linked_lib_symbols(tvm_ffi_shared)
 
 if (TVM_FFI_USE_THREADS)
   find_package(Threads REQUIRED)
@@ -178,6 +179,7 @@ set_target_properties(
 target_link_libraries(tvm_ffi_testing PRIVATE tvm_ffi_shared)
 target_link_libraries(tvm_ffi_testing PUBLIC tvm_ffi_header)
 tvm_ffi_add_msvc_flags(tvm_ffi_testing)
+tvm_ffi_hide_static_linked_lib_symbols(tvm_ffi_testing)
 tvm_ffi_add_apple_dsymutil(tvm_ffi_testing)
 
 # Set the install RPATH for tvm_ffi_testing so it can find tvm_ffi.so relatively
@@ -296,6 +298,7 @@ if (TVM_FFI_BUILD_PYTHON_MODULE)
   target_link_libraries(tvm_ffi_cython PRIVATE tvm_ffi_shared)
   # link against testing to ensure right unloading order (cython first then testing)
   target_link_libraries(tvm_ffi_cython PRIVATE tvm_ffi_testing)
+  tvm_ffi_hide_static_linked_lib_symbols(tvm_ffi_cython)
   # Set RPATH for tvm_ffi_cython to find tvm_ffi_shared.so relatively
   if (APPLE)
     # macOS uses @loader_path
