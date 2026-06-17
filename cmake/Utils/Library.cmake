@@ -93,8 +93,8 @@ endfunction ()
 #   target_name: CMake target to modify
 # ~~~
 function (tvm_ffi_hide_static_linked_lib_symbols target_name)
-  if (CMAKE_SYSTEM_NAME MATCHES "Linux|Android|FreeBSD|NetBSD|OpenBSD"
-      AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"
+  if (CMAKE_SYSTEM_NAME MATCHES "Linux|Android|FreeBSD|NetBSD|OpenBSD" AND CMAKE_CXX_COMPILER_ID
+                                                                           MATCHES "GNU|Clang"
   )
     target_link_options(${target_name} PRIVATE "-Wl,--exclude-libs,ALL")
   endif ()
