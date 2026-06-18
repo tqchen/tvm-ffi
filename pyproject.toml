@@ -31,7 +31,7 @@ classifiers = [
   "Intended Audience :: Science/Research",
 ]
 keywords = ["machine learning", "inference"]
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 dependencies = ["typing-extensions>=4.5"]
 
 [project.urls]
@@ -235,10 +235,10 @@ build-verbosity = 1
 # only build up to cp312, cp312
 # will be abi3 and can be used in future versions
 # ship 314t threaded nogil version
-build = ["cp38-*", "cp39-*", "cp310-*", "cp311-*", "cp312-*", "cp314t-*"]
+build = ["cp39-*", "cp310-*", "cp311-*", "cp312-*", "cp314t-*"]
 skip = ["*musllinux*"]
 # we only need to test on cp312
-test-skip = ["cp38-*", "cp39-*", "cp310-*", "cp311-*"]
+test-skip = ["cp39-*", "cp310-*", "cp311-*"]
 # focus on testing abi3 wheel
 build-frontend = "build[uv]"
 test-command = "pytest {package}/tests/python -vvs"
