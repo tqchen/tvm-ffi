@@ -74,8 +74,8 @@ class EnumDef : public ReflectionDefBase {
    * \param instance_name The instance's string name (e.g., ``"Add"``).
    */
   explicit EnumDef(const char* instance_name)
-      : type_index_(EnumClsObj::RuntimeTypeIndex()), name_(instance_name) {
-    Dict<String, Enum> entries = EnsureEntriesDict();
+      : type_index_(EnumClsObj::_GetOrAllocRuntimeTypeIndex()), name_(instance_name) {
+    Dict<String, ObjectRef> entries = EnsureEntriesDict();
     String name_str(name_);
     if (entries.count(name_str) != 0) {
       TVM_FFI_THROW(RuntimeError) << "Duplicate enum entry `" << name_ << "` for type `"
@@ -83,6 +83,7 @@ class EnumDef : public ReflectionDefBase {
     }
     ordinal_ = static_cast<int64_t>(entries.size());
     ObjectPtr<EnumClsObj> obj = make_object<EnumClsObj>();
+    ::tvm::ffi::details::ObjectUnsafe::GetHeader(obj.get())->type_index = type_index_;
     obj->_value = ordinal_;
     obj->_name = name_str;
     instance_ = Enum(ObjectPtr<EnumObj>(std::move(obj)));
@@ -134,8 +135,8 @@ class EnumDef : public ReflectionDefBase {
   int64_t ordinal() const { return ordinal_; }
 
  private:
-  Dict<String, Enum> EnsureEntriesDict() {
-    return EnsureDict<Dict<String, Enum>>(type_attr::kEnumEntries);
+  Dict<String, ObjectRef> EnsureEntriesDict() {
+    return EnsureDict<Dict<String, ObjectRef>>(type_attr::kEnumEntries);
   }
 
   Dict<String, List<Any>> EnsureAttrsDict() {

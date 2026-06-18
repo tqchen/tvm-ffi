@@ -131,16 +131,18 @@ inline Enum EnumObj::Get(const String& name) {
   static_assert(std::is_base_of_v<EnumObj, EnumClsObj>,
                 "EnumObj::Get<T> requires T to be a subclass of EnumObj");
   const TVMFFITypeAttrColumn* column = GetEnumEntriesColumn();
-  int32_t type_index = EnumClsObj::RuntimeTypeIndex();
+  int32_t type_index = EnumClsObj::_GetOrAllocRuntimeTypeIndex();
   if (column != nullptr) {
     int32_t offset = type_index - column->begin_index;
     if (offset >= 0 && offset < column->size) {
       const TVMFFIAny* stored = &column->data[offset];
       if (stored->type_index != kTVMFFINone) {
-        Dict<String, Enum> entries = AnyView::CopyFromTVMFFIAny(*stored).cast<Dict<String, Enum>>();
+        Dict<String, ObjectRef> entries =
+            AnyView::CopyFromTVMFFIAny(*stored).cast<Dict<String, ObjectRef>>();
         auto it = entries.find(name);
         if (it != entries.end()) {
-          return (*it).second;
+          return details::ObjectUnsafe::ObjectRefFromObjectPtr<Enum>(
+              details::ObjectUnsafe::ObjectPtrFromObjectRef<EnumObj>((*it).second));
         }
       }
     }

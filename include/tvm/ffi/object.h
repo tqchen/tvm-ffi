@@ -307,11 +307,11 @@ class Object {
    * \brief Get the runtime allocated type index of the type
    * \note Getting this information may need dynamic calls into a global table.
    */
-  static int32_t RuntimeTypeIndex() { return TypeIndex::kTVMFFIObject; }
+  TVM_FFI_INLINE static int32_t RuntimeTypeIndex() noexcept { return TypeIndex::kTVMFFIObject; }
   /*!
    * \brief Internal function to get or allocate a runtime index.
    */
-  static int32_t _GetOrAllocRuntimeTypeIndex() {  // NOLINT(bugprone-reserved-identifier)
+  TVM_FFI_COLD_CODE static int32_t _GetOrAllocRuntimeTypeIndex() {  // NOLINT(*)
     return TypeIndex::kTVMFFIObject;
   }
 
@@ -936,7 +936,7 @@ struct ObjectPtrEqual {
  */
 #define TVM_FFI_DECLARE_OBJECT_INFO_STATIC(TypeKey, TypeName, ParentType)                     \
   static constexpr int32_t _type_depth = ParentType::_type_depth + 1;                         \
-  static int32_t _GetOrAllocRuntimeTypeIndex() {                                              \
+  TVM_FFI_COLD_CODE static int32_t _GetOrAllocRuntimeTypeIndex() {                            \
     static_assert(!ParentType::_type_final, "ParentType marked as final");                    \
     static_assert(TypeName::_type_child_slots == 0 || ParentType::_type_child_slots == 0 ||   \
                       TypeName::_type_child_slots < ParentType::_type_child_slots,            \
@@ -948,7 +948,7 @@ struct ObjectPtrEqual {
         TypeName::_type_child_slots_can_overflow, ParentType::_GetOrAllocRuntimeTypeIndex()); \
     return TypeName::_type_index;                                                             \
   }                                                                                           \
-  static int32_t RuntimeTypeIndex() { return TypeName::_type_index; }                         \
+  TVM_FFI_INLINE static int32_t RuntimeTypeIndex() noexcept { return TypeName::_type_index; } \
   static constexpr const char* _type_key = TypeKey
 
 /*!
@@ -959,7 +959,7 @@ struct ObjectPtrEqual {
  */
 #define TVM_FFI_DECLARE_OBJECT_INFO_PREDEFINED_TYPE_KEY(TypeName, ParentType)                 \
   static constexpr int32_t _type_depth = ParentType::_type_depth + 1;                         \
-  static int32_t _GetOrAllocRuntimeTypeIndex() {                                              \
+  TVM_FFI_COLD_CODE static int32_t _GetOrAllocRuntimeTypeIndex() {                            \
     static_assert(!ParentType::_type_final, "ParentType marked as final");                    \
     static_assert(TypeName::_type_child_slots == 0 || ParentType::_type_child_slots == 0 ||   \
                       TypeName::_type_child_slots < ParentType::_type_child_slots,            \
@@ -971,7 +971,8 @@ struct ObjectPtrEqual {
         TypeName::_type_child_slots_can_overflow, ParentType::_GetOrAllocRuntimeTypeIndex()); \
     return tindex;                                                                            \
   }                                                                                           \
-  static int32_t RuntimeTypeIndex() { return _GetOrAllocRuntimeTypeIndex(); }
+  static inline const int32_t _type_index = TypeName::_GetOrAllocRuntimeTypeIndex();          \
+  TVM_FFI_INLINE static int32_t RuntimeTypeIndex() noexcept { return TypeName::_type_index; }
 
 /*!
  * \brief Helper macro to declare object information with dynamic type index.

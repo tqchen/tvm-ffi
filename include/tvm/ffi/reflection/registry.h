@@ -992,7 +992,7 @@ class TypeAttrDef : public ReflectionDefBase {
    */
   template <typename... ExtraArgs>
   explicit TypeAttrDef(ExtraArgs&&... extra_args)
-      : type_index_(Class::RuntimeTypeIndex()), type_key_(Class::_type_key) {}
+      : type_index_(Class::_GetOrAllocRuntimeTypeIndex()), type_key_(Class::_type_key) {}
 
   /*!
    * \brief Define a function-valued type attribute.
