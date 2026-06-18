@@ -22,7 +22,6 @@ import collections.abc
 import ctypes
 import itertools
 import os
-import sys
 import typing
 from collections.abc import Iterator
 from numbers import Integral
@@ -39,10 +38,6 @@ from tvm_ffi.core import (
     _to_py_class_value,
 )
 from tvm_ffi.dataclasses import IntEnum, StrEnum, entry
-
-# Python 3.9+ supports list[int], dict[str, int], tuple[int, ...] at runtime.
-# On 3.8, these raise TypeError("'type' object is not subscriptable").
-_PY39 = sys.version_info >= (3, 9)
 from tvm_ffi.testing import (
     TestIntPair,
     TestObjectBase,
@@ -51,7 +46,7 @@ from tvm_ffi.testing import (
     _TestCxxClassDerived,
     _TestCxxClassDerivedDerived,
 )
-from tvm_ffi.testing.testing import requires_py39, requires_py310
+from tvm_ffi.testing.testing import requires_py310
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -376,39 +371,32 @@ class TestUnion:
 # Category 9: Containers
 # ---------------------------------------------------------------------------
 class TestContainers:
-    @requires_py39
     def test_array_list_pass(self) -> None:
         """Test array list pass."""
         A(tuple[int, ...]).check_value([1, 2, 3])
 
-    @requires_py39
     def test_array_tuple_pass(self) -> None:
         """Test array tuple pass."""
         A(tuple[int, ...]).check_value((1, 2, 3))
 
-    @requires_py39
     def test_array_wrong_element(self) -> None:
         """Test array wrong element."""
         with pytest.raises(TypeError, match=r"element \[1\].*expected int"):
             A(tuple[int, ...]).check_value([1, "x"])
 
-    @requires_py39
     def test_array_empty_pass(self) -> None:
         """Test array empty pass."""
         A(tuple[int, ...]).check_value([])
 
-    @requires_py39
     def test_array_any_pass(self) -> None:
         """Test array any pass."""
         A(tuple[typing.Any, ...]).check_value([1, "x", None])
 
-    @requires_py39
     def test_array_wrong_container_type(self) -> None:
         """Test array wrong container type."""
         with pytest.raises(TypeError, match="expected Array"):
             A(tuple[int, ...]).check_value(42)
 
-    @requires_py39
     def test_array_rejects_generator(self) -> None:
         """Generators are not accepted by Array schemas."""
 
@@ -419,51 +407,42 @@ class TestContainers:
         with pytest.raises(TypeError, match="expected Array"):
             A(tuple[int, ...]).check_value(gen())
 
-    @requires_py39
     def test_array_rejects_string(self) -> None:
         """Strings are not accepted by Array schemas."""
         with pytest.raises(TypeError, match="expected Array"):
             A(tuple[int, ...]).check_value("hello")
 
-    @requires_py39
     def test_list_pass(self) -> None:
         """Test list pass."""
         A(list[str]).check_value(["a", "b"])
 
-    @requires_py39
     def test_map_pass(self) -> None:
         """Test map pass."""
         A(tvm_ffi.Map[str, int]).check_value({"a": 1, "b": 2})
 
-    @requires_py39
     def test_map_wrong_key(self) -> None:
         """Test map wrong key."""
         with pytest.raises(TypeError, match="expected str"):
             A(tvm_ffi.Map[str, int]).check_value({1: 2})
 
-    @requires_py39
     def test_map_wrong_value(self) -> None:
         """Test map wrong value."""
         with pytest.raises(TypeError, match="expected int"):
             A(tvm_ffi.Map[str, int]).check_value({"a": "b"})
 
-    @requires_py39
     def test_map_empty_pass(self) -> None:
         """Test map empty pass."""
         A(tvm_ffi.Map[str, int]).check_value({})
 
-    @requires_py39
     def test_dict_pass(self) -> None:
         """Test dict pass."""
         A(dict[str, int]).check_value({"a": 1})
 
-    @requires_py39
     def test_map_wrong_container(self) -> None:
         """Test map wrong container."""
         with pytest.raises(TypeError, match="expected Map"):
             A(tvm_ffi.Map[str, int]).check_value([1, 2])
 
-    @requires_py39
     def test_map_rejects_non_mapping_pairs(self) -> None:
         """Lists of pairs are not accepted by Map schemas."""
         with pytest.raises(TypeError, match="expected Map"):
@@ -474,23 +453,19 @@ class TestContainers:
 # Category 9: Nested types
 # ---------------------------------------------------------------------------
 class TestNestedTypes:
-    @requires_py39
     def test_array_optional_int(self) -> None:
         """Test array optional int."""
         A(tuple[Optional[int], ...]).check_value([1, None, 2])
 
-    @requires_py39
     def test_map_str_array_int(self) -> None:
         """Test map str array int."""
         A(tvm_ffi.Map[str, tuple[int, ...]]).check_value({"a": [1, 2]})
 
-    @requires_py39
     def test_map_str_array_int_nested_fail(self) -> None:
         """Test map str array int nested fail."""
         with pytest.raises(TypeError, match="expected int"):
             A(tvm_ffi.Map[str, tuple[int, ...]]).check_value({"a": [1, "x"]})
 
-    @requires_py39
     def test_union_with_containers(self) -> None:
         """Test union with containers."""
         schema = A(Union[int, tuple[str, ...]])
@@ -576,13 +551,11 @@ class TestErrorMessages:
         with pytest.raises(TypeError, match=r"expected int, got str"):
             A(int).check_value("hello")
 
-    @requires_py39
     def test_nested_array_error(self) -> None:
         """Test nested array error."""
         with pytest.raises(TypeError, match=r"element \[2\].*expected int, got str"):
             A(tuple[int, ...]).check_value([1, 2, "x"])
 
-    @requires_py39
     def test_nested_map_error(self) -> None:
         """Test nested map error."""
         with pytest.raises(TypeError, match=r"value for key 'b'.*expected int, got str"):
@@ -674,7 +647,6 @@ class TestEdgeCases:
         """Test bytearray passes bytes."""
         A(bytes).check_value(bytearray(b"data"))
 
-    @requires_py39
     def test_tuple_passes_array(self) -> None:
         """Tuple is accepted as a sequence type for Array."""
         A(tuple[int, ...]).check_value((1, 2, 3))
@@ -702,7 +674,6 @@ class TestEdgeCases:
         with pytest.raises(TypeError, match="expected int"):
             A(int).check_value("hello")
 
-    @requires_py39
     def test_tuple_type_schema(self) -> None:
         """Test tuple type schema."""
         schema = A(tuple[int, str])
@@ -891,27 +862,23 @@ class TestConvertSpecialTypes:
 # Category 17: Container conversion results
 # ---------------------------------------------------------------------------
 class TestConvertContainers:
-    @requires_py39
     def test_array_converts_bool_elements_to_int(self) -> None:
         """Array[int] with bool elements converts them to int."""
         result = _to_py_class_value(A(tuple[int, ...]).convert([True, False, 1]))
         assert list(result) == [1, 0, 1]
         assert all(type(x) is int for x in result)
 
-    @requires_py39
     def test_array_int_passthrough(self) -> None:
         """Array[int] with int elements returns ffi.Array."""
         result = _to_py_class_value(A(tuple[int, ...]).convert([1, 2, 3]))
         assert list(result) == [1, 2, 3]
 
-    @requires_py39
     def test_array_any_passthrough(self) -> None:
         """Array[Any] wraps into ffi.Array."""
         original = [1, "x", None]
         result = _to_py_class_value(A(tuple[typing.Any, ...]).convert(original))
         assert isinstance(result, tvm_ffi.Array)
 
-    @requires_py39
     def test_map_converts_values(self) -> None:
         """Map[str, float] converts int values to float."""
         result = _to_py_class_value(A(tvm_ffi.Map[str, float]).convert({"a": 1, "b": 2}))
@@ -921,33 +888,28 @@ class TestConvertContainers:
         assert result["a"] == 1.0
         assert result["b"] == 2.0
 
-    @requires_py39
     def test_map_any_float_converts_values(self) -> None:
         """Map[Any, float] still converts values when keys are Any."""
         result = _to_py_class_value(A(tvm_ffi.Map[typing.Any, float]).convert({"a": 1, "b": 2}))
         assert isinstance(result, tvm_ffi.Map)
         assert type(result["a"]) is float
 
-    @requires_py39
     def test_map_any_any_passthrough(self) -> None:
         """Map[Any, Any] wraps into ffi.Map."""
         original = {"a": 1}
         result = _to_py_class_value(A(tvm_ffi.Map[typing.Any, typing.Any]).convert(original))
         assert isinstance(result, tvm_ffi.Map)
 
-    @requires_py39
     def test_map_empty_dict_convert(self) -> None:
         """Empty dict converts to Map[str, int]."""
         result = _to_py_class_value(A(tvm_ffi.Map[str, int]).convert({}))
         assert len(result) == 0
 
-    @requires_py39
     def test_dict_empty_dict_convert(self) -> None:
         """Empty dict converts to Dict[str, int]."""
         result = _to_py_class_value(A(dict[str, int]).convert({}))
         assert len(result) == 0
 
-    @requires_py39
     def test_tuple_converts_elements(self) -> None:
         """tuple[int, float] converts elements positionally."""
         result = _to_py_class_value(A(tuple[int, float]).convert((True, 42)))
@@ -955,7 +917,6 @@ class TestConvertContainers:
         assert type(result[0]) is int
         assert type(result[1]) is float
 
-    @requires_py39
     def test_nested_array_in_map(self) -> None:
         """Map[str, Array[int]] recursively converts elements."""
         result = _to_py_class_value(
@@ -965,7 +926,6 @@ class TestConvertContainers:
         assert list(result["a"]) == [1, 0]
         assert all(type(x) is int for x in result["a"])
 
-    @requires_py39
     def test_array_optional_int_all_none(self) -> None:
         """Array[Optional[int]] accepts an all-None payload."""
         result = _to_py_class_value(A(tuple[Optional[int], ...]).convert([None, None, None]))
@@ -1025,19 +985,16 @@ class TestConvertRejections:
         with pytest.raises(TypeError, match="expected str, got int"):
             A(str).convert(42)
 
-    @requires_py39
     def test_array_rejects_wrong_element(self) -> None:
         """Test array rejects wrong element."""
         with pytest.raises(TypeError, match=r"element \[1\].*expected int, got str"):
             A(tuple[int, ...]).convert([1, "x"])
 
-    @requires_py39
     def test_map_rejects_wrong_value(self) -> None:
         """Test map rejects wrong value."""
         with pytest.raises(TypeError, match=r"value for key 'a'.*expected int, got str"):
             A(tvm_ffi.Map[str, int]).convert({"a": "x"})
 
-    @requires_py39
     def test_tuple_rejects_wrong_length(self) -> None:
         """Test tuple rejects wrong length."""
         with pytest.raises(TypeError, match=r"expected tuple of length 2"):
@@ -1079,7 +1036,6 @@ class TestConvertNumpy:
 # Category 21: Array nested with Optional/Union (inner conversion)
 # ---------------------------------------------------------------------------
 class TestNestedArrayComposite:
-    @requires_py39
     def test_array_optional_float_with_bool(self) -> None:
         """Array[Optional[float]] converts bool elements to float."""
         result = _to_py_class_value(A(tuple[Optional[float], ...]).convert([True, None, 3]))
@@ -1088,7 +1044,6 @@ class TestNestedArrayComposite:
         assert result[1] is None
         assert type(result[2]) is float
 
-    @requires_py39
     def test_array_optional_int_with_bool(self) -> None:
         """Array[Optional[int]] converts bool elements to int."""
         result = _to_py_class_value(A(tuple[Optional[int], ...]).convert([True, None, 2]))
@@ -1096,7 +1051,6 @@ class TestNestedArrayComposite:
         assert type(result[0]) is int
         assert result[1] is None
 
-    @requires_py39
     def test_array_union_int_str_with_bool(self) -> None:
         """Array[Union[int, str]] converts bool via int alternative."""
         result = _to_py_class_value(A(tuple[Union[int, str], ...]).convert([True, "hello", False]))
@@ -1105,7 +1059,6 @@ class TestNestedArrayComposite:
         assert type(result[1]) is str
         assert type(result[2]) is int
 
-    @requires_py39
     def test_array_union_float_str_with_int(self) -> None:
         """Array[Union[float, str]] converts int via float alternative."""
         result = _to_py_class_value(A(tuple[Union[float, str], ...]).convert([42, "hi", True]))
@@ -1113,19 +1066,16 @@ class TestNestedArrayComposite:
         assert type(result[0]) is float
         assert type(result[2]) is float
 
-    @requires_py39
     def test_array_optional_float_all_none(self) -> None:
         """Array[Optional[float]] with all None elements."""
         result = _to_py_class_value(A(tuple[Optional[float], ...]).convert([None, None]))
         assert list(result) == [None, None]
 
-    @requires_py39
     def test_array_optional_float_empty(self) -> None:
         """Array[Optional[float]] with empty list."""
         result = _to_py_class_value(A(tuple[Optional[float], ...]).convert([]))
         assert list(result) == []
 
-    @requires_py39
     def test_array_union_failure_in_element(self) -> None:
         """Array[Union[int, str]] fails when element matches no alternative."""
         with pytest.raises(TypeError, match=r"element \[1\].*got float"):
@@ -1136,7 +1086,6 @@ class TestNestedArrayComposite:
 # Category 22: Map/Dict nested with Optional/Union (inner conversion)
 # ---------------------------------------------------------------------------
 class TestNestedMapComposite:
-    @requires_py39
     def test_map_str_optional_float_with_int(self) -> None:
         """Map[str, Optional[float]] converts int values to float."""
         result = _to_py_class_value(
@@ -1146,7 +1095,6 @@ class TestNestedMapComposite:
         assert result["a"] == 1.0
         assert result["b"] is None
 
-    @requires_py39
     def test_map_str_union_int_str(self) -> None:
         """Map[str, Union[int, str]] converts bool values via int."""
         result = _to_py_class_value(
@@ -1156,7 +1104,6 @@ class TestNestedMapComposite:
         assert result["y"] == "hello"
         assert type(result["x"]) is int
 
-    @requires_py39
     def test_dict_str_optional_int(self) -> None:
         """Dict[str, Optional[int]] with bool conversion."""
         result = _to_py_class_value(
@@ -1167,7 +1114,6 @@ class TestNestedMapComposite:
         assert result["c"] == 42
         assert type(result["a"]) is int
 
-    @requires_py39
     def test_map_str_optional_float_failure(self) -> None:
         """Map[str, Optional[float]] fails for non-float non-None value."""
         with pytest.raises(TypeError, match="expected float"):
@@ -1178,21 +1124,18 @@ class TestNestedMapComposite:
 # Category 23: Nested containers (container inside container)
 # ---------------------------------------------------------------------------
 class TestNestedContainerInContainer:
-    @requires_py39
     def test_array_of_array_int(self) -> None:
         """Array[Array[int]] with inner bool->int conversion."""
         result = _to_py_class_value(A(tuple[tuple[int, ...], ...]).convert([[True, False], [1, 2]]))
         assert [list(row) for row in result] == [[1, 0], [1, 2]]
         assert all(type(x) is int for row in result for x in row)
 
-    @requires_py39
     def test_array_of_array_float(self) -> None:
         """Array[Array[float]] with inner int->float conversion."""
         result = _to_py_class_value(A(tuple[tuple[float, ...], ...]).convert([[1, 2], [True, 3]]))
         assert [list(row) for row in result] == [[1.0, 2.0], [1.0, 3.0]]
         assert all(type(x) is float for row in result for x in row)
 
-    @requires_py39
     def test_map_str_array_float(self) -> None:
         """Map[str, Array[float]] with int->float conversion in arrays."""
         result = _to_py_class_value(
@@ -1203,14 +1146,12 @@ class TestNestedContainerInContainer:
         assert all(type(x) is float for x in result["a"])
         assert all(type(x) is float for x in result["b"])
 
-    @requires_py39
     def test_dict_str_array_int(self) -> None:
         """Dict[str, Array[int]] with bool->int conversion."""
         result = _to_py_class_value(A(dict[str, tuple[int, ...]]).convert({"a": [True, False]}))
         assert list(result["a"]) == [1, 0]
         assert all(type(x) is int for x in result["a"])
 
-    @requires_py39
     def test_array_of_map_str_int(self) -> None:
         """Array[Map[str, int]] with bool->int value conversion."""
         result = _to_py_class_value(
@@ -1220,7 +1161,6 @@ class TestNestedContainerInContainer:
         assert result[1]["y"] == 2
         assert type(result[0]["x"]) is int
 
-    @requires_py39
     def test_map_str_map_str_float(self) -> None:
         """Map[str, Map[str, float]] double nested with int->float."""
         result = _to_py_class_value(
@@ -1229,20 +1169,17 @@ class TestNestedContainerInContainer:
         assert result["outer"]["inner"] == 42.0
         assert type(result["outer"]["inner"]) is float
 
-    @requires_py39
     def test_list_of_list_int(self) -> None:
         """List[List[int]] with bool->int conversion."""
         result = _to_py_class_value(A(list[list[int]]).convert([[True, 1], [False, 2]]))
         assert [list(row) for row in result] == [[1, 1], [0, 2]]
         assert all(type(x) is int for row in result for x in row)
 
-    @requires_py39
     def test_nested_failure_array_of_array(self) -> None:
         """Array[Array[int]] error propagation through nested arrays."""
         with pytest.raises(TypeError, match="expected int"):
             A(tuple[tuple[int, ...], ...]).check_value([[1, 2], [3, "bad"]])
 
-    @requires_py39
     def test_empty_inner_containers(self) -> None:
         """Map[str, Array[int]] with empty inner arrays."""
         result = _to_py_class_value(
@@ -1251,7 +1188,6 @@ class TestNestedContainerInContainer:
         assert list(result["a"]) == []
         assert list(result["b"]) == []
 
-    @requires_py39
     def test_array_of_array_of_array_int(self) -> None:
         """Three-level nested Array[int] conversion still works."""
         schema = A(tuple[tuple[tuple[int, ...], ...], ...])
@@ -1261,7 +1197,6 @@ class TestNestedContainerInContainer:
         assert list(result[0][1]) == [1, 0]
         assert type(result[0][1][0]) is int
 
-    @requires_py39
     def test_map_of_map_of_array_float(self) -> None:
         """Nested map-to-array conversion still coerces inner values."""
         schema = A(tvm_ffi.Map[str, tvm_ffi.Map[str, tuple[float, ...]]])
@@ -1275,7 +1210,6 @@ class TestNestedContainerInContainer:
 # Category 24: Optional/Union wrapping containers
 # ---------------------------------------------------------------------------
 class TestOptionalUnionWrappingContainers:
-    @requires_py39
     def test_optional_array_int_with_conversion(self) -> None:
         """Optional[Array[int]] converts inner bool elements."""
         schema = A(Optional[tuple[int, ...]])
@@ -1283,26 +1217,22 @@ class TestOptionalUnionWrappingContainers:
         assert list(result) == [1, 2]
         assert type(result[0]) is int
 
-    @requires_py39
     def test_optional_array_int_none(self) -> None:
         """Optional[Array[int]] accepts None."""
         result = _to_py_class_value(A(Optional[tuple[int, ...]]).convert(None))
         assert result is None
 
-    @requires_py39
     def test_optional_map_str_float(self) -> None:
         """Optional[Map[str, float]] converts inner int values."""
         result = _to_py_class_value(A(Optional[tvm_ffi.Map[str, float]]).convert({"a": 1}))
         assert result["a"] == 1.0
         assert type(result["a"]) is float
 
-    @requires_py39
     def test_optional_map_str_float_none(self) -> None:
         """Optional[Map[str, float]] accepts None."""
         result = _to_py_class_value(A(Optional[tvm_ffi.Map[str, float]]).convert(None))
         assert result is None
 
-    @requires_py39
     def test_union_array_int_or_map_str_int(self) -> None:
         """Union[Array[int], Map[str, int]] matches first with conversion."""
         schema = A(Union[tuple[int, ...], tvm_ffi.Map[str, int]])
@@ -1311,7 +1241,6 @@ class TestOptionalUnionWrappingContainers:
         assert list(result) == [1, 2]
         assert type(result[0]) is int
 
-    @requires_py39
     def test_union_array_int_or_map_str_int_dict(self) -> None:
         """Union[Array[int], Map[str, int]] matches Map for dict input."""
         schema = A(Union[tuple[int, ...], tvm_ffi.Map[str, int]])
@@ -1319,7 +1248,6 @@ class TestOptionalUnionWrappingContainers:
         assert result["a"] == 1
         assert type(result["a"]) is int
 
-    @requires_py39
     def test_union_int_or_array_optional_float(self) -> None:
         """Union[int, Array[Optional[float]]] matches array with nested conversions."""
         schema = A(Union[int, tuple[Optional[float], ...]])
@@ -1328,7 +1256,6 @@ class TestOptionalUnionWrappingContainers:
         assert type(result[0]) is float
         assert result[1] is None
 
-    @requires_py39
     def test_optional_optional_array_int(self) -> None:
         """Optional[Optional[Array[int]]] with inner conversion."""
         schema = A(Optional[Optional[tuple[int, ...]]])
@@ -1342,7 +1269,6 @@ class TestOptionalUnionWrappingContainers:
 # Category 25: Tuple nested with other types
 # ---------------------------------------------------------------------------
 class TestNestedTuple:
-    @requires_py39
     def test_array_of_tuple_int_float(self) -> None:
         """Array[tuple[int, float]] with element-wise conversion."""
         result = _to_py_class_value(
@@ -1355,7 +1281,6 @@ class TestNestedTuple:
         assert result[1][0] == 2
         assert result[1][1] == 1.0
 
-    @requires_py39
     def test_map_str_tuple_int_str(self) -> None:
         """Map[str, tuple[int, str]] with inner bool->int conversion."""
         result = _to_py_class_value(
@@ -1365,7 +1290,6 @@ class TestNestedTuple:
         assert str(result["a"][1]) == "hello"
         assert type(result["a"][0]) is int
 
-    @requires_py39
     def test_tuple_of_array_int_and_map(self) -> None:
         """tuple[Array[int], Map[str, float]] nested conversion."""
         schema = A(tuple[tuple[int, ...], tvm_ffi.Map[str, float]])
@@ -1375,7 +1299,6 @@ class TestNestedTuple:
         assert type(result[0][0]) is int
         assert type(result[1]["k"]) is float
 
-    @requires_py39
     def test_tuple_of_optional_int_and_optional_float(self) -> None:
         """tuple[Optional[int], Optional[float]] with conversions."""
         schema = A(tuple[Optional[int], Optional[float]])
@@ -1384,7 +1307,6 @@ class TestNestedTuple:
         assert type(result[0]) is int
         assert result[1] is None
 
-    @requires_py39
     def test_tuple_nested_failure(self) -> None:
         """tuple[Array[int], str] error propagation from inner array."""
         with pytest.raises(TypeError, match=r"element .0..*element .1..*expected int"):
@@ -1395,7 +1317,6 @@ class TestNestedTuple:
 # Category 26: Deep nesting (3+ levels)
 # ---------------------------------------------------------------------------
 class TestDeepNesting:
-    @requires_py39
     def test_map_str_array_optional_int(self) -> None:
         """Map[str, Array[Optional[int]]] with 3-level nesting and conversion."""
         result = _to_py_class_value(
@@ -1406,7 +1327,6 @@ class TestDeepNesting:
         assert result["a"][1] is None
         assert type(result["a"][2]) is int
 
-    @requires_py39
     def test_array_map_str_optional_float(self) -> None:
         """Array[Map[str, Optional[float]]] with 3-level nesting."""
         result = _to_py_class_value(
@@ -1420,7 +1340,6 @@ class TestDeepNesting:
         assert type(result[0]["x"]) is float
         assert type(result[1]["z"]) is float
 
-    @requires_py39
     def test_optional_array_map_str_int(self) -> None:
         """Optional[Array[Map[str, int]]] 3 levels deep."""
         schema = A(Optional[tuple[tvm_ffi.Map[str, int], ...]])
@@ -1431,7 +1350,6 @@ class TestDeepNesting:
 
         assert _to_py_class_value(schema.convert(None)) is None
 
-    @requires_py39
     def test_map_str_array_array_int(self) -> None:
         """Map[str, Array[Array[int]]] 3-level container nesting."""
         result = _to_py_class_value(
@@ -1440,7 +1358,6 @@ class TestDeepNesting:
         assert [list(row) for row in result["m"]] == [[1, 1], [0, 2]]
         assert all(type(x) is int for row in result["m"] for x in row)
 
-    @requires_py39
     def test_array_array_optional_float(self) -> None:
         """Array[Array[Optional[float]]] deep nesting with None and conversion."""
         result = _to_py_class_value(
@@ -1452,7 +1369,6 @@ class TestDeepNesting:
         assert result[0][1] is None
         assert type(result[1][0]) is float
 
-    @requires_py39
     def test_deep_nesting_failure_propagation(self) -> None:
         """Error from deepest level propagates with full path info."""
         with pytest.raises(TypeError, match=r"value for key 'key'.*element .1..*expected int"):
@@ -1463,7 +1379,6 @@ class TestDeepNesting:
 # Category 27: FFI container inputs (tvm_ffi.Array/List/Map/Dict)
 # ---------------------------------------------------------------------------
 class TestFFIContainerInputs:
-    @requires_py39
     def test_ffi_array_with_element_conversion(self) -> None:
         """tvm_ffi.Array([True, 2]) passes Array[int] with bool->int conversion."""
         arr = tvm_ffi.Array([True, 2, 3])
@@ -1471,14 +1386,12 @@ class TestFFIContainerInputs:
         assert list(result) == [1, 2, 3]
         assert type(result[0]) is int
 
-    @requires_py39
     def test_ffi_array_any_passthrough(self) -> None:
         """tvm_ffi.Array passes Array[Any] as-is."""
         arr = tvm_ffi.Array([1, "x", None])
         result = _to_py_class_value(A(tuple[typing.Any, ...]).convert(arr))
         assert result.same_as(arr)
 
-    @requires_py39
     def test_ffi_list_with_list_schema(self) -> None:
         """tvm_ffi.List passes List[int] with conversion."""
         lst = tvm_ffi.List([True, 2])
@@ -1486,19 +1399,16 @@ class TestFFIContainerInputs:
         assert list(result) == [1, 2]
         assert type(result[0]) is int
 
-    @requires_py39
     def test_ffi_list_accepted_by_array_schema(self) -> None:
         """tvm_ffi.List passes Array schema (C++ allows cross-type via kOtherTypeIndex)."""
         lst = tvm_ffi.List([1, 2])
         A(tuple[int, ...]).check_value(lst)
 
-    @requires_py39
     def test_ffi_array_accepted_by_list_schema(self) -> None:
         """tvm_ffi.Array passes List schema (C++ allows cross-type via kOtherTypeIndex)."""
         arr = tvm_ffi.Array([1, 2])
         A(list[int]).check_value(arr)
 
-    @requires_py39
     def test_ffi_map_with_value_conversion(self) -> None:
         """tvm_ffi.Map passes Map[str, int] with bool->int conversion."""
         m = tvm_ffi.Map({"a": True, "b": 2})
@@ -1507,14 +1417,12 @@ class TestFFIContainerInputs:
         assert result["b"] == 2
         assert type(result["a"]) is int
 
-    @requires_py39
     def test_ffi_map_any_any_passthrough(self) -> None:
         """tvm_ffi.Map passes Map[Any, Any] as-is."""
         m = tvm_ffi.Map({"a": 1})
         result = _to_py_class_value(A(tvm_ffi.Map[typing.Any, typing.Any]).convert(m))
         assert result.same_as(m)
 
-    @requires_py39
     def test_ffi_dict_with_dict_schema(self) -> None:
         """tvm_ffi.Dict passes Dict[str, float] with int->float conversion."""
         d = tvm_ffi.Dict({"x": 1, "y": 2})
@@ -1523,19 +1431,16 @@ class TestFFIContainerInputs:
         assert result["y"] == 2.0
         assert type(result["x"]) is float
 
-    @requires_py39
     def test_ffi_dict_accepted_by_map_schema(self) -> None:
         """tvm_ffi.Dict passes Map schema (C++ allows cross-type via kOtherTypeIndex)."""
         d = tvm_ffi.Dict({"a": 1})
         A(tvm_ffi.Map[str, int]).check_value(d)
 
-    @requires_py39
     def test_ffi_map_accepted_by_dict_schema(self) -> None:
         """tvm_ffi.Map passes Dict schema (C++ allows cross-type via kOtherTypeIndex)."""
         m = tvm_ffi.Map({"a": 1})
         A(dict[str, int]).check_value(m)
 
-    @requires_py39
     def test_ffi_array_nested_optional_float(self) -> None:
         """tvm_ffi.Array with nested Optional[float] conversion."""
         arr = tvm_ffi.Array([1, None, True])
@@ -1544,7 +1449,6 @@ class TestFFIContainerInputs:
         assert type(result[0]) is float
         assert result[1] is None
 
-    @requires_py39
     def test_ffi_map_nested_array_int(self) -> None:
         """tvm_ffi.Map with value being a Python list, converted as Array[int]."""
         # Map values are already stored; create a map with array values
@@ -1553,14 +1457,12 @@ class TestFFIContainerInputs:
         assert list(result["k"]) == [1, 2]
         assert type(result["k"][0]) is int
 
-    @requires_py39
     def test_ffi_array_wrong_element_type(self) -> None:
         """tvm_ffi.Array with wrong element type gives clear error."""
         arr = tvm_ffi.Array([1, "bad", 3])
         with pytest.raises(TypeError, match=r"element \[1\].*expected int"):
             A(tuple[int, ...]).check_value(arr)
 
-    @requires_py39
     def test_ffi_map_wrong_value_type(self) -> None:
         """tvm_ffi.Map with wrong value type gives clear error."""
         m = tvm_ffi.Map({"a": 1, "b": "bad"})
@@ -1582,7 +1484,6 @@ class TestFFIContainerInputs:
 # Category 28: Mixed Python and FFI containers in nesting
 # ---------------------------------------------------------------------------
 class TestMixedPythonFFIContainers:
-    @requires_py39
     def test_python_list_of_ffi_arrays(self) -> None:
         """Python list containing tvm_ffi.Array elements, Array[Array[int]]."""
         inner1 = tvm_ffi.Array([True, 2])
@@ -1590,7 +1491,6 @@ class TestMixedPythonFFIContainers:
         result = _to_py_class_value(A(tuple[tuple[int, ...], ...]).convert([inner1, inner2]))
         assert [list(row) for row in result] == [[1, 2], [3, 0]]
 
-    @requires_py39
     def test_python_dict_with_ffi_array_values(self) -> None:
         """Python dict with tvm_ffi.Array values, Map[str, Array[float]]."""
         val = tvm_ffi.Array([1, True])
@@ -1598,7 +1498,6 @@ class TestMixedPythonFFIContainers:
         assert list(result["k"]) == [1.0, 1.0]
         assert all(type(x) is float for x in result["k"])
 
-    @requires_py39
     def test_ffi_map_with_python_list_in_union(self) -> None:
         """Union[Map[str, int], Array[int]] with tvm_ffi.Map input."""
         schema = A(Union[tvm_ffi.Map[str, int], tuple[int, ...]])
@@ -1607,7 +1506,6 @@ class TestMixedPythonFFIContainers:
         assert result["a"] == 1
         assert type(result["a"]) is int
 
-    @requires_py39
     def test_ffi_array_in_optional(self) -> None:
         """Optional[Array[int]] with tvm_ffi.Array input."""
         arr = tvm_ffi.Array([True, 2])
@@ -1620,13 +1518,11 @@ class TestMixedPythonFFIContainers:
 # Category 29: Error propagation through deeply nested FFI containers
 # ---------------------------------------------------------------------------
 class TestNestedErrorPropagation:
-    @requires_py39
     def test_array_array_int_inner_failure(self) -> None:
         """Error path: Array[Array[int]] -> element [1] -> element [0]."""
         with pytest.raises(TypeError, match=r"element \[1\].*element \[0\].*expected int, got str"):
             A(tuple[tuple[int, ...], ...]).convert([[1], ["bad"]])
 
-    @requires_py39
     def test_map_array_int_inner_failure(self) -> None:
         """Error path: Map -> value for key 'k' -> element [2]."""
         with pytest.raises(
@@ -1635,7 +1531,6 @@ class TestNestedErrorPropagation:
         ):
             A(tvm_ffi.Map[str, tuple[int, ...]]).convert({"k": [1, 2, "bad"]})
 
-    @requires_py39
     def test_array_map_int_inner_failure(self) -> None:
         """Error path: Array -> element [0] -> value for key 'x'."""
         with pytest.raises(
@@ -1644,25 +1539,21 @@ class TestNestedErrorPropagation:
         ):
             A(tuple[tvm_ffi.Map[str, int], ...]).convert([{"x": "bad"}])
 
-    @requires_py39
     def test_optional_array_int_inner_failure(self) -> None:
         """Error path through Optional -> Array -> element."""
         with pytest.raises(TypeError, match=r"element \[1\].*expected int, got str"):
             A(Optional[tuple[int, ...]]).convert([1, "bad"])
 
-    @requires_py39
     def test_tuple_array_int_inner_failure(self) -> None:
         """Error path: tuple -> element [0] -> element [1]."""
         with pytest.raises(TypeError, match=r"element \[0\].*element \[1\].*expected int, got str"):
             A(tuple[tuple[int, ...], str]).convert(([1, "bad"], "ok"))
 
-    @requires_py39
     def test_deep_3_level_error(self) -> None:
         """Error at 3 levels deep: Map -> Array -> Optional -> type mismatch."""
         with pytest.raises(TypeError, match=r"value for key 'key'.*element .1..*expected int"):
             A(tvm_ffi.Map[str, tuple[Optional[int], ...]]).check_value({"key": [1, "bad"]})
 
-    @requires_py39
     def test_ffi_array_nested_error(self) -> None:
         """Error from tvm_ffi.Array in nested context."""
         arr = tvm_ffi.Array([1, "bad", 3])
@@ -1799,52 +1690,44 @@ class TestCustomObjectRejection:
 # Category 33: Custom objects in containers
 # ---------------------------------------------------------------------------
 class TestCustomObjectInContainers:
-    @requires_py39
     def test_array_of_custom_objects(self) -> None:
         """Array[testing.TestIntPair] with matching elements."""
         objs = [TestIntPair(1, 2), TestIntPair(3, 4)]
         A(tuple[TestIntPair, ...]).check_value(objs)
 
-    @requires_py39
     def test_array_of_custom_objects_wrong_type(self) -> None:
         """Array[testing.TestIntPair] with wrong element type fails."""
         objs = [TestIntPair(1, 2), _TestCxxClassBase(v_i64=1, v_i32=2)]
         with pytest.raises(TypeError, match=r"element \[1\]"):
             A(tuple[TestIntPair, ...]).check_value(objs)
 
-    @requires_py39
     def test_array_of_base_with_derived_elements(self) -> None:
         """Array[testing.TestObjectBase] accepts derived elements via hierarchy."""
         base = TestObjectBase(v_i64=1, v_f64=1.0, v_str="a")
         derived = TestObjectDerived(v_map={"a": 1}, v_array=[1], v_i64=0, v_f64=0.0, v_str="")
         A(tuple[TestObjectBase, ...]).check_value([base, derived])
 
-    @requires_py39
     def test_map_str_to_custom_object(self) -> None:
         """Map[str, testing.TestIntPair] pass."""
         objs = {"a": TestIntPair(1, 2), "b": TestIntPair(3, 4)}
         A(tvm_ffi.Map[str, TestIntPair]).check_value(objs)
 
-    @requires_py39
     def test_map_str_to_custom_object_wrong_value(self) -> None:
         """Map[str, testing.TestIntPair] with int value fails."""
         data = {"a": TestIntPair(1, 2), "b": 42}
         with pytest.raises(TypeError, match="value for key 'b'"):
             A(tvm_ffi.Map[str, TestIntPair]).check_value(data)
 
-    @requires_py39
     def test_ffi_array_of_custom_objects(self) -> None:
         """tvm_ffi.Array of custom objects passes Array[Object]."""
         arr = tvm_ffi.Array([TestIntPair(1, 2), TestObjectBase(v_i64=1, v_f64=2.0, v_str="s")])
         A(tuple[tvm_ffi.core.Object, ...]).check_value(arr)
 
-    @requires_py39
     def test_ffi_array_of_custom_objects_specific_type(self) -> None:
         """tvm_ffi.Array of TestIntPair passes Array[testing.TestIntPair]."""
         arr = tvm_ffi.Array([TestIntPair(1, 2), TestIntPair(3, 4)])
         A(tuple[TestIntPair, ...]).check_value(arr)
 
-    @requires_py39
     def test_ffi_map_with_custom_object_values(self) -> None:
         """tvm_ffi.Map with custom object values passes."""
         m = tvm_ffi.Map({"x": TestIntPair(1, 2), "y": TestIntPair(3, 4)})
@@ -1933,13 +1816,11 @@ class TestCustomObjectFromTypeIndex:
 # Category 36: Custom objects in nested containers
 # ---------------------------------------------------------------------------
 class TestCustomObjectNestedContainers:
-    @requires_py39
     def test_array_of_optional_custom_object(self) -> None:
         """Array[Optional[testing.TestIntPair]] with mix of objects and None."""
         data = [TestIntPair(1, 2), None, TestIntPair(3, 4)]
         A(tuple[Optional[TestIntPair], ...]).check_value(data)
 
-    @requires_py39
     def test_map_str_to_array_of_custom_objects(self) -> None:
         """Map[str, Array[testing.TestIntPair]] with nested objects."""
         data = {
@@ -1948,24 +1829,20 @@ class TestCustomObjectNestedContainers:
         }
         A(tvm_ffi.Map[str, tuple[TestIntPair, ...]]).check_value(data)
 
-    @requires_py39
     def test_array_of_union_custom_objects(self) -> None:
         """Array[Union[testing.TestIntPair, testing.TestCxxClassBase]]."""
         data = [TestIntPair(1, 2), _TestCxxClassBase(v_i64=1, v_i32=2), TestIntPair(5, 6)]
         A(tuple[Union[TestIntPair, _TestCxxClassBase], ...]).check_value(data)
 
-    @requires_py39
     def test_optional_array_of_custom_objects(self) -> None:
         """Optional[Array[testing.TestIntPair]] with array."""
         data = [TestIntPair(1, 2)]
         A(Optional[tuple[TestIntPair, ...]]).check_value(data)
 
-    @requires_py39
     def test_optional_array_of_custom_objects_none(self) -> None:
         """Optional[Array[testing.TestIntPair]] with None."""
         A(Optional[tuple[TestIntPair, ...]]).check_value(None)
 
-    @requires_py39
     def test_nested_error_with_custom_object(self) -> None:
         """Array[testing.TestIntPair] error message includes type keys."""
         data = [TestIntPair(1, 2), _TestCxxClassBase(v_i64=1, v_i32=2)]
@@ -1974,7 +1851,6 @@ class TestCustomObjectNestedContainers:
         ):
             A(tuple[TestIntPair, ...]).check_value(data)
 
-    @requires_py39
     def test_map_nested_error_with_custom_object(self) -> None:
         """Map value error for custom object includes key and type info."""
         data = {"ok": TestIntPair(1, 2), "bad": 42}
@@ -1983,7 +1859,6 @@ class TestCustomObjectNestedContainers:
         ):
             A(tvm_ffi.Map[str, TestIntPair]).check_value(data)
 
-    @requires_py39
     def test_deep_nested_custom_objects(self) -> None:
         """Map[str, Array[Optional[testing.TestIntPair]]] deep nesting."""
         data = {
@@ -1992,20 +1867,17 @@ class TestCustomObjectNestedContainers:
         }
         A(tvm_ffi.Map[str, tuple[Optional[TestIntPair], ...]]).check_value(data)
 
-    @requires_py39
     def test_deep_nested_custom_objects_error(self) -> None:
         """Map[str, Array[testing.TestIntPair]] error at 3 levels."""
         data = {"k": [TestIntPair(1, 2), "bad"]}
         with pytest.raises(TypeError, match=r"value for key 'k'.*element .1."):
             A(tvm_ffi.Map[str, tuple[TestIntPair, ...]]).check_value(data)
 
-    @requires_py39
     def test_tuple_with_custom_object(self) -> None:
         """tuple[testing.TestIntPair, int, str] with custom object."""
         data = (TestIntPair(1, 2), 42, "hello")
         A(tuple[TestIntPair, int, str]).check_value(data)
 
-    @requires_py39
     def test_tuple_with_custom_object_wrong(self) -> None:
         """tuple[testing.TestIntPair, int] with wrong object in first position."""
         data = (_TestCxxClassBase(v_i64=1, v_i32=2), 42)
@@ -2079,31 +1951,26 @@ class TestLowercaseOrigins:
 # Category 38: Cross-type container conversions (Array<->List, Map<->Dict)
 # ---------------------------------------------------------------------------
 class TestCrossTypeContainers:
-    @requires_py39
     def test_array_schema_accepts_ffi_list(self) -> None:
         """Array[int] schema accepts tvm_ffi.List (C++ kOtherTypeIndex)."""
         lst = tvm_ffi.List([1, 2, 3])
         A(tuple[int, ...]).check_value(lst)
 
-    @requires_py39
     def test_list_schema_accepts_ffi_array(self) -> None:
         """List[int] schema accepts tvm_ffi.Array (C++ kOtherTypeIndex)."""
         arr = tvm_ffi.Array([1, 2, 3])
         A(list[int]).check_value(arr)
 
-    @requires_py39
     def test_map_schema_accepts_ffi_dict(self) -> None:
         """Map[str, int] schema accepts tvm_ffi.Dict (C++ kOtherTypeIndex)."""
         d = tvm_ffi.Dict({"a": 1, "b": 2})
         A(tvm_ffi.Map[str, int]).check_value(d)
 
-    @requires_py39
     def test_dict_schema_accepts_ffi_map(self) -> None:
         """Dict[str, int] schema accepts tvm_ffi.Map (C++ kOtherTypeIndex)."""
         m = tvm_ffi.Map({"a": 1, "b": 2})
         A(dict[str, int]).check_value(m)
 
-    @requires_py39
     def test_array_schema_converts_list_elements(self) -> None:
         """Array[float] converts elements from tvm_ffi.List[int]."""
         lst = tvm_ffi.List([1, 2, True])
@@ -2111,7 +1978,6 @@ class TestCrossTypeContainers:
         assert list(result) == [1.0, 2.0, 1.0]
         assert all(type(x) is float for x in result)
 
-    @requires_py39
     def test_list_schema_converts_array_elements(self) -> None:
         """List[float] converts elements from tvm_ffi.Array[int]."""
         arr = tvm_ffi.Array([1, 2, True])
@@ -2119,7 +1985,6 @@ class TestCrossTypeContainers:
         assert list(result) == [1.0, 2.0, 1.0]
         assert all(type(x) is float for x in result)
 
-    @requires_py39
     def test_map_schema_converts_dict_values(self) -> None:
         """Map[str, float] converts values from tvm_ffi.Dict."""
         d = tvm_ffi.Dict({"a": 1, "b": True})
@@ -2127,7 +1992,6 @@ class TestCrossTypeContainers:
         assert result["a"] == 1.0
         assert result["b"] == 1.0
 
-    @requires_py39
     def test_dict_schema_converts_map_values(self) -> None:
         """Dict[str, float] converts values from tvm_ffi.Map."""
         m = tvm_ffi.Map({"a": 1, "b": True})
@@ -2135,14 +1999,12 @@ class TestCrossTypeContainers:
         assert result["a"] == 1.0
         assert result["b"] == 1.0
 
-    @requires_py39
     def test_cross_type_still_rejects_wrong_container(self) -> None:
         """Array schema still rejects non-sequence CObjects (e.g. Map)."""
         m = tvm_ffi.Map({"a": 1})
         with pytest.raises(TypeError, match="expected Array"):
             A(tuple[int, ...]).check_value(m)
 
-    @requires_py39
     def test_cross_type_map_rejects_array(self) -> None:
         """Map schema still rejects sequence CObjects (e.g. Array)."""
         arr = tvm_ffi.Array([1, 2])
@@ -2154,13 +2016,11 @@ class TestCrossTypeContainers:
 # Category 39: tuple accepts list and CObject Array
 # ---------------------------------------------------------------------------
 class TestTupleAcceptsListAndArray:
-    @requires_py39
     def test_tuple_accepts_python_list(self) -> None:
         """tuple[int, str] accepts Python list input."""
         result = _to_py_class_value(A(tuple[int, str]).convert([42, "hello"]))
         assert list(result) == [42, "hello"]
 
-    @requires_py39
     def test_tuple_list_with_conversion(self) -> None:
         """tuple[float, int] converts list elements (bool->float, bool->int)."""
         result = _to_py_class_value(A(tuple[float, int]).convert([True, False]))
@@ -2168,19 +2028,16 @@ class TestTupleAcceptsListAndArray:
         assert type(result[0]) is float
         assert type(result[1]) is int
 
-    @requires_py39
     def test_tuple_rejects_wrong_length_list(self) -> None:
         """tuple[int, str] rejects list of wrong length."""
         with pytest.raises(TypeError, match="length"):
             A(tuple[int, str]).check_value([1, "a", "b"])
 
-    @requires_py39
     def test_tuple_accepts_ffi_array(self) -> None:
         """tuple[int, int] accepts tvm_ffi.Array (C++ Tuple accepts kTVMFFIArray)."""
         arr = tvm_ffi.Array([1, 2])
         A(tuple[int, int]).check_value(arr)
 
-    @requires_py39
     def test_tuple_ffi_array_with_conversion(self) -> None:
         """tuple[float, float] converts tvm_ffi.Array elements."""
         arr = tvm_ffi.Array([1, True])
@@ -2188,14 +2045,12 @@ class TestTupleAcceptsListAndArray:
         assert list(result) == [1.0, 1.0]
         assert all(type(x) is float for x in result)
 
-    @requires_py39
     def test_tuple_ffi_array_wrong_length(self) -> None:
         """tuple[int, int] rejects tvm_ffi.Array of wrong length."""
         arr = tvm_ffi.Array([1, 2, 3])
         with pytest.raises(TypeError, match="length"):
             A(tuple[int, int]).check_value(arr)
 
-    @requires_py39
     def test_tuple_rejects_ffi_map(self) -> None:
         """Tuple schema rejects Map CObject."""
         m = tvm_ffi.Map({"a": 1})
@@ -2319,7 +2174,6 @@ class TestInt64Boundaries:
         with pytest.raises(TypeError, match="int64 range"):
             A(Optional[int]).check_value(2**63)
 
-    @requires_py39
     def test_int64_overflow_in_array_element(self) -> None:
         """Array[int] element overflow is caught with path."""
         with pytest.raises(TypeError, match="int64 range"):
@@ -2982,7 +2836,6 @@ class TestValueProtocol:
 class TestProtocolsInContainers:
     """Protocol-accepting values work inside containers and composites."""
 
-    @requires_py39
     def test_int_protocol_in_array(self) -> None:
         """Array[int] accepts elements with __tvm_ffi_int__."""
 
@@ -3012,7 +2865,6 @@ class TestProtocolsInContainers:
 
         A(Union[TestIntPair, int]).check_value(ObjProto())
 
-    @requires_py39
     def test_value_protocol_in_array(self) -> None:
         """Array[int] elements use __tvm_ffi_value__ fallback (recursive)."""
 
@@ -3025,7 +2877,6 @@ class TestProtocolsInContainers:
         # called per-element.
         A(tuple[int, ...]).check_value([ValProto()])
 
-    @requires_py39
     def test_object_convertible_in_array(self) -> None:
         """Array[Object] elements unwrap ObjectConvertible before element dispatch."""
         inner = TestIntPair(3, 4)
@@ -3037,7 +2888,6 @@ class TestProtocolsInContainers:
         result = _to_py_class_value(A(tuple[tvm_ffi.core.Object, ...]).convert([Convertible()]))
         assert result[0].same_as(inner)
 
-    @requires_py39
     def test_device_protocol_in_map_value(self) -> None:
         """Map[str, Device] accepts __dlpack_device__ values."""
 
@@ -3054,7 +2904,6 @@ class TestProtocolsInContainers:
 class TestNestedValueProtocol:
     """__tvm_ffi_value__ fallback works recursively inside containers."""
 
-    @requires_py39
     def test_value_in_array_elements(self) -> None:
         """Array[int] elements with __tvm_ffi_value__ are accepted."""
 
@@ -3064,7 +2913,6 @@ class TestNestedValueProtocol:
 
         A(tuple[int, ...]).check_value([1, VP(), 3])
 
-    @requires_py39
     def test_value_in_map_values(self) -> None:
         """Map[str, int] values with __tvm_ffi_value__ are accepted."""
 
@@ -3074,7 +2922,6 @@ class TestNestedValueProtocol:
 
         A(tvm_ffi.Map[str, int]).check_value({"a": VP()})
 
-    @requires_py39
     def test_value_in_map_keys(self) -> None:
         """Map[str, int] keys with __tvm_ffi_value__ are accepted."""
 
@@ -3084,7 +2931,6 @@ class TestNestedValueProtocol:
 
         A(tvm_ffi.Map[str, int]).check_value({VP(): 1})
 
-    @requires_py39
     def test_value_in_tuple_positions(self) -> None:
         """tuple[int, str] positions with __tvm_ffi_value__ are accepted."""
 
@@ -3116,7 +2962,6 @@ class TestNestedValueProtocol:
 
         A(Union[int, str]).check_value(VP())
 
-    @requires_py39
     def test_multi_hop_value_in_container(self) -> None:
         """Nested __tvm_ffi_value__ unwrapping inside containers."""
 
@@ -3129,7 +2974,6 @@ class TestNestedValueProtocol:
 
         A(tuple[int, ...]).check_value([VP(VP(10))])
 
-    @requires_py39
     def test_value_convert_in_array(self) -> None:
         """Convert returns unwrapped values in container."""
 
@@ -3605,49 +3449,42 @@ class TestSTLOriginParsing:
 class TestZeroCopyConversion:
     """Typed container conversion preserves identity when no elements change."""
 
-    @requires_py39
     def test_array_int_exact_list(self) -> None:
         """Array[int] on exact Python list converts successfully."""
         original = [1, 2, 3]
         result = _to_py_class_value(A(tuple[int, ...]).convert(original))
         assert list(result) == original
 
-    @requires_py39
     def test_array_int_needs_conversion(self) -> None:
         """Array[int] on list needing bool->int returns converted list."""
         original = [1, True, 3]
         result = _to_py_class_value(A(tuple[int, ...]).convert(original))
         assert list(result) == [1, 1, 3]
 
-    @requires_py39
     def test_map_str_int_exact_dict(self) -> None:
         """Map[str, int] on exact dict converts successfully."""
         original = {"a": 1, "b": 2}
         result = _to_py_class_value(A(tvm_ffi.Map[str, int]).convert(original))
         assert dict(result) == original
 
-    @requires_py39
     def test_map_str_int_needs_conversion(self) -> None:
         """Map[str, int] on dict needing conversion returns converted dict."""
         original = {"a": True, "b": 2}
         result = _to_py_class_value(A(tvm_ffi.Map[str, int]).convert(original))
         assert result is not None
 
-    @requires_py39
     def test_tuple_exact_match(self) -> None:
         """tuple[int, str] on exact tuple converts successfully."""
         original = (42, "hello")
         result = _to_py_class_value(A(tuple[int, str]).convert(original))
         assert tuple(result) == original
 
-    @requires_py39
     def test_tuple_needs_conversion(self) -> None:
         """tuple[int, str] on tuple needing conversion returns converted tuple."""
         original = (True, "hello")
         result = _to_py_class_value(A(tuple[int, str]).convert(original))
         assert tuple(result) == (1, "hello")
 
-    @requires_py39
     def test_list_int_exact(self) -> None:
         """List[int] on exact list converts successfully."""
         original = [10, 20]
@@ -4005,7 +3842,6 @@ class TestCAny:
         # Short strings have type_index=11 (SmallStr), longer ones have 65 (Str)
         assert cany.type_index in (11, 65)
 
-    @requires_py39
     def test_cany_from_array(self) -> None:
         """convert(Array) returns CAny with array type_index."""
         cany = A(tuple[int, ...]).convert([1, 2, 3])
@@ -4037,27 +3873,23 @@ class TestCAny:
         """to_py() round-trips str correctly."""
         assert _to_py_class_value(A(str).convert("hello")) == "hello"
 
-    @requires_py39
     def test_to_py_array(self) -> None:
         """to_py() returns ffi.Array for Array convert."""
         result = _to_py_class_value(A(tuple[int, ...]).convert([1, 2, 3]))
         assert isinstance(result, tvm_ffi.Array)
         assert list(result) == [1, 2, 3]
 
-    @requires_py39
     def test_to_py_list(self) -> None:
         """to_py() returns ffi.List for List convert."""
         result = _to_py_class_value(A(list[int]).convert([1, 2, 3]))
         assert isinstance(result, tvm_ffi.List)
         assert list(result) == [1, 2, 3]
 
-    @requires_py39
     def test_to_py_map(self) -> None:
         """to_py() returns ffi.Map for Map convert."""
         result = _to_py_class_value(A(tvm_ffi.Map[str, int]).convert({"a": 1}))
         assert isinstance(result, tvm_ffi.Map)
 
-    @requires_py39
     def test_to_py_dict(self) -> None:
         """to_py() returns ffi.Dict for Dict convert."""
         result = _to_py_class_value(A(dict[str, int]).convert({"a": 1}))
@@ -4070,7 +3902,6 @@ class TestCAny:
         assert _to_py_class_value(cany) == 42
         assert _to_py_class_value(cany) == 42
 
-    @requires_py39
     def test_object_refcount_safety(self) -> None:
         """to_py() for objects properly IncRefs — no double-free."""
         cany = A(tuple[int, ...]).convert([1, 2, 3])
@@ -4096,7 +3927,6 @@ class TestCAny:
         cany = A(float).convert(3.14)
         assert "float" in repr(cany)
 
-    @requires_py39
     def test_repr_object(self) -> None:
         """Repr shows type_index for objects."""
         cany = A(tuple[int, ...]).convert([1, 2, 3])
@@ -4203,51 +4033,42 @@ class TestFromAnnotationFFITypes:
         """ctypes.c_void_p → canonical origin 'ctypes.c_void_p'."""
         assert A(ctypes.c_void_p) == S("ctypes.c_void_p")
 
-    @requires_py39
     def test_array_parameterized(self) -> None:
         """tvm_ffi.Array[int] cross-equivalent to tuple[int, ...]."""
         assert A(tvm_ffi.Array[int]) == A(tuple[int, ...])
 
-    @requires_py39
     def test_list_parameterized(self) -> None:
         """tvm_ffi.List[str] cross-equivalent to list[str]."""
         assert A(tvm_ffi.List[str]) == A(list[str])
 
-    @requires_py39
     def test_map_parameterized(self) -> None:
         """tvm_ffi.Map[str, float]."""
         assert A(tvm_ffi.Map[str, float]) == S("Map", S("str"), S("float"))
 
-    @requires_py39
     def test_dict_parameterized(self) -> None:
         """tvm_ffi.Dict[str, int] cross-equivalent to dict[str, int]."""
         assert A(tvm_ffi.Dict[str, int]) == A(dict[str, int])
 
-    @requires_py39
     def test_array_too_many_args(self) -> None:
         """tvm_ffi.Array[int, str] raises TypeError."""
         with pytest.raises(TypeError, match="requires 1"):
             A(tvm_ffi.Array[int, str])  # type: ignore[type-arg]
 
-    @requires_py39
     def test_list_too_many_args(self) -> None:
         """tvm_ffi.List[int, str] raises TypeError."""
         with pytest.raises(TypeError, match="requires 1"):
             A(tvm_ffi.List[int, str])  # type: ignore[type-arg]
 
-    @requires_py39
     def test_dict_one_arg(self) -> None:
         """tvm_ffi.Dict[str] raises TypeError."""
         with pytest.raises(TypeError, match="requires 2"):
             A(tvm_ffi.Dict[str])  # type: ignore[type-arg]
 
-    @requires_py39
     def test_dict_three_args(self) -> None:
         """tvm_ffi.Dict[str, int, float] raises TypeError."""
         with pytest.raises(TypeError, match="requires 2"):
             A(tvm_ffi.Dict[str, int, float])  # type: ignore[type-arg]
 
-    @requires_py39
     def test_map_one_arg(self) -> None:
         """tvm_ffi.Map[str] raises TypeError."""
         with pytest.raises(TypeError, match="requires 2"):
@@ -4290,12 +4111,10 @@ class TestFromAnnotationList:
         """Bare list."""
         assert A(list).origin == "List"
 
-    @requires_py39
     def test_int(self) -> None:
         """list[int]."""
         assert A(list[int]) == S("List", S("int"))
 
-    @requires_py39
     def test_nested(self) -> None:
         """list[list[int]]."""
         assert A(list[list[int]]) == S("List", S("List", S("int")))
@@ -4308,7 +4127,6 @@ class TestFromAnnotationDict:
         """Bare dict."""
         assert A(dict).origin == "Dict"
 
-    @requires_py39
     def test_str_int(self) -> None:
         """dict[str, int]."""
         assert A(dict[str, int]) == S("Dict", S("str"), S("int"))
@@ -4317,12 +4135,10 @@ class TestFromAnnotationDict:
 class TestFromAnnotationArray:
     """tuple[T, ...] → Array tests."""
 
-    @requires_py39
     def test_int(self) -> None:
         """tuple[int, ...]."""
         assert A(tuple[int, ...]) == S("Array", S("int"))
 
-    @requires_py39
     def test_float(self) -> None:
         """tuple[float, ...]."""
         assert A(tuple[float, ...]) == S("Array", S("float"))
@@ -4335,12 +4151,10 @@ class TestFromAnnotationTuple:
         """Bare tuple."""
         assert A(tuple).origin == "tuple"
 
-    @requires_py39
     def test_int_str(self) -> None:
         """tuple[int, str]."""
         assert A(tuple[int, str]) == S("tuple", S("int"), S("str"))
 
-    @requires_py39
     def test_empty(self) -> None:
         """tuple[()] stays distinct from bare tuple."""
         assert A(tuple[()]) == TypeSchema("tuple", ())
@@ -4400,13 +4214,11 @@ class TestFromAnnotationErrors:
         with pytest.raises(TypeError, match="Cannot convert"):
             A(complex)
 
-    @requires_py39
     def test_list_too_many_args(self) -> None:
         """list[int, int, float] raises."""
         with pytest.raises(TypeError, match="list takes at most 1"):
             A(list[int, int, float])  # type: ignore[type-arg]
 
-    @requires_py39
     def test_dict_one_arg(self) -> None:
         """dict[str] raises."""
         with pytest.raises(TypeError, match="dict requires 0 or 2"):
@@ -4422,47 +4234,40 @@ import tvm_ffi as _tvm_ffi
 class TestConvertReturnFFIContainers:
     """convert() returns ffi.Array/List/Map/Dict."""
 
-    @requires_py39
     def test_array_from_list(self) -> None:
         """Array convert from Python list."""
         result = _to_py_class_value(A(tuple[float, ...]).convert([1, 2, 3]))
         assert isinstance(result, _tvm_ffi.Array)
         assert list(result) == [1.0, 2.0, 3.0]
 
-    @requires_py39
     def test_list_from_list(self) -> None:
         """List convert from Python list."""
         result = _to_py_class_value(A(list[int]).convert([1, 2, 3]))
         assert isinstance(result, _tvm_ffi.List)
         assert list(result) == [1, 2, 3]
 
-    @requires_py39
     def test_dict_from_dict(self) -> None:
         """Dict convert from Python dict."""
         result = _to_py_class_value(A(dict[str, int]).convert({"a": 1}))
         assert isinstance(result, _tvm_ffi.Dict)
 
-    @requires_py39
     def test_map_from_dict(self) -> None:
         """Map convert from Python dict."""
         result = _to_py_class_value(A(tvm_ffi.Map[str, int]).convert({"a": 1}))
         assert isinstance(result, _tvm_ffi.Map)
 
-    @requires_py39
     def test_array_passthrough(self) -> None:
         """ffi.Array input passes through unchanged."""
         arr = _tvm_ffi.Array([1, 2, 3])
         result = _to_py_class_value(A(tuple[int, ...]).convert(arr))
         assert result.same_as(arr)
 
-    @requires_py39
     def test_list_passthrough(self) -> None:
         """ffi.List input passes through unchanged."""
         lst = _tvm_ffi.List([1, 2, 3])
         result = _to_py_class_value(A(list[int]).convert(lst))
         assert result.same_as(lst)
 
-    @requires_py39
     def test_array_subclass_passthrough(self) -> None:
         """ffi.Array subclasses pass through unchanged."""
 
@@ -4473,7 +4278,6 @@ class TestConvertReturnFFIContainers:
         result = _to_py_class_value(A(tuple[int, ...]).convert(arr))
         assert result.same_as(arr)
 
-    @requires_py39
     def test_list_subclass_passthrough(self) -> None:
         """ffi.List subclasses pass through unchanged."""
 
@@ -4484,7 +4288,6 @@ class TestConvertReturnFFIContainers:
         result = _to_py_class_value(A(list[int]).convert(lst))
         assert result.same_as(lst)
 
-    @requires_py39
     def test_map_subclass_passthrough(self) -> None:
         """ffi.Map subclasses pass through unchanged for Map[Any, Any]."""
 
@@ -4495,7 +4298,6 @@ class TestConvertReturnFFIContainers:
         result = _to_py_class_value(A(tvm_ffi.Map[typing.Any, typing.Any]).convert(m))
         assert result.same_as(m)
 
-    @requires_py39
     def test_dict_subclass_passthrough(self) -> None:
         """ffi.Dict subclasses pass through unchanged for Dict[Any, Any]."""
 
@@ -4506,7 +4308,6 @@ class TestConvertReturnFFIContainers:
         result = _to_py_class_value(A(dict[typing.Any, typing.Any]).convert(d))
         assert result.same_as(d)
 
-    @requires_py39
     def test_nested_array_convert(self) -> None:
         """Nested array conversion."""
         result = _to_py_class_value(A(tuple[tuple[int, ...], ...]).convert([[1, 2], [3, 4]]))
@@ -4569,25 +4370,21 @@ class TestConvertToFFITypes:
         result = _to_py_class_value(A(Callable).convert(lambda x: x))
         assert isinstance(result, tvm_ffi.core.Function)
 
-    @requires_py39
     def test_array_is_ffi_array(self) -> None:
         """Array[int] converts to tvm_ffi.Array."""
         result = _to_py_class_value(A(tuple[int, ...]).convert([1, 2]))
         assert isinstance(result, _tvm_ffi.Array)
 
-    @requires_py39
     def test_list_is_ffi_list(self) -> None:
         """List[int] converts to tvm_ffi.List."""
         result = _to_py_class_value(A(list[int]).convert([1, 2]))
         assert isinstance(result, _tvm_ffi.List)
 
-    @requires_py39
     def test_map_is_ffi_map(self) -> None:
         """Map[str, int] converts to tvm_ffi.Map."""
         result = _to_py_class_value(A(tvm_ffi.Map[str, int]).convert({"a": 1}))
         assert isinstance(result, _tvm_ffi.Map)
 
-    @requires_py39
     def test_dict_is_ffi_dict(self) -> None:
         """Dict[str, int] converts to tvm_ffi.Dict."""
         result = _to_py_class_value(A(dict[str, int]).convert({"a": 1}))

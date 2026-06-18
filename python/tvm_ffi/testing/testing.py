@@ -41,10 +41,6 @@ from tvm_ffi.dataclasses import c_class
 from .. import _ffi_api
 from .. import core as tvm_ffi_core
 
-requires_py39 = pytest.mark.skipif(
-    sys.version_info < (3, 9),
-    reason="requires Python 3.9+",
-)
 requires_py310 = pytest.mark.skipif(
     sys.version_info < (3, 10),
     reason="requires Python 3.10+",
