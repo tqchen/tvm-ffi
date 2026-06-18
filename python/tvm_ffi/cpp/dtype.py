@@ -59,7 +59,7 @@ ROCM_DTYPE_MAP = {
 }
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _determine_backend_once() -> Literal["cpu", "cuda", "rocm"]:
     try:
         import torch  # noqa: PLC0415

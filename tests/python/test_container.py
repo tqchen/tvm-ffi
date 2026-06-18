@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import pickle
-import sys
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -25,14 +25,6 @@ import tvm_ffi
 from tvm_ffi import testing
 from tvm_ffi.container import MISSING as CONTAINER_MISSING
 from tvm_ffi.core import MISSING
-
-if sys.version_info >= (3, 9):
-    # PEP 585 generics
-    from collections.abc import Sequence
-else:  # Python 3.8
-    # workarounds for python 3.8
-    # typing-module generics (subscriptable on 3.8)
-    from typing import Sequence
 
 
 def test_array() -> None:

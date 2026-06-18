@@ -22,8 +22,9 @@ import dataclasses
 import difflib
 import os
 import traceback
+from collections.abc import Generator, Iterable
 from pathlib import Path
-from typing import Callable, Generator, Iterable
+from typing import Callable
 
 from . import consts as C
 

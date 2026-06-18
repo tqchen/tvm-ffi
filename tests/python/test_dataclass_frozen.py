@@ -16,7 +16,7 @@
 # under the License.
 """Tests for frozen support in ``@py_class``."""
 
-# ruff: noqa: D102
+# ruff: noqa: D102, UP006, UP035, UP045
 from __future__ import annotations
 
 import copy
@@ -95,7 +95,7 @@ class TestFrozenFieldTypes:
     def test_frozen_optional_field(self) -> None:
         @py_class(_unique_key("opt_field"), frozen=True)
         class Opt(Object):
-            v: Optional[int]  # noqa: UP045
+            v: Optional[int]
 
         o1 = Opt(None)
         assert o1.v is None
@@ -122,7 +122,7 @@ class TestFrozenFieldTypes:
     def test_frozen_list_field(self) -> None:
         @py_class(_unique_key("list_field"), frozen=True)
         class HasList(Object):
-            items: List[int]  # noqa: UP006
+            items: List[int]
 
         h = HasList([1, 2, 3])
         assert len(h.items) == 3
@@ -132,7 +132,7 @@ class TestFrozenFieldTypes:
     def test_frozen_dict_field(self) -> None:
         @py_class(_unique_key("dict_field"), frozen=True)
         class HasDict(Object):
-            mapping: Dict[str, int]  # noqa: UP006
+            mapping: Dict[str, int]
 
         h = HasDict({"a": 1})
         assert h.mapping["a"] == 1
@@ -157,7 +157,7 @@ class TestFrozenDefaults:
     def test_frozen_field_with_default_factory(self) -> None:
         @py_class(_unique_key("def_factory"), frozen=True)
         class Cfg(Object):
-            items: List[int] = field(default_factory=list)  # noqa: UP006
+            items: List[int] = field(default_factory=list)
 
         c = Cfg()
         assert len(c.items) == 0
@@ -252,7 +252,7 @@ class TestEscapeHatch:
     def test_escape_hatch_preserves_type_coercion(self) -> None:
         @py_class(_unique_key("esc_coerce"), frozen=True)
         class HasList(Object):
-            items: List[int]  # noqa: UP006
+            items: List[int]
 
         h = HasList([1])
         type(h).items.set(h, [10, 20])  # ty: ignore[unresolved-attribute]
@@ -610,7 +610,7 @@ class TestFrozenEdgeCases:
     def test_frozen_field_with_none_default(self) -> None:
         @py_class(_unique_key("none_def"), frozen=True)
         class Opt(Object):
-            v: Optional[int] = None  # noqa: UP045
+            v: Optional[int] = None
 
         o = Opt()
         assert o.v is None

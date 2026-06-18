@@ -21,7 +21,8 @@ from __future__ import annotations
 import json
 import sys
 import warnings
-from typing import Any, Callable, Literal, Sequence, TypeVar, overload
+from collections.abc import Sequence
+from typing import Any, Callable, Literal, TypeVar, overload
 
 from . import core
 from .core import Function, TypeInfo

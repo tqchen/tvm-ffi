@@ -17,7 +17,8 @@
 from __future__ import annotations
 
 import sys
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import pytest
 import tvm_ffi

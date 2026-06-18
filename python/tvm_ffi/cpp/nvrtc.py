@@ -18,7 +18,7 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 
 def nvrtc_compile(  # noqa: PLR0912, PLR0915

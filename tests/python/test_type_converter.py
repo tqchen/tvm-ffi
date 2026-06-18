@@ -24,8 +24,9 @@ import itertools
 import os
 import sys
 import typing
+from collections.abc import Iterator
 from numbers import Integral
-from typing import Callable, Iterator, Optional, Union
+from typing import Callable, Optional, Union
 
 import pytest
 import tvm_ffi

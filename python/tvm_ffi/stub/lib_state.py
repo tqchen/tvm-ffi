@@ -30,7 +30,7 @@ from . import consts as C
 from .utils import FuncInfo, NamedTypeSchema, ObjectInfo
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def object_info_from_type_key(type_key: str) -> ObjectInfo:
     """Construct an `ObjectInfo` from an object type key."""
     type_info = _lookup_or_register_type_info_from_type_key(str(type_key))
@@ -108,7 +108,7 @@ def toposort_objects(type_keys: list[str]) -> list[ObjectInfo]:
     return [infos[type_key] for type_key in sorted_keys]
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _func_info_from_global_name(name: str) -> FuncInfo:
     """Construct a `FuncInfo` from a global function name."""
     return FuncInfo(

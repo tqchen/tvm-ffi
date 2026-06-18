@@ -25,7 +25,8 @@ from __future__ import annotations
 import functools
 import inspect
 import keyword
-from typing import Any, Callable, Iterable
+from collections.abc import Iterable
+from typing import Any, Callable
 
 from tvm_ffi.utils.unpack_dataclass import unpack_dataclass_to_tuple
 

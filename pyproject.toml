@@ -267,6 +267,7 @@ unused-ignore-comment = "ignore"
 
 [tool.ty.analysis]
 allowed-unresolved-imports = [
+  "tvm_ffi._version",
   "torch",
   "torch.*",
   "torch.utils.*",
