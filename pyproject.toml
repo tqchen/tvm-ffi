@@ -253,6 +253,7 @@ environment = { MACOSX_DEPLOYMENT_TARGET = "10.14" }
 
 [tool.cibuildwheel.windows]
 archs = ["AMD64"]
+repair-wheel-command = "delvewheel repair --ignore-existing -w {dest_dir} -v {wheel}"
 
 [tool.ty.environment]
 python-version = "3.9"
