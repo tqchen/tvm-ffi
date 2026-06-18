@@ -27,6 +27,23 @@ namespace {
 using namespace tvm::ffi;
 using namespace tvm::ffi::testing;
 
+template <typename T>
+class CRTPObject : public Object {
+ public:
+  static constexpr int _type_child_slots [[maybe_unused]] = 0;
+  static constexpr bool _type_final [[maybe_unused]] = true;
+  TVM_FFI_DECLARE_OBJECT_INFO_PREDEFINED_TYPE_KEY(T, Object);
+
+ private:
+  friend T;
+  CRTPObject() = default;
+};
+
+class LeafObject : public CRTPObject<LeafObject> {
+ public:
+  static constexpr const char* _type_key = "test.CRTPLeaf";
+};
+
 TEST(Object, RefCounter) {
   ObjectPtr<TIntObj> a = make_object<TIntObj>(11);
   ObjectPtr<TIntObj> b = a;
@@ -57,6 +74,15 @@ TEST(Object, TypeInfo) {
   EXPECT_EQ(info->type_depth, 2);
   EXPECT_EQ(info->type_ancestors[0]->type_index, Object::RuntimeTypeIndex());
   EXPECT_EQ(info->type_ancestors[1]->type_index, TNumberObj::RuntimeTypeIndex());
+  EXPECT_GE(info->type_index, TypeIndex::kTVMFFIDynObjectBegin);
+}
+
+TEST(Object, CRTPObjectInfo) {
+  const TypeInfo* info = TVMFFIGetTypeInfo(LeafObject::RuntimeTypeIndex());
+  ASSERT_TRUE(info != nullptr);
+  EXPECT_EQ(info->type_index, LeafObject::RuntimeTypeIndex());
+  EXPECT_EQ(info->type_depth, 1);
+  EXPECT_EQ(info->type_ancestors[0]->type_index, Object::RuntimeTypeIndex());
   EXPECT_GE(info->type_index, TypeIndex::kTVMFFIDynObjectBegin);
 }
 

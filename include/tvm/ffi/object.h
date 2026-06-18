@@ -971,7 +971,7 @@ struct ObjectPtrEqual {
         TypeName::_type_child_slots_can_overflow, ParentType::_GetOrAllocRuntimeTypeIndex()); \
     return tindex;                                                                            \
   }                                                                                           \
-  static inline const int32_t _type_index = TypeName::_GetOrAllocRuntimeTypeIndex();          \
+  static inline const int32_t _type_index = _GetOrAllocRuntimeTypeIndex();                    \
   TVM_FFI_INLINE static int32_t RuntimeTypeIndex() noexcept { return TypeName::_type_index; }
 
 /*!
