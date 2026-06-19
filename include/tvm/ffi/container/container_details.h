@@ -178,20 +178,6 @@ inline constexpr bool all_storage_enabled_v = (storage_enabled_v<T> && ...);
  */
 template <typename... T>
 inline constexpr bool all_object_ref_v = (std::is_base_of_v<ObjectRef, T> && ...);
-/**
- * \brief Check if Any storage of Derived can always be directly used as Base.
- *
- * \tparam Base The base type.
- * \tparam Derived The derived type.
- * \return True if Derived's storage can be used as Base's storage, false otherwise.
- */
-template <typename Base, typename Derived>
-inline constexpr bool type_contains_v =
-    std::is_base_of_v<Base, Derived> || std::is_same_v<Base, Derived>;
-// special case for Any
-template <typename Derived>
-inline constexpr bool type_contains_v<Any, Derived> = true;
-
 /*!
  * \brief Create a string of the container type.
  * \tparam V The types of the elements in the container.

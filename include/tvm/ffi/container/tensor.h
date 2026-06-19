@@ -884,6 +884,50 @@ inline size_t GetDataSize(const TensorView& tensor) {
   return GetDataSize(tensor.numel(), tensor.dtype());
 }
 
+// DLTensor* support lives with Tensor/TensorView because the conversion path
+// is tensor-specific and can reuse the FFI error layer.
+template <>
+struct TypeTraits<DLTensor*> : public TypeTraitsBase {
+  static constexpr bool storage_enabled = false;
+  static constexpr int32_t field_static_type_index = TypeIndex::kTVMFFIDLTensorPtr;
+
+  TVM_FFI_INLINE static void CopyToAnyView(DLTensor* src, TVMFFIAny* result) {
+    TVM_FFI_ICHECK_NOTNULL(src);
+    result->type_index = TypeIndex::kTVMFFIDLTensorPtr;
+    result->zero_padding = 0;
+    TVM_FFI_CLEAR_PTR_PADDING_IN_FFI_ANY(result);
+    result->v_ptr = src;
+  }
+
+  TVM_FFI_INLINE static bool CheckAnyStrict(const TVMFFIAny* src) {
+    return src->type_index == TypeIndex::kTVMFFIDLTensorPtr;
+  }
+
+  TVM_FFI_INLINE static DLTensor* CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    TVM_FFI_UNSAFE_ASSUME(src->type_index == TypeIndex::kTVMFFIDLTensorPtr);
+    return static_cast<DLTensor*>(src->v_ptr);
+  }
+
+  TVM_FFI_INLINE static void MoveToAny(DLTensor*, TVMFFIAny*) {
+    TVM_FFI_THROW(RuntimeError)
+        << "DLTensor* cannot be held in Any as it does not retain ownership, use Tensor instead";
+  }
+
+  TVM_FFI_INLINE static std::optional<DLTensor*> TryCastFromAnyView(const TVMFFIAny* src) {
+    if (src->type_index == TypeIndex::kTVMFFIDLTensorPtr) {
+      return static_cast<DLTensor*>(src->v_ptr);
+    } else if (src->type_index == TypeIndex::kTVMFFITensor) {
+      return TVMFFITensorGetDLTensorPtr(src->v_obj);
+    }
+    return std::nullopt;
+  }
+
+  TVM_FFI_INLINE static std::string TypeStr() { return StaticTypeKey::kTVMFFIDLTensorPtr; }
+  TVM_FFI_INLINE static std::string TypeSchema() {
+    return R"({"type":")" + std::string(StaticTypeKey::kTVMFFIDLTensorPtr) + R"("})";
+  }
+};
+
 // TensorView type, allow implicit casting from DLTensor*
 // NOTE: we deliberately do not support MoveToAny and MoveFromAny since it does not retain ownership
 template <>

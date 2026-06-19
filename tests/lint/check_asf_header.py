@@ -170,8 +170,10 @@ FMT_MAP = {
     "bat": header_cmdstyle,
 }
 
-# Files and patterns to skip during header checking
-SKIP_LIST: list[str] = []
+# Files and patterns to skip during header checking.
+SKIP_LIST: list[str] = [
+    ".agents/skills/**/SKILL.md",
+]
 
 
 def should_skip_file(filepath: str) -> bool:

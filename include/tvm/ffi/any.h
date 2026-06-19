@@ -823,6 +823,23 @@ struct AnyEqual {
     }
   }
 };
+
+// Placed near the end because this specialization depends on error handling.
+template <>
+struct TypeTraits<uint64_t> : public TypeTraitsIntBase<uint64_t> {
+  TVM_FFI_INLINE static void CopyToAnyView(const uint64_t& src, TVMFFIAny* result) {
+    if (src > static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      TVM_FFI_THROW(OverflowError)
+          << "Integer value " << src << " is too large to fit in int64_t. "
+          << "Consider explicitly casting to int64_t first if this is intentional.";
+    }
+    TypeTraitsIntBase<uint64_t>::CopyInt64ToAnyView(static_cast<int64_t>(src), result);
+  }
+
+  TVM_FFI_INLINE static void MoveToAny(uint64_t src, TVMFFIAny* result) {
+    CopyToAnyView(src, result);
+  }
+};
 }  // namespace ffi
 
 // Expose to the tvm namespace for usability

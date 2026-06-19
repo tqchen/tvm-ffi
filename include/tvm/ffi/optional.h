@@ -413,6 +413,68 @@ class Optional<T, std::enable_if_t<use_ptr_based_optional_v<T>>> : public Object
     }
   }
 };
+
+template <typename T>
+inline constexpr bool use_default_type_traits_v<Optional<T>> = false;
+
+template <typename T>
+struct TypeTraits<Optional<T>> : public TypeTraitsBase {
+  TVM_FFI_INLINE static void CopyToAnyView(const Optional<T>& src, TVMFFIAny* result) {
+    if (src.has_value()) {
+      TypeTraits<T>::CopyToAnyView(*src, result);
+    } else {
+      TypeTraits<std::nullptr_t>::CopyToAnyView(nullptr, result);
+    }
+  }
+
+  TVM_FFI_INLINE static void MoveToAny(Optional<T> src, TVMFFIAny* result) {
+    if (src.has_value()) {
+      TypeTraits<T>::MoveToAny(*std::move(src), result);
+    } else {
+      TypeTraits<std::nullptr_t>::CopyToAnyView(nullptr, result);
+    }
+  }
+
+  TVM_FFI_INLINE static bool CheckAnyStrict(const TVMFFIAny* src) {
+    if (src->type_index == TypeIndex::kTVMFFINone) return true;
+    return TypeTraits<T>::CheckAnyStrict(src);
+  }
+
+  TVM_FFI_INLINE static Optional<T> CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    if (src->type_index == TypeIndex::kTVMFFINone) {
+      return Optional<T>(std::nullopt);
+    }
+    return TypeTraits<T>::CopyFromAnyViewAfterCheck(src);
+  }
+
+  TVM_FFI_INLINE static Optional<T> MoveFromAnyAfterCheck(TVMFFIAny* src) {
+    if (src->type_index == TypeIndex::kTVMFFINone) {
+      return Optional<T>(std::nullopt);
+    }
+    return TypeTraits<T>::MoveFromAnyAfterCheck(src);
+  }
+
+  TVM_FFI_INLINE static std::optional<Optional<T>> TryCastFromAnyView(const TVMFFIAny* src) {
+    if (src->type_index == TypeIndex::kTVMFFINone) return Optional<T>(std::nullopt);
+    if (std::optional<T> opt = TypeTraits<T>::TryCastFromAnyView(src)) {
+      return Optional<T>(*std::move(opt));
+    }
+    // Important to be explicit here because nullopt can convert to
+    // std::optional<T>(nullopt), which would incorrectly signal success.
+    return std::optional<Optional<T>>(std::nullopt);
+  }
+
+  TVM_FFI_INLINE static std::string GetMismatchTypeInfo(const TVMFFIAny* src) {
+    return TypeTraits<T>::GetMismatchTypeInfo(src);
+  }
+
+  TVM_FFI_INLINE static std::string TypeStr() {
+    return "Optional<" + TypeTraits<T>::TypeStr() + ">";
+  }
+  TVM_FFI_INLINE static std::string TypeSchema() {
+    return R"({"type":"Optional","args":[)" + details::TypeSchema<T>::v() + "]}";
+  }
+};
 }  // namespace ffi
 }  // namespace tvm
 #endif  // TVM_FFI_OPTIONAL_H_

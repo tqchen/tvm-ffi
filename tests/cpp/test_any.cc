@@ -18,6 +18,7 @@
  */
 #include <gtest/gtest.h>
 #include <tvm/ffi/any.h>
+#include <tvm/ffi/container/tensor.h>
 #include <tvm/ffi/memory.h>
 
 #include <limits>
