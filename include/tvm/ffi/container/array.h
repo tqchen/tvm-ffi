@@ -668,8 +668,10 @@ class Array : public ObjectRef {
     return static_cast<ArrayObj*>(data_.get());
   }
 
-  /*! \brief specify container node */
+  /// \cond Doxygen_Suppress
   using ContainerType = ArrayObj;
+  static constexpr bool _type_container_is_exact = false;
+  /// \endcond
 
   /*!
    * \brief Agregate arguments into a single Array<T>

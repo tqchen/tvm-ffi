@@ -370,6 +370,56 @@ TEST(Any, ObjectRefWithFallbackTraits) {
   EXPECT_EQ(v9->value, 0);
 }
 
+TEST(Any, AsOrThrow) {
+  Any any_int = 1;
+  EXPECT_EQ(any_int.as_or_throw<int>(), 1);
+  EXPECT_EQ(std::move(any_int).as_or_throw<int>(), 1);
+
+  Any any_obj = TInt(11);
+  EXPECT_EQ(any_obj.as_or_throw<const TIntObj*>()->value, 11);
+  EXPECT_EQ(any_obj.as_or_throw<TInt>()->value, 11);
+
+  const Any const_any_obj = TInt(12);
+  auto const_as_obj = const_any_obj.as<TInt>();
+  ASSERT_TRUE(const_as_obj.has_value()) << "Expected const Any as<TInt>() to succeed";
+  EXPECT_EQ((*const_as_obj).get()->value, 12);  // NOLINT(bugprone-unchecked-optional-access)
+  EXPECT_EQ(const_any_obj.as_or_throw<TInt>()->value, 12);
+
+  auto moved_as_obj = Any(TInt(13)).as<TInt>();
+  ASSERT_TRUE(moved_as_obj.has_value()) << "Expected rvalue Any as<TInt>() to succeed";
+  EXPECT_EQ((*moved_as_obj).get()->value, 13);  // NOLINT(bugprone-unchecked-optional-access)
+  EXPECT_EQ(Any(TInt(13)).as_or_throw<TInt>()->value, 13);
+
+  Any any_float = 1;
+  EXPECT_THROW(
+      {
+        try {
+          [[maybe_unused]] auto value = any_float.as_or_throw<double>();
+        } catch (const Error& error) {
+          EXPECT_EQ(error.kind(), "TypeError");
+          std::string what = error.what();
+          EXPECT_NE(what.find("Cannot treat type `int` as type `float`"), std::string::npos);
+          throw;
+        }
+      },
+      ::tvm::ffi::Error);
+
+  Any any_number = TFloat(2.5);
+  EXPECT_THROW(
+      {
+        try {
+          [[maybe_unused]] auto value = any_number.as_or_throw<TInt>();
+        } catch (const Error& error) {
+          EXPECT_EQ(error.kind(), "TypeError");
+          std::string what = error.what();
+          EXPECT_NE(what.find("Cannot treat type `test.Float` as type `test.Int`"),
+                    std::string::npos);
+          throw;
+        }
+      },
+      ::tvm::ffi::Error);
+}
+
 TEST(Any, CastVsAs) {
   AnyView view0 = 1;
   // as only runs strict check

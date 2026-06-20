@@ -460,8 +460,10 @@ class List : public ObjectRef {
     }
   }
 
-  /*! \brief specify container node */
+  /// \cond Doxygen_Suppress
   using ContainerType = ListObj;
+  static constexpr bool _type_container_is_exact = false;
+  /// \endcond
 
  private:
   /*!

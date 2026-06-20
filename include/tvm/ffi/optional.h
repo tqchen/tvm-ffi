@@ -261,6 +261,7 @@ template <typename T>
 class Optional<T, std::enable_if_t<use_ptr_based_optional_v<T>>> : public ObjectRef {
  public:
   using ContainerType = typename T::ContainerType;
+  static constexpr bool _type_container_is_exact = T::_type_container_is_exact;
   Optional() = default;
   // NOLINTBEGIN(google-explicit-constructor)
   Optional(const Optional<T>& other) : ObjectRef(other) {}

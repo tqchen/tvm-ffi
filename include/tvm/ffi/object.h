@@ -79,6 +79,7 @@ constexpr uint64_t kCombinedRefCountMaskUInt32 = (static_cast<uint64_t>(1) << 32
  */
 template <typename TargetType>
 TVM_FFI_INLINE bool IsObjectInstance(int32_t object_type_index);
+
 }  // namespace details
 
 /*!
@@ -747,7 +748,7 @@ class ObjectRef {
    * \return The pointer to the requested type.
    */
   template <typename ObjectType, typename = std::enable_if_t<std::is_base_of_v<Object, ObjectType>>>
-  const ObjectType* as() const {
+  const ObjectType* as() const& {
     if (data_ != nullptr && data_->IsInstance<ObjectType>()) {
       return static_cast<ObjectType*>(data_.get());
     } else {
@@ -758,26 +759,94 @@ class ObjectRef {
   /*!
    * \brief Try to downcast the ObjectRef to Optional<T> of the requested type.
    *
-   *  The function will return a std::nullopt if the cast or if the pointer is nullptr.
+   * If the cast fails, returns std::nullopt. If this ObjectRef is null, returns
+   * a null ref for nullable target refs and std::nullopt for non-nullable targets.
    *
-   * \tparam ObjectRefType the target type, must be a subtype of ObjectRef'
+   * \tparam ObjectRefType the target type, must be a subtype of ObjectRef.
    * \return The optional value of the requested type.
    */
   template <typename ObjectRefType,
             typename = std::enable_if_t<std::is_base_of_v<ObjectRef, ObjectRefType>>>
-  TVM_FFI_INLINE std::optional<ObjectRefType> as() const {
+  TVM_FFI_INLINE std::optional<ObjectRefType> as() const& {
     if (data_ != nullptr) {
-      if (data_->IsInstance<typename ObjectRefType::ContainerType>()) {
-        ObjectRefType ref(UnsafeInit{});
-        ref.data_ = data_;
-        return ref;
-      } else {
-        return std::nullopt;
+      // Piggy back to Any TypeTraits for rich ObjectRef check, temp any_data will optimize away.
+      TVMFFIAny any_data;
+      any_data.type_index = data_->type_index();
+      TVM_FFI_UNSAFE_ASSUME(any_data.type_index >= TypeIndex::kTVMFFIStaticObjectBegin);
+      any_data.zero_padding = 0;
+      TVM_FFI_CLEAR_PTR_PADDING_IN_FFI_ANY(&any_data);
+      any_data.v_obj = reinterpret_cast<TVMFFIObject*>(const_cast<Object*>(data_.get()));
+      if (TypeTraits<ObjectRefType>::CheckAnyStrict(&any_data)) {
+        ObjectRefType result(UnsafeInit{});
+        result.data_ = data_;
+        return result;
       }
-    } else {
       return std::nullopt;
     }
+    if constexpr (ObjectRefType::_type_is_nullable) {
+      return ObjectRefType(UnsafeInit{});
+    }
+    return std::nullopt;
   }
+
+  /*!
+   * \brief Try to move-downcast the ObjectRef to Optional<T> of the requested type.
+   *
+   * If the cast succeeds, moves the internal object pointer to the returned
+   * ObjectRefType. If the cast fails, returns std::nullopt. If this ObjectRef
+   * is null, returns a null ref for nullable target refs and std::nullopt for
+   * non-nullable targets.
+   *
+   * \tparam ObjectRefType the target type, must be a subtype of ObjectRef.
+   * \return The optional value of the requested type.
+   */
+  template <typename ObjectRefType,
+            typename = std::enable_if_t<std::is_base_of_v<ObjectRef, ObjectRefType>>>
+  TVM_FFI_INLINE std::optional<ObjectRefType> as() && {
+    if (data_ != nullptr) {
+      // Piggy back to Any TypeTraits for rich ObjectRef check, temp any_data will optimize away.
+      TVMFFIAny any_data;
+      any_data.type_index = data_->type_index();
+      TVM_FFI_UNSAFE_ASSUME(any_data.type_index >= TypeIndex::kTVMFFIStaticObjectBegin);
+      any_data.zero_padding = 0;
+      TVM_FFI_CLEAR_PTR_PADDING_IN_FFI_ANY(&any_data);
+      any_data.v_obj = reinterpret_cast<TVMFFIObject*>(const_cast<Object*>(data_.get()));
+      if (TypeTraits<ObjectRefType>::CheckAnyStrict(&any_data)) {
+        ObjectRefType result(UnsafeInit{});
+        result.data_ = std::move(data_);
+        data_ = nullptr;
+        return result;
+      }
+      return std::nullopt;
+    }
+    if constexpr (ObjectRefType::_type_is_nullable) {
+      return ObjectRefType(UnsafeInit{});
+    }
+    return std::nullopt;
+  }
+
+  /*!
+   * \brief Downcast the ObjectRef to the requested type or throw.
+   *
+   * \tparam ObjectRefType the target type, must be a subtype of ObjectRef
+   * \return The requested value.
+   */
+  template <typename ObjectRefType,
+            typename = std::enable_if_t<std::is_base_of_v<ObjectRef, ObjectRefType>>>
+  TVM_FFI_INLINE ObjectRefType as_or_throw() const&;
+
+  /*!
+   * \brief Move-downcast the ObjectRef to the requested type or throw.
+   *
+   * If the cast succeeds, moves the internal object pointer to the returned
+   * ObjectRefType.
+   *
+   * \tparam ObjectRefType the target type, must be a subtype of ObjectRef
+   * \return The requested value.
+   */
+  template <typename ObjectRefType,
+            typename = std::enable_if_t<std::is_base_of_v<ObjectRef, ObjectRefType>>>
+  TVM_FFI_INLINE ObjectRefType as_or_throw() &&;
 
   /*!
    * \brief Get the type index of the ObjectRef
@@ -797,6 +866,8 @@ class ObjectRef {
 
   /*! \brief type indicate the container type. */
   using ContainerType = Object;
+  /*! \brief Whether ContainerType exactly describes the objects this ref can hold. */
+  static constexpr bool _type_container_is_exact = true;
   /*! \brief Whether the reference can point to nullptr */
   static constexpr bool _type_is_nullable = true;
 

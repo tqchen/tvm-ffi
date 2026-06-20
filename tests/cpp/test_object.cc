@@ -17,15 +17,62 @@
  * under the License.
  */
 #include <gtest/gtest.h>
+#include <tvm/ffi/container/array.h>
+#include <tvm/ffi/container/dict.h>
+#include <tvm/ffi/container/list.h>
+#include <tvm/ffi/container/map.h>
+#include <tvm/ffi/container/tuple.h>
+#include <tvm/ffi/container/variant.h>
 #include <tvm/ffi/memory.h>
 #include <tvm/ffi/object.h>
+#include <tvm/ffi/optional.h>
 
 #include "./testing_object.h"
+
+namespace tvm {
+namespace ffi {
+namespace testing {
+
+class TIntOrFloatRef : public ObjectRef {
+ public:
+  TIntOrFloatRef() = default;
+  explicit TIntOrFloatRef(UnsafeInit tag) : ObjectRef(tag) {}
+
+  static constexpr bool _type_is_nullable = true;
+  static constexpr bool _type_container_is_exact = false;
+  using ContainerType = Object;
+};
+
+}  // namespace testing
+
+template <>
+struct TypeTraits<testing::TIntOrFloatRef>
+    : public ObjectRefTypeTraitsBase<testing::TIntOrFloatRef> {
+  TVM_FFI_INLINE static bool CheckAnyStrict(const TVMFFIAny* src) {
+    return TypeTraits<testing::TInt>::CheckAnyStrict(src) ||
+           TypeTraits<testing::TFloat>::CheckAnyStrict(src);
+  }
+};
+
+}  // namespace ffi
+}  // namespace tvm
 
 namespace {
 
 using namespace tvm::ffi;
 using namespace tvm::ffi::testing;
+
+static_assert(ObjectRef::_type_container_is_exact);
+static_assert(TNumber::_type_container_is_exact);
+static_assert(TInt::_type_container_is_exact);
+static_assert(Optional<TInt>::_type_container_is_exact);
+static_assert(!TIntOrFloatRef::_type_container_is_exact);
+static_assert(!Array<TInt>::_type_container_is_exact);
+static_assert(!List<TInt>::_type_container_is_exact);
+static_assert(!Map<TInt, TFloat>::_type_container_is_exact);
+static_assert(!Dict<TInt, TFloat>::_type_container_is_exact);
+static_assert(!Tuple<TInt, TFloat>::_type_container_is_exact);
+static_assert(!Variant<TInt, TFloat>::_type_container_is_exact);
 
 template <typename T>
 class CRTPObject : public Object {
@@ -118,9 +165,81 @@ TEST(ObjectRef, as) {
   EXPECT_TRUE(c.as<TIntObj>() == nullptr);
   EXPECT_TRUE(c.as<TFloatObj>() == nullptr);
   EXPECT_TRUE(c.as<TNumberObj>() == nullptr);
+  auto null_number = c.as<TNumber>();
+  ASSERT_TRUE(null_number.has_value()) << "Expected nullable null ObjectRef cast to succeed";
+  EXPECT_TRUE(!(*null_number).defined());  // NOLINT(bugprone-unchecked-optional-access)
+  EXPECT_TRUE(!c.as<TInt>().has_value());
 
   EXPECT_EQ(a.as<TIntObj>()->value, 10);
   EXPECT_EQ(b.as<TFloatObj>()->value, 20);
+}
+
+TEST(ObjectRef, AsUsesTypeTraitsCheckAnyStrict) {
+  ObjectRef a = TInt(10);
+  ObjectRef b = TFloat(20);
+
+  auto int_like = a.as<TIntOrFloatRef>();
+  ASSERT_TRUE(int_like.has_value()) << "Expected TIntOrFloatRef cast from TInt to succeed";
+  EXPECT_TRUE((*int_like).as<TIntObj>() != nullptr);  // NOLINT(bugprone-unchecked-optional-access)
+
+  auto float_like = b.as<TIntOrFloatRef>();
+  ASSERT_TRUE(float_like.has_value()) << "Expected TIntOrFloatRef cast from TFloat to succeed";
+  EXPECT_NE((*float_like).as<TFloatObj>(), nullptr);  // NOLINT(bugprone-unchecked-optional-access)
+}
+
+TEST(ObjectRef, AsOrThrow) {
+  ObjectRef a = TInt(10);
+  ObjectRef b = TFloat(20);
+  ObjectRef c(nullptr);
+  const ObjectRef const_a = TInt(30);
+  ObjectRef movable_as = TInt(40);
+  ObjectRef movable_as_or_throw = TInt(50);
+
+  EXPECT_EQ(a.as<TIntObj>()->value, 10);
+  EXPECT_EQ(a.as_or_throw<TInt>()->value, 10);
+  EXPECT_EQ(b.as<TFloatObj>()->value, 20);
+  EXPECT_TRUE(!c.as_or_throw<TNumber>().defined());
+  auto const_as = const_a.as<TInt>();
+  ASSERT_TRUE(const_as.has_value()) << "Expected const ObjectRef as<TInt>() to succeed";
+  EXPECT_EQ((*const_as).get()->value, 30);  // NOLINT(bugprone-unchecked-optional-access)
+  EXPECT_EQ(const_a.as_or_throw<TInt>()->value, 30);
+
+  auto moved_as = std::move(movable_as).as<TInt>();
+  ASSERT_TRUE(moved_as.has_value()) << "Expected rvalue ObjectRef as<TInt>() to succeed";
+  EXPECT_EQ((*moved_as).get()->value, 40);  // NOLINT(bugprone-unchecked-optional-access)
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_FALSE(movable_as.defined());
+
+  EXPECT_EQ(std::move(movable_as_or_throw).as_or_throw<TInt>()->value, 50);
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_FALSE(movable_as_or_throw.defined());
+
+  EXPECT_THROW(
+      {
+        try {
+          [[maybe_unused]] auto value = a.as_or_throw<TFloat>();
+        } catch (const Error& error) {
+          EXPECT_EQ(error.kind(), "TypeError");
+          std::string what = error.what();
+          EXPECT_NE(what.find("Cannot treat type `test.Int` as type `test.Float`"),
+                    std::string::npos);
+          throw;
+        }
+      },
+      ::tvm::ffi::Error);
+
+  EXPECT_THROW(
+      {
+        try {
+          [[maybe_unused]] auto value = c.as_or_throw<TInt>();
+        } catch (const Error& error) {
+          EXPECT_EQ(error.kind(), "TypeError");
+          std::string what = error.what();
+          EXPECT_NE(what.find("Cannot treat type `None` as type `test.Int`"), std::string::npos);
+          throw;
+        }
+      },
+      ::tvm::ffi::Error);
 }
 
 TEST(ObjectRef, UnsafeInit) {

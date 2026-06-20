@@ -190,8 +190,10 @@ class Tuple : public ObjectRef {
     *ptr = T(std::forward<U>(item));
   }
 
-  /*! \brief specify container node */
+  /// \cond Doxygen_Suppress
   using ContainerType = ArrayObj;
+  static constexpr bool _type_container_is_exact = false;
+  /// \endcond
 
  private:
   static ObjectPtr<ArrayObj> MakeDefaultTupleNode() {

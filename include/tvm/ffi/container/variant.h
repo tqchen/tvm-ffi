@@ -107,6 +107,9 @@ class Variant : public details::VariantBase<details::all_object_ref_v<V...>> {
   using TParent = details::VariantBase<details::all_object_ref_v<V...>>;
   static_assert(details::all_storage_enabled_v<V...>,
                 "All types used in Variant<...> must be compatible with Any");
+  /// \cond Doxygen_Suppress
+  static constexpr bool _type_container_is_exact = false;
+  /// \endcond
   /*
    * \brief Helper utility to check if the type can be contained in the variant
    */

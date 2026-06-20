@@ -272,8 +272,10 @@ class Map : public ObjectRef {
     }
     return GetMapObj();
   }
-  /*! \brief specify container node */
+  /// \cond Doxygen_Suppress
   using ContainerType = MapObj;
+  static constexpr bool _type_container_is_exact = false;
+  /// \endcond
 
   /// \cond Doxygen_Suppress
   /*! \brief Iterator of the hash map */

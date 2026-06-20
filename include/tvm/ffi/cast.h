@@ -45,6 +45,9 @@ namespace ffi {
 template <typename RefType, typename ObjectType>
 inline RefType GetRef(const ObjectType* ptr) {
   using ContainerType = typename RefType::ContainerType;
+  static_assert(RefType::_type_container_is_exact,
+                "GetRef requires RefType::ContainerType to exactly describe all objects the ref "
+                "can hold; use ObjectRef::as<RefType>() for richer TypeTraits-based refs");
   static_assert(std::is_base_of_v<ContainerType, ObjectType>,
                 "Can only cast to the ref of same container type");
 
