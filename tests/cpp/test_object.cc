@@ -86,6 +86,21 @@ TEST(Object, CRTPObjectInfo) {
   EXPECT_GE(info->type_index, TypeIndex::kTVMFFIDynObjectBegin);
 }
 
+TEST(Object, TypeGetOrAllocIndexQueryRegistered) {
+  TVMFFIByteArray type_key{TIntObj::_type_key, std::char_traits<char>::length(TIntObj::_type_key)};
+  EXPECT_EQ(TVMFFITypeGetOrAllocIndex(&type_key, -1, 0, 0, 0, -2), TIntObj::RuntimeTypeIndex());
+}
+
+TEST(Object, TypeGetOrAllocIndexQueryMissDoesNotRegister) {
+  const char* type_key_data = "test.TypeGetOrAllocIndexQueryMiss";
+  TVMFFIByteArray type_key{type_key_data, std::char_traits<char>::length(type_key_data)};
+  EXPECT_EQ(TVMFFITypeGetOrAllocIndex(&type_key, -1, 0, 0, 0, -2), -2);
+
+  int32_t type_index = -1;
+  EXPECT_NE(TVMFFITypeKeyToIndex(&type_key, &type_index), 0);
+  EXPECT_EQ(type_index, -1);
+}
+
 TEST(Object, InstanceCheck) {
   ObjectPtr<Object> a = make_object<TIntObj>(11);
   ObjectPtr<Object> b = make_object<TFloatObj>(11);

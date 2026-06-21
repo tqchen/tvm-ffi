@@ -1358,15 +1358,17 @@ TVM_FFI_DLL const TVMFFIByteArray* TVMFFIBacktrace(const char* filename, int lin
  * If the static_tindex is non-negative, the function will
  * allocate a runtime type index.
  * Otherwise, we will populate the type table and return the static index.
+ * If parent_type_index is -2, the function queries the existing type index:
+ * it returns the registered index for type_key, or -2 if type_key is not registered.
  *
  * \param type_key The type key.
  * \param type_depth The type depth.
  * \param static_type_index Static type index if any, can be -1, which means this is a dynamic index
  * \param num_child_slots Number of slots reserved for its children.
  * \param child_slots_can_overflow Whether to allow child to overflow the slots.
- * \param parent_type_index Parent type index, pass in -1 if it is root.
+ * \param parent_type_index Parent type index, pass in -1 if it is root, or -2 to query only.
  *
- * \return The allocated type index.
+ * \return The existing or allocated type index; -2 when query-only mode misses.
  */
 TVM_FFI_DLL int32_t TVMFFITypeGetOrAllocIndex(const TVMFFIByteArray* type_key,
                                               int32_t static_type_index, int32_t type_depth,
