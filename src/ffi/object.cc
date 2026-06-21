@@ -126,6 +126,9 @@ class TypeTable {
     if (it != type_key2index_.end()) {
       return type_table_[(*it).second]->type_index;
     }
+    if (parent_type_index == -2) {
+      return -2;
+    }
 
     // get parent's entry
     Entry* parent = [&]() -> Entry* {
@@ -192,14 +195,6 @@ class TypeTable {
     String type_key_str(type_key->data, type_key->size);
     auto it = type_key2index_.find(type_key_str);
     TVM_FFI_ICHECK(it != type_key2index_.end()) << "Cannot find type `" << type_key_str << "`";
-    return static_cast<int32_t>((*it).second);
-  }
-
-  int32_t QueryTypeIndex(const String& type_key) {
-    auto it = type_key2index_.find(type_key);
-    if (it == type_key2index_.end()) {
-      return -2;
-    }
     return static_cast<int32_t>((*it).second);
   }
 
@@ -595,9 +590,6 @@ int32_t TVMFFITypeGetOrAllocIndex(const TVMFFIByteArray* type_key, int32_t stati
                                   int32_t child_slots_can_overflow, int32_t parent_type_index) {
   TVM_FFI_LOG_EXCEPTION_CALL_BEGIN();
   tvm::ffi::String s_type_key(type_key->data, type_key->size);
-  if (parent_type_index == -2) {
-    return tvm::ffi::TypeTable::Global()->QueryTypeIndex(s_type_key);
-  }
   return tvm::ffi::TypeTable::Global()->GetOrAllocTypeIndex(
       s_type_key, static_type_index, type_depth, num_child_slots, child_slots_can_overflow,
       parent_type_index);
