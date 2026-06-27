@@ -289,8 +289,9 @@ TEST(Array, Upcast) {
   Array<Array<Any>> a3 = a2;
   Array<Array<Any>> a4 = a2;
 
-  static_assert(details::type_contains_v<Array<Any>, Array<int>>);
-  static_assert(details::type_contains_v<Any, Array<float>>);
+  static_assert(type_subsumes_v<Array<Any>, Array<int>>);
+  static_assert(!type_subsumes_v<Array<int>, Array<Any>>);
+  static_assert(type_subsumes_v<Any, Array<float>>);
 }
 
 TEST(Array, Contains) {

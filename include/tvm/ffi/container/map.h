@@ -98,8 +98,7 @@ class Map : public ObjectRef {
    * \tparam VU The mapped type of the other map
    */
   template <typename KU, typename VU,
-            typename = std::enable_if_t<details::type_contains_v<K, KU> &&
-                                        details::type_contains_v<V, VU>>>
+            typename = std::enable_if_t<type_subsumes_v<K, KU> && type_subsumes_v<V, VU>>>
   Map(Map<KU, VU>&& other)  // NOLINT(google-explicit-constructor)
       : ObjectRef(std::move(other.data_)) {}
 
@@ -110,8 +109,7 @@ class Map : public ObjectRef {
    * \tparam VU The mapped type of the other map
    */
   template <typename KU, typename VU,
-            typename = std::enable_if_t<details::type_contains_v<K, KU> &&
-                                        details::type_contains_v<V, VU>>>
+            typename = std::enable_if_t<type_subsumes_v<K, KU> && type_subsumes_v<V, VU>>>
   Map(const Map<KU, VU>& other) : ObjectRef(other.data_) {}  // NOLINT(google-explicit-constructor)
 
   /*!
@@ -139,8 +137,7 @@ class Map : public ObjectRef {
    * \tparam VU The mapped type of the other map
    */
   template <typename KU, typename VU,
-            typename = std::enable_if_t<details::type_contains_v<K, KU> &&
-                                        details::type_contains_v<V, VU>>>
+            typename = std::enable_if_t<type_subsumes_v<K, KU> && type_subsumes_v<V, VU>>>
   Map<K, V>& operator=(Map<KU, VU>&& other) {
     data_ = std::move(other.data_);
     return *this;
@@ -153,8 +150,7 @@ class Map : public ObjectRef {
    * \tparam VU The mapped type of the other map
    */
   template <typename KU, typename VU,
-            typename = std::enable_if_t<details::type_contains_v<K, KU> &&
-                                        details::type_contains_v<V, VU>>>
+            typename = std::enable_if_t<type_subsumes_v<K, KU> && type_subsumes_v<V, VU>>>
   Map<K, V>& operator=(const Map<KU, VU>& other) {
     data_ = other.data_;
     return *this;
@@ -380,11 +376,12 @@ struct TypeTraits<Map<K, V>> : public MapTypeTraitsBase<TypeTraits<Map<K, V>>, M
   }
 };
 
-namespace details {
+/// \cond Doxygen_Suppress
+/*! \brief Whether target Map storage subsumes source Map storage key- and value-wise. */
 template <typename K, typename V, typename KU, typename VU>
-inline constexpr bool type_contains_v<Map<K, V>, Map<KU, VU>> =
-    type_contains_v<K, KU> && type_contains_v<V, VU>;
-}  // namespace details
+inline constexpr bool type_subsumes_v<Map<K, V>, Map<KU, VU>> =
+    type_subsumes_v<K, KU> && type_subsumes_v<V, VU>;
+/// \endcond
 
 }  // namespace ffi
 }  // namespace tvm

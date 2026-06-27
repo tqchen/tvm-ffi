@@ -130,7 +130,7 @@ TEST(Variant, FromTyped) {
 
 TEST(Variant, Upcast) {
   Array<int> a0 = {1, 2, 3};
-  static_assert(details::type_contains_v<Array<Variant<int, float>>, Array<int>>);
+  static_assert(type_subsumes_v<Array<Variant<int, float>>, Array<int>>);
   Array<Variant<int, float>> a1 = a0;
   EXPECT_EQ(a1[0].get<int>(), 1);
 }

@@ -64,7 +64,7 @@ class Tuple : public ObjectRef {
    * \tparam The enable_if_t type
    */
   template <typename... UTypes,
-            typename = std::enable_if_t<(details::type_contains_v<Types, UTypes> && ...), int>>
+            typename = std::enable_if_t<(type_subsumes_v<Types, UTypes> && ...), int>>
   Tuple(const Tuple<UTypes...>& other) : ObjectRef(other) {}  // NOLINT(google-explicit-constructor)
 
   /*!
@@ -74,7 +74,7 @@ class Tuple : public ObjectRef {
    * \tparam The enable_if_t type
    */
   template <typename... UTypes,
-            typename = std::enable_if_t<(details::type_contains_v<Types, UTypes> && ...), int>>
+            typename = std::enable_if_t<(type_subsumes_v<Types, UTypes> && ...), int>>
   Tuple(Tuple<UTypes...>&& other)  // NOLINT(google-explicit-constructor)
       : ObjectRef(std::move(other)) {}
 
@@ -116,7 +116,7 @@ class Tuple : public ObjectRef {
    * \tparam The enable_if_t type
    */
   template <typename... UTypes,
-            typename = std::enable_if_t<(details::type_contains_v<Types, UTypes> && ...)>>
+            typename = std::enable_if_t<(type_subsumes_v<Types, UTypes> && ...)>>
   TVM_FFI_INLINE Tuple& operator=(const Tuple<UTypes...>& other) {
     data_ = other.data_;
     return *this;
@@ -129,7 +129,7 @@ class Tuple : public ObjectRef {
    * \tparam The enable_if_t type
    */
   template <typename... UTypes,
-            typename = std::enable_if_t<(details::type_contains_v<Types, UTypes> && ...)>>
+            typename = std::enable_if_t<(type_subsumes_v<Types, UTypes> && ...)>>
   TVM_FFI_INLINE Tuple& operator=(Tuple<UTypes...>&& other) {
     data_ = std::move(other.data_);
     return *this;
@@ -338,10 +338,13 @@ struct TypeTraits<Tuple<Types...>> : public ObjectRefTypeTraitsBase<Tuple<Types.
   }
 };
 
-namespace details {
+/// \cond Doxygen_Suppress
+/*! \brief Whether target and source Tuple storage have equal arity and subsume element-wise. */
 template <typename... T, typename... U>
-inline constexpr bool type_contains_v<Tuple<T...>, Tuple<U...>> = (type_contains_v<T, U> && ...);
-}  // namespace details
+inline constexpr bool
+    type_subsumes_v<Tuple<T...>, Tuple<U...>, std::enable_if_t<sizeof...(T) == sizeof...(U)>> =
+        (type_subsumes_v<T, U> && ...);
+/// \endcond
 
 /// \cond Doxygen_Suppress
 

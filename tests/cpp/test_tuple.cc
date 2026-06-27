@@ -138,9 +138,11 @@ TEST(Tuple, Upcast) {
   Tuple<Any, Any> t1 = t0;
   EXPECT_EQ(t1.get<0>().cast<int>(), 1);
   EXPECT_EQ(t1.get<1>().cast<float>(), 2.0f);
-  static_assert(details::type_contains_v<Tuple<Any, Any>, Tuple<int, float>>);
-  static_assert(details::type_contains_v<Tuple<Any, float>, Tuple<int, float>>);
-  static_assert(details::type_contains_v<Tuple<TNumber, float>, Tuple<TInt, float>>);
+  static_assert(type_subsumes_v<Tuple<Any, Any>, Tuple<int, float>>);
+  static_assert(type_subsumes_v<Tuple<Any, float>, Tuple<int, float>>);
+  static_assert(type_subsumes_v<Tuple<TNumber, float>, Tuple<TInt, float>>);
+  static_assert(!type_subsumes_v<Tuple<Any>, Tuple<int, float>>);
+  static_assert(!type_subsumes_v<Tuple<Any, Any>, Tuple<int>>);
 }
 
 TEST(Tuple, ArrayIterForwarding) {

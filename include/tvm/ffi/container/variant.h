@@ -114,7 +114,7 @@ class Variant : public details::VariantBase<details::all_object_ref_v<V...>> {
    * \brief Helper utility to check if the type can be contained in the variant
    */
   template <typename T>
-  static constexpr bool variant_contains_v = (details::type_contains_v<V, T> || ...);
+  static constexpr bool variant_contains_v = (type_subsumes_v<V, T> || ...);
   /* \brief Helper utility for SFINAE if the type is part of the variant */
   template <typename T>
   using enable_if_variant_contains_t = std::enable_if_t<variant_contains_v<T>>;
@@ -305,10 +305,11 @@ TVM_FFI_INLINE bool ObjectPtrEqual::operator()(const Variant<V...>& a,
   return a.GetObjectPtrForHashEqual() == b.GetObjectPtrForHashEqual();
 }
 
-namespace details {
+/// \cond Doxygen_Suppress
+/*! \brief Whether Variant storage subsumes a source type through one alternative. */
 template <typename... V, typename T>
-inline constexpr bool type_contains_v<Variant<V...>, T> = (type_contains_v<V, T> || ...);
-}  // namespace details
+inline constexpr bool type_subsumes_v<Variant<V...>, T> = (type_subsumes_v<V, T> || ...);
+/// \endcond
 }  // namespace ffi
 }  // namespace tvm
 #endif  // TVM_FFI_CONTAINER_VARIANT_H_

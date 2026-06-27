@@ -17,6 +17,7 @@
  * under the License.
  */
 #include <gtest/gtest.h>
+#include <tvm/ffi/cast.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/dict.h>
 #include <tvm/ffi/container/list.h>
@@ -54,6 +55,11 @@ struct TypeTraits<testing::TIntOrFloatRef>
   }
 };
 
+template <typename ObjectType>
+inline constexpr bool object_ref_contains_v<testing::TIntOrFloatRef, ObjectType> =
+    std::is_base_of_v<testing::TIntObj, ObjectType> ||
+    std::is_base_of_v<testing::TFloatObj, ObjectType>;
+
 }  // namespace ffi
 }  // namespace tvm
 
@@ -61,6 +67,13 @@ namespace {
 
 using namespace tvm::ffi;
 using namespace tvm::ffi::testing;
+
+template <typename RefType, typename ObjectType, typename = void>
+inline constexpr bool object_ref_contains_is_enabled_v = false;
+
+template <typename RefType, typename ObjectType>
+inline constexpr bool object_ref_contains_is_enabled_v<
+    RefType, ObjectType, std::void_t<decltype(object_ref_contains_v<RefType, ObjectType>)>> = true;
 
 static_assert(ObjectRef::_type_container_is_exact);
 static_assert(TNumber::_type_container_is_exact);
@@ -73,6 +86,21 @@ static_assert(!Map<TInt, TFloat>::_type_container_is_exact);
 static_assert(!Dict<TInt, TFloat>::_type_container_is_exact);
 static_assert(!Tuple<TInt, TFloat>::_type_container_is_exact);
 static_assert(!Variant<TInt, TFloat>::_type_container_is_exact);
+
+static_assert(object_ref_contains_v<TNumber, TIntObj>);
+static_assert(object_ref_contains_v<TInt, TIntObj>);
+static_assert(object_ref_contains_v<Optional<TInt>, TIntObj>);
+static_assert(!object_ref_contains_v<TInt, TFloatObj>);
+static_assert(!object_ref_contains_v<Array<TInt>, ArrayObj>);
+static_assert(object_ref_contains_v<TIntOrFloatRef, TIntObj>);
+static_assert(object_ref_contains_v<TIntOrFloatRef, TFloatObj>);
+static_assert(!object_ref_contains_v<TIntOrFloatRef, TNumberObj>);
+static_assert(object_ref_contains_is_enabled_v<TInt, TIntObj>);
+static_assert(object_ref_contains_is_enabled_v<TIntOrFloatRef, TIntObj>);
+static_assert(!object_ref_contains_is_enabled_v<int, TIntObj>);
+static_assert(!object_ref_contains_is_enabled_v<TIntObj, TIntObj>);
+static_assert(!object_ref_contains_is_enabled_v<TInt, int>);
+static_assert(!object_ref_contains_is_enabled_v<TIntOrFloatRef, int>);
 
 template <typename T>
 class CRTPObject : public Object {
@@ -200,6 +228,14 @@ TEST(ObjectRef, AsUsesTypeTraitsCheckAnyStrict) {
   auto float_like = b.as<TIntOrFloatRef>();
   ASSERT_TRUE(float_like.has_value()) << "Expected TIntOrFloatRef cast from TFloat to succeed";
   EXPECT_NE((*float_like).as<TFloatObj>(), nullptr);  // NOLINT(bugprone-unchecked-optional-access)
+}
+
+TEST(ObjectRef, GetRefUsesObjectRefContainment) {
+  ObjectPtr<TIntObj> int_object = make_object<TIntObj>(10);
+  TIntOrFloatRef int_or_float = GetRef<TIntOrFloatRef>(int_object.get());
+
+  ASSERT_NE(int_or_float.as<TIntObj>(), nullptr);
+  EXPECT_EQ(int_or_float.as<TIntObj>()->value, 10);
 }
 
 TEST(ObjectRef, AsOrThrow) {

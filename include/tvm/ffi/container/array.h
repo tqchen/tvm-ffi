@@ -241,7 +241,7 @@ class Array : public ObjectRef {
    * \param other The other array
    * \tparam U The value type of the other array
    */
-  template <typename U, typename = std::enable_if_t<details::type_contains_v<T, U>>>
+  template <typename U, typename = std::enable_if_t<type_subsumes_v<T, U>>>
   Array(Array<U>&& other)  // NOLINT(google-explicit-constructor)
       : ObjectRef(std::move(other.data_)) {}
   /*!
@@ -249,7 +249,7 @@ class Array : public ObjectRef {
    * \param other The other array
    * \tparam U The value type of the other array
    */
-  template <typename U, typename = std::enable_if_t<details::type_contains_v<T, U>>>
+  template <typename U, typename = std::enable_if_t<type_subsumes_v<T, U>>>
   Array(const Array<U>& other)  // NOLINT(google-explicit-constructor)
       : ObjectRef(other.data_) {}
 
@@ -274,7 +274,7 @@ class Array : public ObjectRef {
    * \param other The other array
    * \tparam U The value type of the other array
    */
-  template <typename U, typename = std::enable_if_t<details::type_contains_v<T, U>>>
+  template <typename U, typename = std::enable_if_t<type_subsumes_v<T, U>>>
   TVM_FFI_INLINE Array<T>& operator=(Array<U>&& other) {
     data_ = std::move(other.data_);
     return *this;
@@ -284,7 +284,7 @@ class Array : public ObjectRef {
    * \param other The other array
    * \tparam U The value type of the other array
    */
-  template <typename U, typename = std::enable_if_t<details::type_contains_v<T, U>>>
+  template <typename U, typename = std::enable_if_t<type_subsumes_v<T, U>>>
   TVM_FFI_INLINE Array<T>& operator=(const Array<U>& other) {
     data_ = other.data_;
     return *this;
@@ -895,10 +895,11 @@ struct TypeTraits<Array<T>> : public SeqTypeTraitsBase<TypeTraits<Array<T>>, Arr
   }
 };
 
-namespace details {
+/// \cond Doxygen_Suppress
+/*! \brief Whether target Array storage subsumes source Array storage element-wise. */
 template <typename T, typename U>
-inline constexpr bool type_contains_v<Array<T>, Array<U>> = type_contains_v<T, U>;
-}  // namespace details
+inline constexpr bool type_subsumes_v<Array<T>, Array<U>> = type_subsumes_v<T, U>;
+/// \endcond
 
 }  // namespace ffi
 }  // namespace tvm

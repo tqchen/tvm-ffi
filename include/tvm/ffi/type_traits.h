@@ -118,22 +118,25 @@ inline std::string TypeIndexToTypeKey(int32_t type_index) {
   return std::string(type_info->type_key.data, type_info->type_key.size);
 }
 
-namespace details {
 /*!
- * \brief Check whether `Derived` can reuse `Base` storage directly.
+ * \brief Whether TargetType subsumes SourceType for direct storage reuse.
  *
- * \tparam Base The base type.
- * \tparam Derived The derived type.
- * \return True if Derived's storage can be used as Base's storage, false otherwise.
+ * The target type is first and the source type is second. The result is true
+ * exactly when every SourceType value can reuse TargetType storage without
+ * conversion.
+ *
+ * \tparam TargetType The target storage type.
+ * \tparam SourceType The source value type.
  */
-template <typename Base, typename Derived>
-inline constexpr bool type_contains_v =
-    std::is_base_of_v<Base, Derived> || std::is_same_v<Base, Derived>;
+template <typename TargetType, typename SourceType, typename = void>
+inline constexpr bool type_subsumes_v =
+    std::is_base_of_v<TargetType, SourceType> || std::is_same_v<TargetType, SourceType>;
 
-// Special case for Any, which can store any compatible value directly.
-template <typename Derived>
-inline constexpr bool type_contains_v<Any, Derived> = true;
-}  // namespace details
+/// \cond Doxygen_Suppress
+/*! \brief Whether Any subsumes SourceType for direct storage reuse. */
+template <typename SourceType>
+inline constexpr bool type_subsumes_v<Any, SourceType> = true;
+/// \endcond
 
 /*!
  * \brief TypeTraits that specifies the conversion behavior from/to FFI Any.

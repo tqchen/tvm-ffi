@@ -102,8 +102,7 @@ class Dict : public ObjectRef {
    * \tparam VU The mapped type of the other dict
    */
   template <typename KU, typename VU,
-            typename = std::enable_if_t<details::type_contains_v<K, KU> &&
-                                        details::type_contains_v<V, VU>>>
+            typename = std::enable_if_t<type_subsumes_v<K, KU> && type_subsumes_v<V, VU>>>
   Dict(Dict<KU, VU>&& other)  // NOLINT(google-explicit-constructor)
       : ObjectRef(std::move(other.data_)) {}
 
@@ -114,8 +113,7 @@ class Dict : public ObjectRef {
    * \tparam VU The mapped type of the other dict
    */
   template <typename KU, typename VU,
-            typename = std::enable_if_t<details::type_contains_v<K, KU> &&
-                                        details::type_contains_v<V, VU>>>
+            typename = std::enable_if_t<type_subsumes_v<K, KU> && type_subsumes_v<V, VU>>>
   // NOLINTNEXTLINE(google-explicit-constructor)
   Dict(const Dict<KU, VU>& other) : ObjectRef(other.data_) {}
 
@@ -144,8 +142,7 @@ class Dict : public ObjectRef {
    * \tparam VU The mapped type of the other dict
    */
   template <typename KU, typename VU,
-            typename = std::enable_if_t<details::type_contains_v<K, KU> &&
-                                        details::type_contains_v<V, VU>>>
+            typename = std::enable_if_t<type_subsumes_v<K, KU> && type_subsumes_v<V, VU>>>
   Dict<K, V>& operator=(Dict<KU, VU>&& other) {
     data_ = std::move(other.data_);
     return *this;
@@ -158,8 +155,7 @@ class Dict : public ObjectRef {
    * \tparam VU The mapped type of the other dict
    */
   template <typename KU, typename VU,
-            typename = std::enable_if_t<details::type_contains_v<K, KU> &&
-                                        details::type_contains_v<V, VU>>>
+            typename = std::enable_if_t<type_subsumes_v<K, KU> && type_subsumes_v<V, VU>>>
   Dict<K, V>& operator=(const Dict<KU, VU>& other) {
     data_ = other.data_;
     return *this;
@@ -365,11 +361,12 @@ struct TypeTraits<Dict<K, V>> : public MapTypeTraitsBase<TypeTraits<Dict<K, V>>,
   }
 };
 
-namespace details {
+/// \cond Doxygen_Suppress
+/*! \brief Whether target Dict storage subsumes source Dict storage key- and value-wise. */
 template <typename K, typename V, typename KU, typename VU>
-inline constexpr bool type_contains_v<Dict<K, V>, Dict<KU, VU>> =
-    type_contains_v<K, KU> && type_contains_v<V, VU>;
-}  // namespace details
+inline constexpr bool type_subsumes_v<Dict<K, V>, Dict<KU, VU>> =
+    type_subsumes_v<K, KU> && type_subsumes_v<V, VU>;
+/// \endcond
 
 }  // namespace ffi
 }  // namespace tvm

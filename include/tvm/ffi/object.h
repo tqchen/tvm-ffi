@@ -881,6 +881,25 @@ class ObjectRef {
   friend struct tvm::ffi::details::ObjectUnsafe;
 };
 
+/*!
+ * \brief Whether RefType contains every ObjectType instance.
+ *
+ * The containing reference type is first and the contained object type is
+ * second. The template is enabled only when RefType is an object reference and
+ * ObjectType is an object node. The default is true exactly when RefType has an
+ * exact container type and ObjectType derives from it. Direct specializations
+ * can provide the proof for non-exact reference types.
+ *
+ * \tparam RefType The object reference type.
+ * \tparam ObjectType The object node type.
+ */
+template <typename RefType, typename ObjectType,
+          typename = std::enable_if_t<std::is_base_of_v<ObjectRef, RefType> &&
+                                      std::is_base_of_v<Object, ObjectType>>>
+inline constexpr bool object_ref_contains_v =
+    RefType::_type_container_is_exact &&
+    std::is_base_of_v<typename RefType::ContainerType, ObjectType>;
+
 // forward delcare variant
 template <typename... V>
 class Variant;
