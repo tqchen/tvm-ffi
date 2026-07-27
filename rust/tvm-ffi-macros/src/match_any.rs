@@ -24,6 +24,11 @@ use syn::{braced, parenthesized, Expr, Pat, Path, Result, Token};
 
 use crate::utils::get_tvm_ffi_crate;
 
+// Keep single-arm matches ordered. Release benchmarks of the standard ObjectRef
+// conversion path show that lookup pays off from two arms when a later arm or
+// the fallback is reached.
+const MIN_LOOKUP_TABLE_ARMS: usize = 2;
+
 struct MatchAnyInput {
     scrutinee: Expr,
     arms: Vec<TypedArm>,
@@ -105,38 +110,33 @@ pub fn expand(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 
 fn expand_match_any(input: MatchAnyInput) -> TokenStream {
     let tvm_ffi = get_tvm_ffi_crate();
+    let scrutinee = input.scrutinee;
+    let fallback = input.fallback;
+    let arms = input.arms;
+    let can_attempt_leaf_lookup = arms.len() >= MIN_LOOKUP_TABLE_ARMS
+        && arms
+            .iter()
+            .all(|arm| arm.guard.is_none() && is_simple_binding(&arm.binding));
+
+    if can_attempt_leaf_lookup {
+        expand_leaf_lookup_match(&tvm_ffi, &scrutinee, &arms, &fallback)
+    } else {
+        expand_ordered_match(&tvm_ffi, &scrutinee, &arms, &fallback)
+    }
+}
+
+fn expand_ordered_match(
+    tvm_ffi: &TokenStream,
+    scrutinee: &Expr,
+    arms: &[TypedArm],
+    fallback: &Expr,
+) -> TokenStream {
     let span = Span::mixed_site();
     let source = Ident::new("__tvm_ffi_match_any_source", span);
     let converted = Ident::new("__tvm_ffi_match_any_converted", span);
     let view = Ident::new("__tvm_ffi_match_any_view", span);
     let rejected = Ident::new("__tvm_ffi_match_any_rejected", span);
-    let scrutinee = input.scrutinee;
-    let fallback = input.fallback;
-    let dispatch_fallback = fallback.clone();
-    let arms = input.arms;
-    let dispatch = arms
-        .into_iter()
-        .rev()
-        .fold(quote!({ #dispatch_fallback }), |next, arm| {
-            let matcher = arm.matcher;
-            let binding = arm.binding;
-            let body = arm.body;
-            let matched = if let Some(guard) = arm.guard {
-                quote!(::core::result::Result::Ok(#binding) if #guard)
-            } else {
-                quote!(::core::result::Result::Ok(#binding))
-            };
-
-            quote! {
-                match ::core::convert::TryInto::<#matcher>::try_into(#view) {
-                    #matched => { #body },
-                    #rejected => {
-                        ::core::mem::drop(#rejected);
-                        #next
-                    },
-                }
-            }
-        });
+    let dispatch = expand_ordered_dispatch(arms, fallback, &view, &rejected);
 
     quote! {
         {
@@ -157,5 +157,299 @@ fn expand_match_any(input: MatchAnyInput) -> TokenStream {
                 #fallback
             }
         }
+    }
+}
+
+fn expand_ordered_dispatch(
+    arms: &[TypedArm],
+    fallback: &Expr,
+    view: &Ident,
+    rejected: &Ident,
+) -> TokenStream {
+    expand_ordered_try_into_chain(arms, quote!({ #fallback }), view, rejected, |_, arm| {
+        let binding = &arm.binding;
+        let body = &arm.body;
+        if let Some(guard) = &arm.guard {
+            quote!(::core::result::Result::Ok(#binding) if #guard => { #body })
+        } else {
+            quote!(::core::result::Result::Ok(#binding) => { #body })
+        }
+    })
+}
+
+fn expand_ordered_try_into_chain<F>(
+    arms: &[TypedArm],
+    fallback: TokenStream,
+    view: &Ident,
+    rejected: &Ident,
+    mut matched_arm: F,
+) -> TokenStream
+where
+    F: FnMut(usize, &TypedArm) -> TokenStream,
+{
+    arms.iter()
+        .enumerate()
+        .rev()
+        .fold(fallback, |next, (arm_id, arm)| {
+            let matcher = &arm.matcher;
+            let matched = matched_arm(arm_id, arm);
+
+            quote! {
+                match ::core::convert::TryInto::<#matcher>::try_into(#view) {
+                    #matched,
+                    #rejected => {
+                        ::core::mem::drop(#rejected);
+                        #next
+                    }
+                }
+            }
+        })
+}
+
+fn expand_leaf_table_lookup(
+    tvm_ffi: &TokenStream,
+    arms: &[TypedArm],
+    arm_constants: &[Ident],
+    view: &Ident,
+) -> TokenStream {
+    let span = Span::mixed_site();
+    let probe = Ident::new("__tvm_ffi_match_any_probe", span);
+    let pattern_list_id = Ident::new("__tvm_ffi_match_any_leaf_pattern_list_id", span);
+    let type_indices = Ident::new("__tvm_ffi_match_any_type_indices", span);
+    let static_table = Ident::new("__TVM_FFI_MATCH_ANY_LEAF_TABLE", span);
+    let table = Ident::new("__tvm_ffi_match_any_leaf_table", span);
+    let arm_count = arms.len();
+    let lookup_entries = arm_constants
+        .iter()
+        .enumerate()
+        .map(|(arm_id, arm_constant)| quote!((#type_indices[#arm_id], #arm_constant)));
+    let pattern_list = arms
+        .iter()
+        .map(|arm| &arm.matcher)
+        .rev()
+        .fold(quote!(()), |tail, matcher| quote!((#matcher, #tail)));
+
+    quote! {
+        {
+            use #tvm_ffi::match_any_internal::LeafPatternMetadata as _;
+
+            let #probe =
+                #tvm_ffi::match_any_internal::LeafPatternProbe::<#pattern_list>::new();
+            match (&#probe).leaf_pattern_list_id() {
+                ::core::option::Option::Some(#pattern_list_id) => {
+                    static #static_table: ::std::sync::OnceLock<
+                        #tvm_ffi::match_any_internal::LeafLookupTable,
+                    > = ::std::sync::OnceLock::new();
+                    let #table = #static_table.get_or_init(|| {
+                        let mut #type_indices = [0_i32; #arm_count];
+                        (&#probe).fill_leaf_type_indices(&mut #type_indices);
+                        #tvm_ffi::match_any_internal::LeafLookupTable::build(
+                            #pattern_list_id,
+                            &[#(#lookup_entries),*],
+                        )
+                    });
+                    #table.lookup(#pattern_list_id, #view.type_index())
+                }
+                ::core::option::Option::None => {
+                    ::core::result::Result::Err(())
+                }
+            }
+        }
+    }
+}
+
+fn expand_direct_leaf_selection(
+    arms: &[TypedArm],
+    arm_constants: &[Ident],
+    arm_variants: &[Ident],
+    arm_id: &Ident,
+    view: &Ident,
+    rejected: &Ident,
+    selected_enum: &Ident,
+    selected_value: &Ident,
+) -> TokenStream {
+    let selections = arms.iter().enumerate().map(|(arm_id, arm)| {
+        let matcher = &arm.matcher;
+        let variant = &arm_variants[arm_id];
+        let arm_constant = &arm_constants[arm_id];
+
+        quote! {
+            #arm_constant => {
+                match ::core::convert::TryInto::<#matcher>::try_into(#view) {
+                    ::core::result::Result::Ok(#selected_value) => {
+                        #selected_enum::#variant(#selected_value)
+                    }
+                    #rejected => {
+                        ::core::mem::drop(#rejected);
+                        ::core::panic!(
+                            "match_any! leaf lookup selected an incompatible arm"
+                        )
+                    }
+                }
+            }
+        }
+    });
+
+    quote! {
+        match #arm_id {
+            #(#selections,)*
+            _ => ::core::unreachable!(),
+        }
+    }
+}
+
+fn expand_leaf_body_dispatch(
+    arms: &[TypedArm],
+    arm_variants: &[Ident],
+    selected_enum: &Ident,
+    selected: &Ident,
+    fallback_variant: &Ident,
+    fallback: &Expr,
+) -> TokenStream {
+    let body_arms = arms.iter().enumerate().map(|(arm_id, arm)| {
+        let binding = &arm.binding;
+        let body = &arm.body;
+        let variant = &arm_variants[arm_id];
+
+        quote! {
+            #selected_enum::#variant(#binding) => {
+                #body
+            }
+        }
+    });
+
+    quote! {
+        match #selected {
+            #(#body_arms,)*
+            #selected_enum::#fallback_variant => {
+                #fallback
+            }
+        }
+    }
+}
+
+fn expand_leaf_lookup_match(
+    tvm_ffi: &TokenStream,
+    scrutinee: &Expr,
+    arms: &[TypedArm],
+    fallback: &Expr,
+) -> TokenStream {
+    let span = Span::mixed_site();
+    let source = Ident::new("__tvm_ffi_match_any_source", span);
+    let converted = Ident::new("__tvm_ffi_match_any_converted", span);
+    let view = Ident::new("__tvm_ffi_match_any_view", span);
+    let rejected = Ident::new("__tvm_ffi_match_any_rejected", span);
+    let arm_id = Ident::new("__tvm_ffi_match_any_arm_id", span);
+    let selected = Ident::new("__tvm_ffi_match_any_selected", span);
+    let selected_value = Ident::new("__tvm_ffi_match_any_selected_value", span);
+    let selected_enum = Ident::new("__TvmFfiMatchAnyArm", span);
+    let fallback_variant = Ident::new("Fallback", span);
+    let arm_count = arms.len();
+    let arm_types = (0..arm_count)
+        .map(|arm_id| Ident::new(&format!("__TvmFfiMatchAnyType{arm_id}"), span))
+        .collect::<Vec<_>>();
+    let arm_variants = (0..arm_count)
+        .map(|arm_id| Ident::new(&format!("Arm{arm_id}"), span))
+        .collect::<Vec<_>>();
+    let arm_constants = (0..arm_count)
+        .map(|arm_id| Ident::new(&format!("__TVM_FFI_MATCH_ANY_ARM_{arm_id}"), span))
+        .collect::<Vec<_>>();
+    let arm_constant_definitions =
+        arm_constants
+            .iter()
+            .enumerate()
+            .map(|(arm_id, arm_constant)| {
+                quote! {
+                    const #arm_constant: #tvm_ffi::match_any_internal::ArmId =
+                        #arm_id as #tvm_ffi::match_any_internal::ArmId;
+                }
+            });
+    let lookup_arm_id = expand_leaf_table_lookup(tvm_ffi, arms, &arm_constants, &view);
+
+    let ordered_selection = expand_ordered_try_into_chain(
+        arms,
+        quote!(#selected_enum::#fallback_variant),
+        &view,
+        &rejected,
+        |arm_id, _| {
+            let variant = &arm_variants[arm_id];
+
+            quote!(
+                ::core::result::Result::Ok(#selected_value) => {
+                    #selected_enum::#variant(#selected_value)
+                }
+            )
+        },
+    );
+
+    let direct_selection = expand_direct_leaf_selection(
+        arms,
+        &arm_constants,
+        &arm_variants,
+        &arm_id,
+        &view,
+        &rejected,
+        &selected_enum,
+        &selected_value,
+    );
+    let body_dispatch = expand_leaf_body_dispatch(
+        arms,
+        &arm_variants,
+        &selected_enum,
+        &selected,
+        &fallback_variant,
+        fallback,
+    );
+
+    quote! {
+        {
+            enum #selected_enum<#(#arm_types),*> {
+                #(#arm_variants(#arm_types),)*
+                #fallback_variant,
+            }
+
+            #(#arm_constant_definitions)*
+
+            let #source = &(#scrutinee);
+            let #converted: ::core::result::Result<
+                #tvm_ffi::AnyView<'_>,
+                ::core::convert::Infallible,
+            > = ::core::convert::TryInto::<#tvm_ffi::AnyView<'_>>::try_into(#source);
+            let #view = match #converted {
+                ::core::result::Result::Ok(view) => view,
+                ::core::result::Result::Err(error) => match error {},
+            };
+            let #selected =
+                if #view.type_index()
+                    >= #tvm_ffi::TypeIndex::kTVMFFIStaticObjectBegin as i32
+                {
+                    match #lookup_arm_id {
+                        ::core::result::Result::Ok(
+                            ::core::option::Option::Some(#arm_id),
+                        ) => {
+                            #direct_selection
+                        }
+                        ::core::result::Result::Ok(
+                            ::core::option::Option::None,
+                        ) => {
+                            #selected_enum::#fallback_variant
+                        }
+                        ::core::result::Result::Err(()) => {
+                            #ordered_selection
+                        }
+                    }
+                } else {
+                    #selected_enum::#fallback_variant
+                };
+            #body_dispatch
+        }
+    }
+}
+
+fn is_simple_binding(binding: &Pat) -> bool {
+    match binding {
+        Pat::Ident(binding) => binding.subpat.is_none(),
+        Pat::Wild(_) => true,
+        _ => false,
     }
 }
