@@ -22,6 +22,16 @@ use std::any::TypeId;
 use tvm_ffi::match_any_internal::{ArmId, LeafLookupTable, LeafPatternMetadata, LeafPatternProbe};
 use tvm_ffi::{match_any, Any, AnyView, Array, Function, Map, Module, Shape, Tensor, TypeIndex};
 
+struct CustomModuleMatcher;
+
+impl<'a> TryFrom<AnyView<'a>> for CustomModuleMatcher {
+    type Error = &'static str;
+
+    fn try_from(value: AnyView<'a>) -> Result<Self, Self::Error> {
+        value.try_as::<Module>().map(|_| Self).ok_or("not a Module")
+    }
+}
+
 #[test]
 fn matches_concrete_object_containers_in_source_order() {
     fn classify(expr: Any) -> (&'static str, usize) {
@@ -64,29 +74,12 @@ fn matches_concrete_object_containers_in_source_order() {
 }
 
 #[test]
-fn parameterized_containers_keep_ordered_conversion() {
-    let array = [1.5_f64, 2.5].into_iter().collect::<Array<f64>>();
-    let selected = match_any! {
-        Any::from(array) {
-            Array::<i64>(_) => "integer array",
-            Tensor(_) => "tensor",
-            Shape(_) => "shape",
-            Array::<f64>(_) => "float array",
-            _ => "unsupported",
-        }
-    };
-
-    assert_eq!(selected, "float array");
-}
-
-#[test]
-fn leaf_lookup_keeps_the_first_arm() {
-    fn classify(value: Any) -> usize {
+fn custom_try_into_matcher_keeps_ordered_compatibility() {
+    fn matches(value: AnyView<'_>) -> bool {
         match_any! {
             value {
-                Module(_) => 0,
-                Module(_) => 1,
-                _ => 2,
+                CustomModuleMatcher(_) => true,
+                _ => false,
             }
         }
     }
@@ -97,31 +90,52 @@ fn leaf_lookup_keeps_the_first_arm() {
         .unwrap()
         .try_into()
         .unwrap();
-    assert_eq!(classify(Any::from(module)), 0);
-    assert_eq!(classify(Any::from(Array::<i64>::default())), 2);
+    assert!(matches(AnyView::from(&module)));
+    assert!(!matches(AnyView::from(&Shape::from([1_i64, 2]))));
 }
 
 #[test]
-fn lookup_table_maps_runtime_indices_to_local_arm_ids() {
+fn parameterized_containers_use_complete_conversion_semantics() {
+    let array = [1.5_f64, 2.5].into_iter().collect::<Array<f64>>();
+    // Both patterns have the same runtime Array TypeIndex, so matching must
+    // inspect the element types in source order.
+    let selected = match_any! {
+        Any::from(array) {
+            Array::<i64>(_) => "integer array",
+            Array::<f64>(_) => "float array",
+            _ => "unsupported",
+        }
+    };
+
+    assert_eq!(selected, "float array");
+}
+
+#[test]
+fn direct_lookup_table_maps_runtime_indices_to_local_arm_ids() {
     const ARM_0: ArmId = 0;
-    const ARM_1: ArmId = 1;
     const ARM_2: ArmId = 2;
     let pattern_list_id = TypeId::of::<(i32, i64, f32)>();
-    let table = LeafLookupTable::build(pattern_list_id, &[(73, ARM_0), (73, ARM_1), (75, ARM_2)]);
+    let object_begin = TypeIndex::kTVMFFIStaticObjectBegin as i32;
+    let table = LeafLookupTable::build(
+        pattern_list_id,
+        &[object_begin + 4, object_begin + 4, object_begin + 7],
+    );
 
-    assert_eq!(table.lookup(pattern_list_id, 73), Ok(Some(ARM_0)));
-    assert_eq!(table.lookup(pattern_list_id, 72), Ok(None));
-    assert_eq!(table.lookup(pattern_list_id, 74), Ok(None));
-    assert_eq!(table.lookup(pattern_list_id, 75), Ok(Some(ARM_2)));
-    assert_eq!(table.lookup(pattern_list_id, 76), Ok(None));
-}
-
-#[test]
-fn a_generic_pattern_list_cannot_reuse_another_lists_table() {
-    let pattern_list_id = TypeId::of::<(i32, i64)>();
-    let table = LeafLookupTable::build(pattern_list_id, &[(73, 0), (75, 1)]);
-
-    assert_eq!(table.lookup(TypeId::of::<(u8, u16)>(), 73), Err(()));
+    assert_eq!(table.lookup(pattern_list_id, object_begin + 3), Ok(None));
+    assert_eq!(
+        table.lookup(pattern_list_id, object_begin + 4),
+        Ok(Some(ARM_0))
+    );
+    assert_eq!(table.lookup(pattern_list_id, object_begin + 5), Ok(None));
+    assert_eq!(
+        table.lookup(pattern_list_id, object_begin + 7),
+        Ok(Some(ARM_2))
+    );
+    assert_eq!(table.lookup(pattern_list_id, object_begin + 8), Ok(None));
+    assert_eq!(
+        table.lookup(TypeId::of::<(u8, u16)>(), object_begin + 4),
+        Err(())
+    );
 }
 
 #[test]
