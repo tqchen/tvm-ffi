@@ -582,6 +582,110 @@ TVM_FFI_DLL int TVMFFIObjectDecRef(TVMFFIObjectHandle obj);
 TVM_FFI_DLL int TVMFFIObjectCreateOpaque(void* handle, int32_t type_index,
                                          void (*deleter)(void* handle), TVMFFIObjectHandle* out);
 
+//-----------------------------------------------------------------------
+// Section: ObjectAllocHeader and CustomAllocator
+//-----------------------------------------------------------------------
+/*!
+ * \brief Header placed immediately before an Object body returned by a
+ *        ``TVMFFICustomAllocator``.
+ *
+ * A ``TVMFFIObject::deleter`` may invoke this header's ``delete_space``
+ * callback when the object's storage lifetime ends. Frontend custom allocators
+ * can use this mechanism to coordinate cleanup of language-specific state with
+ * reclamation of the TVM FFI allocation.
+ *
+ * Legacy object allocation paths do not use this header. Callers must only
+ * inspect it for storage obtained through ``TVMFFICustomAllocator``.
+ */
+typedef struct {
+  /*!
+   * \brief Reclaim storage allocated for a TVMFFIObject.
+   * \param ptr Pointer to the object body returned by the allocator.
+   *
+   * When used, ``TVMFFIObject::deleter`` invokes this callback after the
+   * object's weak lifetime ends. The callback is responsible for eventually
+   * reclaiming the complete allocator-owned allocation, including any private
+   * prefix, and cleaning up associated frontend state.
+   *
+   * \note ``ptr`` points to the object body, not to the preceding
+   *       ``TVMFFIObjectAllocHeader``. The object's C++ lifetime may already
+   *       have ended, so the callback must not access its fields.
+   */
+  void (*delete_space)(void* ptr);
+} TVMFFIObjectAllocHeader;
+
+/*!
+ * \brief Allocator interface for future TVM FFI object storage customization.
+ *
+ * A frontend may register this allocator with ``TVMFFISetCustomAllocator``.
+ * Allocation paths that opt into the registry can then prepend private
+ * metadata and coordinate object storage reclamation with language-specific
+ * state.
+ *
+ * Every body returned by this allocator must be immediately preceded by an
+ * initialized ``TVMFFIObjectAllocHeader``. An allocator may place additional
+ * private metadata before that header.
+ *
+ * \note The registered allocator and its context must remain valid for the
+ *       lifetime of the process.
+ * \note The allocation callback may be invoked concurrently.
+ */
+typedef struct {
+  /*!
+   * \brief Allocate uninitialized storage for a TVM FFI object body.
+   * \param size Size of the object body in bytes, excluding the preceding
+   *             ``TVMFFIObjectAllocHeader`` and any allocator-private metadata.
+   * \param alignment Required alignment of the returned object body.
+   * \param type_index Runtime type index of the allocation.
+   * \param context The allocator-defined context stored in this entry.
+   * \return An aligned pointer to the object body, or NULL on failure.
+   *
+   * The returned pointer must be immediately preceded by an initialized
+   * ``TVMFFIObjectAllocHeader`` whose ``delete_space`` callback is responsible
+   * for eventually reclaiming the complete allocator-owned allocation.
+   *
+   * On failure, the callback must report the error through
+   * ``TVMFFIErrorSetRaised`` before returning NULL.
+   *
+   * \note The returned storage is uninitialized: the caller is responsible for
+   *       zero-initializing or constructing the object body. Only the preceding
+   *       ``TVMFFIObjectAllocHeader`` is guaranteed to be initialized on return.
+   */
+  void* (*allocate)(size_t size, size_t alignment, int32_t type_index, void* context);
+
+  /*!
+   * \brief Opaque allocator-defined context passed unchanged to ``allocate``.
+   *
+   * The TVM FFI runtime neither interprets nor owns this pointer. It may be
+   * NULL; otherwise, the referenced state must remain valid for the lifetime
+   * of the registered allocator.
+   */
+  void* context;
+} TVMFFICustomAllocator;
+
+// These provider symbols intentionally precede their use by public inline
+// object-allocation code. This lets runtimes deploy the ABI before separately
+// compiled consumers begin requiring it in a future compatibility rollout.
+
+/*!
+ * \brief Get the process-wide custom allocator.
+ * \return The currently registered allocator (never NULL).
+ * \note Not synchronized against a concurrent ``TVMFFISetCustomAllocator``.
+ *       Install an override during single-threaded initialization; subsequent
+ *       reads from multiple threads are safe.
+ */
+TVM_FFI_DLL TVMFFICustomAllocator* TVMFFIGetCustomAllocator(void);
+
+/*!
+ * \brief Register the process-wide custom allocator.
+ * \param allocator Pointer to a ``TVMFFICustomAllocator``, or NULL to restore
+ *                  the builtin default.
+ * \return 0 on success, nonzero on failure.
+ * \note ``allocator`` must remain alive for the lifetime of the process.
+ * \note Not synchronized against concurrent getter calls or object creation.
+ */
+TVM_FFI_DLL int TVMFFISetCustomAllocator(TVMFFICustomAllocator* allocator);
+
 /*!
  * \brief Convert type key to type index.
  * \param type_key The key of the type.
