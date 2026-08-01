@@ -555,13 +555,9 @@ cdef int TVMFFIPyArgSetterObjectRValueRef_(
     PyObject* py_arg, TVMFFIAny* out
 ) except -1:
     """Setter for ObjectRValueRef"""
-    cdef CObject src = (<object>py_arg).obj
-    # Eager-detach the canonical binding before passing the chandle by rvalue ref: the callee
-    # either moves it (src.chandle -> NULL) or leaves it, and either way ``src`` must no longer be
-    # the canonical wrapper. Recycling in both cases is handled in TVMFFIPyTpDealloc on src death.
-    TVMFFIPyCompareAndRebindPyObject(src.chandle, <PyObject*>src, NULL)
+    cdef object arg = <object>py_arg
     out.type_index = kTVMFFIObjectRValueRef
-    out.v_ptr = &(src.chandle)
+    out.v_ptr = &((<CObject>(arg.obj)).chandle)
     return 0
 
 
