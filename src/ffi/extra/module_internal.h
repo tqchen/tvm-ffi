@@ -83,10 +83,7 @@ struct ModuleObj::InternalUnsafe {
         }
       }
       // try global at last
-      if (std::optional<Function> global_func = tvm::ffi::Function::GetGlobal(s_name)) {
-        return *global_func;
-      }
-      return nullptr;
+      return tvm::ffi::Function::GetGlobal(s_name).value_or(nullptr);
     }();
     if (func == nullptr) {
       TVM_FFI_THROW(RuntimeError) << "Cannot find function " << name
