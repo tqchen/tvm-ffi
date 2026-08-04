@@ -63,7 +63,7 @@ class ORCJITDynamicLibraryObj : public ModuleObj {
 
   const char* kind() const final { return "orcjit"; }
 
-  Optional<Function> GetFunction(const String& name) override;
+  Function GetFunction(const String& name) override;
 
  private:
   /*!

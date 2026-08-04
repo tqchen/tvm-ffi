@@ -58,18 +58,19 @@ class ModuleGlobals {
   std::mutex mutex_;
 };
 
-Optional<Function> ModuleObj::GetFunction(const String& name, bool query_imports) {
-  if (auto opt_func = this->GetFunction(name)) {
-    return opt_func;
+Function ModuleObj::GetFunction(const String& name, bool query_imports) {
+  if (Function func = this->GetFunction(name); func != nullptr) {
+    return func;
   }
   if (query_imports) {
     for (const Any& import : imports_) {
-      if (auto opt_func = import.cast<Module>()->GetFunction(name, query_imports)) {
-        return *opt_func;
+      if (Function func = import.cast<Module>()->GetFunction(name, query_imports);
+          func != nullptr) {
+        return func;
       }
     }
   }
-  return std::nullopt;
+  return nullptr;
 }
 
 Optional<String> ModuleObj::GetFunctionMetadata(const String& name, bool query_imports) {
