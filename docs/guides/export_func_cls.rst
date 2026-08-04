@@ -101,7 +101,7 @@ library and retrieve functions by name:
    namespace ffi = tvm::ffi;
 
    ffi::Module mod = ffi::Module::LoadFromFile("path/to/library.so");
-   ffi::Function func = mod->GetFunction("add_two").value();
+   ffi::Function func = mod->GetFunction("add_two");
    int result = func(40).cast<int>();  // -> 42
 
 

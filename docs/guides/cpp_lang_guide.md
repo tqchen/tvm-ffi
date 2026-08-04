@@ -336,7 +336,7 @@ The metadata contains:
 ffi::Module mod = ffi::Module::LoadFromFile("path/to/export_lib.so");
 
 // Get the function
-ffi::Function func = mod->GetFunction("add_one").value();
+ffi::Function func = mod->GetFunction("add_one");
 
 // Query metadata (type schema information)
 ffi::Optional<ffi::String> metadata = mod->GetFunctionMetadata("add_one");

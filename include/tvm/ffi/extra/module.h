@@ -57,9 +57,10 @@ class TVM_FFI_EXTRA_CXX_API ModuleObj : public Object {
   /*!
    * \brief Get a ffi::Function from the module.
    * \param name The name of the function.
-   * \return The function.
+   * \return The function, or nullptr if it is not found.
+   * \note The nullable Function return keeps this virtual interface pointer-sized.
    */
-  virtual Optional<Function> GetFunction(const String& name) = 0;
+  virtual Function GetFunction(const String& name) = 0;
   /*!
    * \brief Returns true if this module has a definition for a function of \p name.
    *
@@ -70,7 +71,7 @@ class TVM_FFI_EXTRA_CXX_API ModuleObj : public Object {
    * \param name The name of the function.
    * \return True if the module implements the function, false otherwise.
    */
-  virtual bool ImplementsFunction(const String& name) { return GetFunction(name).has_value(); }
+  virtual bool ImplementsFunction(const String& name) { return GetFunction(name) != nullptr; }
   /*!
    * \brief Get the docstring of the function, if available.
    * \param name The name of the function.
@@ -142,9 +143,9 @@ class TVM_FFI_EXTRA_CXX_API ModuleObj : public Object {
    * \brief Overloaded function to optionally query from imports.
    * \param name The name of the function.
    * \param query_imports Whether to query imported modules.
-   * \return The function.
+   * \return The function, or nullptr if it is not found.
    */
-  Optional<Function> GetFunction(const String& name, bool query_imports);
+  Function GetFunction(const String& name, bool query_imports);
   /*!
    * \brief Overloaded function to optionally query from imports.
    * \param name The name of the function.
