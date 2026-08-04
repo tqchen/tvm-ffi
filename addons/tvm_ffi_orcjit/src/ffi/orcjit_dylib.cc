@@ -333,7 +333,7 @@ llvm::orc::JITDylib& ORCJITDynamicLibraryObj::GetJITDylib() {
   return *dylib_;
 }
 
-Function ORCJITDynamicLibraryObj::GetFunction(const String& name) {
+Optional<Function> ORCJITDynamicLibraryObj::GetFunction(const String& name) {
   // Pure symbol lookup. Context symbols were injected once at load time (see
   // Finalize), so this holds no lock and does no refresh — the returned
   // Function, once resolved, is invoked lock-free on the hot path.
@@ -345,7 +345,7 @@ Function ORCJITDynamicLibraryObj::GetFunction(const String& name) {
     auto* wrapper = new DylibFnContextWithModule{GetRef<Module>(this)};
     return Function::FromExternC(wrapper, c_func, DeleteDylibFnContextWithModule);
   }
-  return nullptr;
+  return std::nullopt;
 }
 
 //-------------------------------------

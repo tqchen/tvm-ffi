@@ -76,21 +76,21 @@ struct ModuleObj::InternalUnsafe {
       return const_cast<FunctionObj*>((*it).second.operator->());
     }
 
-    Function func = [&]() -> Function {
+    auto opt_func = [&]() -> std::optional<Function> {
       for (const Any& import : module->imports_) {
-        if (Function func = import.cast<Module>()->GetFunction(s_name, true); func != nullptr) {
-          return func;
+        if (auto opt_func = import.cast<Module>()->GetFunction(s_name, true)) {
+          return *opt_func;
         }
       }
       // try global at last
-      return tvm::ffi::Function::GetGlobal(s_name).value_or(nullptr);
+      return tvm::ffi::Function::GetGlobal(s_name);
     }();
-    if (func == nullptr) {
+    if (!opt_func.has_value()) {
       TVM_FFI_THROW(RuntimeError) << "Cannot find function " << name
                                   << " in the imported modules or global registry.";
     }
-    module->import_lookup_cache_.Set(s_name, func);
-    return const_cast<FunctionObj*>(func.operator->());
+    module->import_lookup_cache_.Set(s_name, *opt_func);
+    return const_cast<FunctionObj*>((*opt_func).operator->());
   }
 
   static void RegisterReflection() {
