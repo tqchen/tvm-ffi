@@ -45,7 +45,7 @@ int Run(DLTensor* x, DLTensor* y) {
 
   // Step 2. Get function `add_one_cpu` from module
   // Equivalent to:
-  //    func = mod->GetFunction("add_one_cpu", /*query_imports=*/false)
+  //    func = mod->GetFunction("add_one_cpu", /*query_imports=*/false).value()
   call_args[0] = (TVMFFIAny){.type_index = mod.type_index, .v_obj = mod.v_obj};
   call_args[1] = (TVMFFIAny){.type_index = kTVMFFIRawStr, .v_c_str = "add_one_cpu"};
   call_args[2] = (TVMFFIAny){.type_index = kTVMFFIBool, .v_int64 = 0};

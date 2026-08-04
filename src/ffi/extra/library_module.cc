@@ -42,7 +42,7 @@ class LibraryModuleObj final : public ModuleObj {
   /*! \brief Get the property of the runtime module .*/
   int GetPropertyMask() const final { return Module::kBinarySerializable | Module::kRunnable; };
 
-  ffi::Function GetFunction(const String& name) final {
+  Optional<ffi::Function> GetFunction(const String& name) final {
     TVMFFISafeCallType faddr;
     faddr = reinterpret_cast<TVMFFISafeCallType>(lib_->GetSymbolWithSymbolPrefix(name));
     // ensure the function keeps the Library Module alive
@@ -55,7 +55,7 @@ class LibraryModuleObj final : public ModuleObj {
                                          args.size(), reinterpret_cast<TVMFFIAny*>(rv)));
       });
     }
-    return nullptr;
+    return std::nullopt;
   }
 
   Optional<String> GetFunctionMetadata(const String& name) final {

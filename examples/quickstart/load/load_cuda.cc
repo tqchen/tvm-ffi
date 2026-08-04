@@ -32,7 +32,7 @@ void Run(tvm::ffi::TensorView x, tvm::ffi::TensorView y) {
   // Load shared library `build/add_one_cuda.so`
   ffi::Module mod = ffi::Module::LoadFromFile("build/add_one_cuda.so");
   // Look up `add_one_cuda` function
-  ffi::Function add_one_cuda = mod->GetFunction("add_one_cuda");
+  ffi::Function add_one_cuda = mod->GetFunction("add_one_cuda").value();
   // Call the function with CUDA tensors
   add_one_cuda(x, y);
 }
