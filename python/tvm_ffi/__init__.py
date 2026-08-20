@@ -59,12 +59,10 @@ if TYPE_CHECKING or not _is_config_mode():
     # Enable package initialization
     from .registry import (
         register_object,
-        register_opaque_ptr,
         register_global_func,
         get_global_func,
         get_global_func_metadata,
         remove_global_func,
-        remove_opaque_ptr,
         init_ffi_api,
     )
     from ._dtype import dtype
@@ -94,6 +92,7 @@ if TYPE_CHECKING or not _is_config_mode():
     from . import serialization
     from . import access_path
     from . import dataclasses
+    from . import opaque_ptr
     from . import structural
     from . import cpp
 
@@ -181,12 +180,11 @@ __all__ = [
     "init_ffi_api",
     "load_module",
     "method",
+    "opaque_ptr",
     "register_error",
     "register_global_func",
     "register_object",
-    "register_opaque_ptr",
     "remove_global_func",
-    "remove_opaque_ptr",
     "serialization",
     "structural",
     "structural_equal",

@@ -163,8 +163,8 @@ compile_kernel = tvm_ffi.get_global_func("my_compiler.compile_kernel")
 compile_kernel(workspace)
 ```
 
-When a third-party class cannot define or be monkey-patched with that protocol,
-register an exact-class handler instead:
+When a third-party class cannot define or be monkey-patched with that protocol, add an exact-class
+handler during application setup:
 
 ```python
 import tvm_ffi
@@ -177,17 +177,14 @@ class ForeignWorkspace:
         self.address = address
 
 
-@tvm_ffi.register_opaque_ptr(ForeignWorkspace)
-def _foreign_workspace_ptr(workspace: ForeignWorkspace) -> int:
-    return workspace.address
+tvm_ffi.opaque_ptr.handlers[ForeignWorkspace] = lambda workspace: workspace.address
 ```
 
-Registration and lookup are thread-safe. A registration is visible even if that class was passed
-to FFI earlier. Dispatch matches the exact class rather than subclasses, and a class's own
-`__tvm_ffi_opaque_ptr__` takes precedence. Duplicate registration raises unless `override=True`;
-use {py:func}`tvm_ffi.remove_opaque_ptr` to remove a handler. When PyTorch provides the generic
-`torch.Event` class, TVM FFI registers its documented raw `event_id` through this hook without
-making PyTorch a required dependency.
+Configure {py:data}`tvm_ffi.opaque_ptr.handlers` before instances of those classes are passed to
+FFI, then treat the mapping as read-only while FFI calls are running. Dispatch matches exact
+classes rather than subclasses, and a class's own `__tvm_ffi_opaque_ptr__` takes precedence. When
+PyTorch provides the generic `torch.Event` class, TVM FFI adds its documented raw `event_id` to
+this mapping without making PyTorch a required dependency.
 
 ## Container Types
 

@@ -32,7 +32,6 @@ _SKIP_UNKNOWN_OBJECTS = False
 
 
 _T = TypeVar("_T", bound=type)
-_OpaqueT = TypeVar("_OpaqueT")
 
 
 def register_object(
@@ -173,89 +172,6 @@ def register_global_func(
     if f is not None:
         return register(f)
     return register
-
-
-def register_opaque_ptr(
-    type_cls: type[_OpaqueT],
-    func: Callable[[_OpaqueT], int] | None = None,
-    *,
-    override: bool = False,
-) -> Any:
-    """Register how an exact third-party class converts to an opaque pointer.
-
-    This extension point is intended for classes that cannot implement
-    ``__tvm_ffi_opaque_ptr__`` themselves. The registered callable receives an
-    instance of *type_cls* and returns an integer pointer value. Registrations
-    match the exact class, not its subclasses.
-
-    Native TVM FFI conversions and a class-defined ``__tvm_ffi_opaque_ptr__``
-    protocol take precedence. Registration and lookup are thread-safe, and a
-    registration takes effect even if the class was passed to FFI previously.
-
-    Parameters
-    ----------
-    type_cls
-        The exact Python class handled by the registration.
-
-    func
-        A callable that returns the instance's integer pointer value. If
-        omitted, this function returns a decorator.
-
-    override
-        Whether to replace an existing registration. By default, duplicate
-        registration raises ``ValueError``.
-
-    Returns
-    -------
-    func
-        The registered callable.
-
-    Examples
-    --------
-    .. code-block:: python
-
-        class ForeignBuffer:
-            __slots__ = ("address",)
-
-
-        @tvm_ffi.register_opaque_ptr(ForeignBuffer)
-        def _foreign_buffer_ptr(value: ForeignBuffer) -> int:
-            return value.address
-
-    See Also
-    --------
-    :py:func:`tvm_ffi.remove_opaque_ptr`
-
-    """
-    if not isinstance(type_cls, type):
-        raise TypeError("type_cls must be a type")
-
-    def register(myf: Callable[[_OpaqueT], int]) -> Callable[[_OpaqueT], int]:
-        return core._register_opaque_ptr(type_cls, myf, override)
-
-    if func is not None:
-        return register(func)
-    return register
-
-
-def remove_opaque_ptr(type_cls: type, *, allow_missing: bool = False) -> None:
-    """Remove an exact-class opaque pointer registration.
-
-    Parameters
-    ----------
-    type_cls
-        The exact Python class whose handler should be removed.
-
-    allow_missing
-        If ``True``, do nothing when *type_cls* has no registration. By
-        default, a missing registration raises ``ValueError``.
-
-    See Also
-    --------
-    :py:func:`tvm_ffi.register_opaque_ptr`
-
-    """
-    core._remove_opaque_ptr(type_cls, allow_missing)
 
 
 @overload
@@ -595,25 +511,6 @@ def get_registered_type_keys() -> Sequence[str]:
     return get_global_func("ffi.GetRegisteredTypeKeys")()
 
 
-def _torch_event_opaque_ptr(event: Any) -> int:
-    """Return the raw backend event owned by a ``torch.Event``."""
-    return event.event_id
-
-
-def _register_optional_torch_event() -> None:
-    """Register ``torch.Event`` when the optional dependency exposes it."""
-    try:
-        import torch  # noqa: PLC0415
-    except ImportError:
-        return
-    event_cls = getattr(torch, "Event", None)
-    if isinstance(event_cls, type) and hasattr(event_cls, "event_id"):
-        register_opaque_ptr(event_cls, _torch_event_opaque_ptr)
-
-
-_register_optional_torch_event()
-
-
 __all__ = [
     "get_global_func",
     "get_global_func_metadata",
@@ -622,7 +519,5 @@ __all__ = [
     "list_global_func_names",
     "register_global_func",
     "register_object",
-    "register_opaque_ptr",
     "remove_global_func",
-    "remove_opaque_ptr",
 ]
