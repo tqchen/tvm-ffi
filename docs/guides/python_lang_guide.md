@@ -163,6 +163,32 @@ compile_kernel = tvm_ffi.get_global_func("my_compiler.compile_kernel")
 compile_kernel(workspace)
 ```
 
+When a third-party class cannot define or be monkey-patched with that protocol,
+register an exact-class handler instead:
+
+```python
+import tvm_ffi
+
+
+class ForeignWorkspace:
+    __slots__ = ("address",)
+
+    def __init__(self, address: int):
+        self.address = address
+
+
+@tvm_ffi.register_opaque_ptr(ForeignWorkspace)
+def _foreign_workspace_ptr(workspace: ForeignWorkspace) -> int:
+    return workspace.address
+```
+
+Registration and lookup are thread-safe. A registration is visible even if that class was passed
+to FFI earlier. Dispatch matches the exact class rather than subclasses, and a class's own
+`__tvm_ffi_opaque_ptr__` takes precedence. Duplicate registration raises unless `override=True`;
+use {py:func}`tvm_ffi.remove_opaque_ptr` to remove a handler. When PyTorch provides the generic
+`torch.Event` class, TVM FFI registers its documented raw `event_id` through this hook without
+making PyTorch a required dependency.
+
 ## Container Types
 
 TVM FFI provides five container types that split into **immutable** (copy-on-write) and

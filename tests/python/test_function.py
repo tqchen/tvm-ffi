@@ -19,6 +19,7 @@ from __future__ import annotations
 import ctypes
 import gc
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -339,6 +340,98 @@ def test_function_with_opaque_ptr_protocol() -> None:
     y = fecho(x)
     assert isinstance(y, ctypes.c_void_p)
     assert y.value == 10
+
+
+def test_function_with_registered_opaque_ptr() -> None:
+    """A late exact-class registration overrides the cached opaque-object fallback."""
+
+    class ForeignEvent:
+        __slots__ = ("address",)
+
+        def __init__(self, address: int) -> None:
+            self.address = address
+
+    fecho = tvm_ffi.get_global_func("testing.echo")
+    event = ForeignEvent(0xCAFE)
+    assert fecho(event) is event
+
+    @tvm_ffi.register_opaque_ptr(ForeignEvent)
+    def _foreign_event_ptr(value: ForeignEvent) -> int:
+        return value.address
+
+    try:
+        result = fecho(event)
+        assert isinstance(result, ctypes.c_void_p)
+        assert result.value == 0xCAFE
+        tvm_ffi.core.TypeSchema.from_annotation(ctypes.c_void_p).check_value(event)
+
+        with pytest.raises(ValueError, match="already registered"):
+            tvm_ffi.register_opaque_ptr(ForeignEvent, _foreign_event_ptr)
+
+        tvm_ffi.register_opaque_ptr(ForeignEvent, lambda _: 0xBEEF, override=True)
+        assert fecho(event).value == 0xBEEF
+    finally:
+        tvm_ffi.remove_opaque_ptr(ForeignEvent, allow_missing=True)
+
+    assert fecho(event) is event
+    with pytest.raises(ValueError, match="No opaque pointer handler"):
+        tvm_ffi.remove_opaque_ptr(ForeignEvent)
+
+
+def test_registered_opaque_ptr_protocol_precedence_and_exact_match() -> None:
+    """The class protocol wins, and base-class registrations do not capture subclasses."""
+
+    class BaseEvent:
+        pass
+
+    class DerivedEvent(BaseEvent):
+        pass
+
+    class ProtocolEvent:
+        def __tvm_ffi_opaque_ptr__(self) -> int:
+            return 0x1111
+
+    tvm_ffi.register_opaque_ptr(BaseEvent, lambda _: 0x3333)
+    tvm_ffi.register_opaque_ptr(ProtocolEvent, lambda _: 0x2222)
+    try:
+        fecho = tvm_ffi.get_global_func("testing.echo")
+        assert fecho(BaseEvent()).value == 0x3333
+        derived = DerivedEvent()
+        assert fecho(derived) is derived
+        assert fecho(ProtocolEvent()).value == 0x1111
+    finally:
+        tvm_ffi.remove_opaque_ptr(BaseEvent, allow_missing=True)
+        tvm_ffi.remove_opaque_ptr(ProtocolEvent, allow_missing=True)
+
+
+def test_registered_opaque_ptr_concurrent_use() -> None:
+    """Concurrent exact-class registration and lookup are serialized safely."""
+
+    def _register_and_round_trip(address: int) -> int | None:
+        class ForeignEvent:
+            __slots__ = ("address",)
+
+            def __init__(self, value: int) -> None:
+                self.address = value
+
+        tvm_ffi.register_opaque_ptr(ForeignEvent, lambda value: value.address)
+        try:
+            fecho = tvm_ffi.get_global_func("testing.echo")
+            return fecho(ForeignEvent(address)).value
+        finally:
+            tvm_ffi.remove_opaque_ptr(ForeignEvent, allow_missing=True)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert list(pool.map(_register_and_round_trip, range(1, 65))) == list(range(1, 65))
+
+
+@pytest.mark.skipif(torch is None or not hasattr(torch, "Event"), reason="torch.Event unavailable")
+def test_torch_event_registered_as_opaque_ptr() -> None:
+    """The optional generic torch.Event hook exposes its raw backend event id."""
+    event = torch.Event(device="cpu")
+    result = tvm_ffi.get_global_func("testing.echo")(event)
+    assert isinstance(result, ctypes.c_void_p)
+    assert result.value == (event.event_id or None)
 
 
 def test_function_with_dlpack_data_type_protocol() -> None:

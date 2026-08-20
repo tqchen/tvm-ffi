@@ -102,11 +102,13 @@ Global Registry
 
   register_error
   register_object
+  register_opaque_ptr
   register_global_func
   get_global_func
   get_global_func_metadata
   init_ffi_api
   remove_global_func
+  remove_opaque_ptr
 
 
 Stream Context

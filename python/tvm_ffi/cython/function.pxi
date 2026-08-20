@@ -550,6 +550,70 @@ cdef int TVMFFIPyArgSetterFFIOpaquePtrCompatible_(
     return 0
 
 
+cdef _OPAQUE_PTR_DISPATCH = {}
+cdef _OPAQUE_PTR_DISPATCH_LOCK = threading.RLock()
+
+
+cdef object _lookup_opaque_ptr_dispatch(object type_cls):
+    """Return the exact-class opaque pointer handler, if registered."""
+    with _OPAQUE_PTR_DISPATCH_LOCK:
+        return _OPAQUE_PTR_DISPATCH.get(type_cls)
+
+
+def _register_opaque_ptr(type_cls: type, func: Callable[[Any], int], override: bool = False):
+    """Register an exact-class opaque pointer handler for the Python facade."""
+    if not isinstance(type_cls, type):
+        raise TypeError("type_cls must be a type")
+    if not callable(func):
+        raise TypeError("func must be callable")
+    with _OPAQUE_PTR_DISPATCH_LOCK:
+        if not override and type_cls in _OPAQUE_PTR_DISPATCH:
+            raise ValueError(f"Opaque pointer handler is already registered for {type_cls!r}")
+        _OPAQUE_PTR_DISPATCH[type_cls] = func
+        TVMFFIPyNotifyArgDispatchRegistryChanged()
+    return func
+
+
+def _remove_opaque_ptr(type_cls: type, allow_missing: bool = False) -> None:
+    """Remove an exact-class opaque pointer handler for the Python facade."""
+    if not isinstance(type_cls, type):
+        raise TypeError("type_cls must be a type")
+    with _OPAQUE_PTR_DISPATCH_LOCK:
+        if type_cls not in _OPAQUE_PTR_DISPATCH:
+            if allow_missing:
+                return
+            raise ValueError(f"No opaque pointer handler is registered for {type_cls!r}")
+        del _OPAQUE_PTR_DISPATCH[type_cls]
+        TVMFFIPyNotifyArgDispatchRegistryChanged()
+
+
+cdef int TVMFFIPyArgSetterRegisteredOpaquePtr_(
+    TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
+    PyObject* py_arg, TVMFFIAny* out
+) except -1:
+    """Use a registered handler, or the type's cached normal fallback."""
+    cdef object arg = <object>py_arg
+    cdef object func = _lookup_opaque_ptr_dispatch(type(arg))
+    cdef long long long_ptr
+    if func is None:
+        return handle.fallback_func(handle, ctx, py_arg, out)
+    long_ptr = <long long>func(arg)
+    out.type_index = kTVMFFIOpaquePtr
+    out.v_ptr = <void*>long_ptr
+    return 0
+
+
+cdef inline void _set_registered_opaque_ptr_or_fallback(
+    TVMFFIPyArgSetter* out, TVMFFIPyArgSetterFunc fallback, bint has_registration
+) noexcept:
+    """Install the registry-aware setter only when this class needs it."""
+    out.fallback_func = fallback
+    if has_registration:
+        out.func = TVMFFIPyArgSetterRegisteredOpaquePtr_
+    else:
+        out.func = fallback
+
+
 cdef int TVMFFIPyArgSetterObjectRValueRef_(
     TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
     PyObject* py_arg, TVMFFIAny* out
@@ -754,6 +818,7 @@ cdef public int TVMFFICyArgSetterFactory(PyObject* value, TVMFFIPyArgSetter* out
     # priortize native types over external types
     cdef object arg = <object>value
     cdef long long temp_ptr
+    cdef bint has_registered_opaque_ptr
 
     # The C++ dispatcher dispatches the argument passing by TYPE(obj) pointer which
     # is non-owning. This means that there is the following edge case:
@@ -876,41 +941,64 @@ cdef public int TVMFFICyArgSetterFactory(PyObject* value, TVMFFIPyArgSetter* out
     if hasattr(arg_class, "__tvm_ffi_opaque_ptr__"):
         out.func = TVMFFIPyArgSetterFFIOpaquePtrCompatible_
         return 0
+    has_registered_opaque_ptr = _lookup_opaque_ptr_dispatch(arg_class) is not None
     if callable(arg):
-        out.func = TVMFFIPyArgSetterCallable_
+        _set_registered_opaque_ptr_or_fallback(
+            out, TVMFFIPyArgSetterCallable_, has_registered_opaque_ptr
+        )
         return 0
     if torch is not None and isinstance(arg, torch.dtype):
-        out.func = TVMFFIPyArgSetterDTypeFromTorch_
+        _set_registered_opaque_ptr_or_fallback(
+            out, TVMFFIPyArgSetterDTypeFromTorch_, has_registered_opaque_ptr
+        )
         return 0
     if numpy is not None and isinstance(arg, numpy.dtype):
-        out.func = TVMFFIPyArgSetterDTypeFromNumpy_
+        _set_registered_opaque_ptr_or_fallback(
+            out, TVMFFIPyArgSetterDTypeFromNumpy_, has_registered_opaque_ptr
+        )
         return 0
     if hasattr(arg_class, "__dlpack_data_type__"):
         # prefer dlpack as it covers all DLDataType struct
-        out.func = TVMFFIPyArgSetterDLPackDataTypeProtocol_
+        _set_registered_opaque_ptr_or_fallback(
+            out, TVMFFIPyArgSetterDLPackDataTypeProtocol_, has_registered_opaque_ptr
+        )
         return 0
     if hasattr(arg_class, "__dlpack_device__") and not hasattr(arg_class, "__dlpack__"):
         # if a class have __dlpack_device__ but not __dlpack__
         # then it is a DLPack device protocol
-        out.func = TVMFFIPyArgSetterDLPackDeviceProtocol_
+        _set_registered_opaque_ptr_or_fallback(
+            out, TVMFFIPyArgSetterDLPackDeviceProtocol_, has_registered_opaque_ptr
+        )
         return 0
     if hasattr(arg_class, "__tvm_ffi_int__"):
-        out.func = TVMFFIPyArgSetterIntProtocol_
+        _set_registered_opaque_ptr_or_fallback(
+            out, TVMFFIPyArgSetterIntProtocol_, has_registered_opaque_ptr
+        )
         return 0
     if hasattr(arg_class, "__tvm_ffi_float__"):
-        out.func = TVMFFIPyArgSetterFloatProtocol_
+        _set_registered_opaque_ptr_or_fallback(
+            out, TVMFFIPyArgSetterFloatProtocol_, has_registered_opaque_ptr
+        )
         return 0
     if hasattr(arg_class, "__tvm_ffi_value__"):
-        out.func = TVMFFIPyArgSetterFFIValueProtocol_
+        _set_registered_opaque_ptr_or_fallback(
+            out, TVMFFIPyArgSetterFFIValueProtocol_, has_registered_opaque_ptr
+        )
         return 0
     if isinstance(arg, Exception):
-        out.func = TVMFFIPyArgSetterException_
+        _set_registered_opaque_ptr_or_fallback(
+            out, TVMFFIPyArgSetterException_, has_registered_opaque_ptr
+        )
         return 0
     if isinstance(arg, ObjectConvertible):
-        out.func = TVMFFIPyArgSetterObjectConvertible_
+        _set_registered_opaque_ptr_or_fallback(
+            out, TVMFFIPyArgSetterObjectConvertible_, has_registered_opaque_ptr
+        )
         return 0
     # default to opaque object
-    out.func = TVMFFIPyArgSetterFallback_
+    _set_registered_opaque_ptr_or_fallback(
+        out, TVMFFIPyArgSetterFallback_, has_registered_opaque_ptr
+    )
     return 0
 
 

@@ -383,7 +383,20 @@ cdef extern from "tvm_ffi_python_helpers.h":
 
     ctypedef struct TVMFFIPyArgSetter:
         int (*func)(TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,  PyObject* py_arg, TVMFFIAny* out) except -1
+        int (*fallback_func)(
+            TVMFFIPyArgSetter* handle,
+            TVMFFIPyCallContext* ctx,
+            PyObject* py_arg,
+            TVMFFIAny* out,
+        ) except -1
         const DLPackExchangeAPI* dlpack_c_exchange_api
+
+    ctypedef int (*TVMFFIPyArgSetterFunc)(
+        TVMFFIPyArgSetter* handle,
+        TVMFFIPyCallContext* ctx,
+        PyObject* py_arg,
+        TVMFFIAny* out,
+    ) except -1
 
     # The main call function
     int TVMFFIPyFuncCall(
@@ -424,6 +437,7 @@ cdef extern from "tvm_ffi_python_helpers.h":
     ) except -1
 
     size_t TVMFFIPyGetArgDispatchMapSize() noexcept
+    void TVMFFIPyNotifyArgDispatchRegistryChanged() noexcept
 
     void TVMFFIPyPushTempFFIObject(TVMFFIPyCallContext* ctx, TVMFFIObjectHandle arg) noexcept
     void TVMFFIPyPushTempPyObject(TVMFFIPyCallContext* ctx, PyObject* arg) noexcept

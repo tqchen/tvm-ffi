@@ -59,6 +59,7 @@
 #endif
 #endif
 
+#include <atomic>
 #include <cstring>
 #include <exception>
 #include <iostream>
@@ -240,6 +241,14 @@ struct TVMFFIPyArgSetter {
   int (*func)(TVMFFIPyArgSetter* self, TVMFFIPyCallContext* call_ctx, PyObject* arg,
               TVMFFIAny* out);
   /*!
+   * \brief Fallback used by setters that perform dynamic registry lookup.
+   *
+   * This keeps the thread-local type cache valid when a registry entry is added,
+   * replaced, or removed after the type's setter was first cached.
+   */
+  int (*fallback_func)(TVMFFIPyArgSetter* self, TVMFFIPyCallContext* call_ctx, PyObject* arg,
+                       TVMFFIAny* out){nullptr};
+  /*!
    * \brief Optional DLPackExchangeAPI struct pointer.
    * This is the new struct-based approach that bundles all DLPack exchange functions.
    */
@@ -256,6 +265,21 @@ struct TVMFFIPyArgSetter {
     return (*func)(const_cast<TVMFFIPyArgSetter*>(this), call_ctx, arg, out);
   }
 };
+
+using TVMFFIPyArgSetterFunc = decltype(TVMFFIPyArgSetter::func);
+
+TVM_FFI_INLINE std::atomic<uint64_t>& TVMFFIPyArgDispatchRegistryVersionStorage() {
+  static std::atomic<uint64_t> version{0};
+  return version;
+}
+
+TVM_FFI_INLINE uint64_t TVMFFIPyArgDispatchRegistryVersion() noexcept {
+  return TVMFFIPyArgDispatchRegistryVersionStorage().load(std::memory_order_acquire);
+}
+
+TVM_FFI_INLINE void TVMFFIPyNotifyArgDispatchRegistryChanged() noexcept {
+  TVMFFIPyArgDispatchRegistryVersionStorage().fetch_add(1, std::memory_order_release);
+}
 
 //---------------------------------------------------------------------------------------------
 // The following section contains predefined setters for common POD types
@@ -651,6 +675,13 @@ class TVMFFIPyCallManager {
     out->type_index = kTVMFFINone;
     out->zero_padding = 0;
     out->v_int64 = 0;
+    // Registry changes are rare. A version check keeps the ordinary cached path
+    // lock-free while making late registration/removal visible in every thread.
+    uint64_t registry_version = TVMFFIPyArgDispatchRegistryVersion();
+    if (TVM_FFI_PREDICT_FALSE(registry_version != arg_dispatch_registry_version_)) {
+      arg_dispatch_map_.clear();
+      arg_dispatch_registry_version_ = registry_version;
+    }
     // find the pre-cached setter
     // This class is thread-local, so we don't need to worry about race condition
     auto it = arg_dispatch_map_.find(py_type);
@@ -830,6 +861,7 @@ class TVMFFIPyCallManager {
   TVMFFIPyCallManager() {
     static constexpr size_t kDefaultDispatchCapacity = 32;
     arg_dispatch_map_.reserve(kDefaultDispatchCapacity);
+    arg_dispatch_registry_version_ = TVMFFIPyArgDispatchRegistryVersion();
     // Pre-allocate callback arg dispatch table for static type indices
     static constexpr size_t kDefaultCallbackArgDispatchCapacity = 128;
     callback_arg_dispatch_table_.resize(kDefaultCallbackArgDispatchCapacity);
@@ -837,6 +869,7 @@ class TVMFFIPyCallManager {
 
   // internal arg dispatch map: type -> argument setter
   std::unordered_map<PyTypeObject*, TVMFFIPyArgSetter> arg_dispatch_map_;
+  uint64_t arg_dispatch_registry_version_{0};
   // call stack
   TVMFFIPyCallStack call_stack_;
   // callback arg setter dispatch table indexed by type_index (view-based path
