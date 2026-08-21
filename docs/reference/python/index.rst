@@ -95,12 +95,6 @@ Structural
   structural_map
 
 
-Opaque Pointer Hooks
---------------------
-.. automodule:: tvm_ffi.opaque_ptr
-  :members:
-
-
 Global Registry
 ---------------
 .. autosummary::

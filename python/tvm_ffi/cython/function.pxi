@@ -20,8 +20,6 @@ import os
 from numbers import Integral, Real
 from typing import Any, Callable
 
-from tvm_ffi.opaque_ptr import handlers as opaque_ptr_handlers
-
 
 if os.environ.get("TVM_FFI_BUILD_DOCS", "0") == "0":
     try:
@@ -552,7 +550,7 @@ cdef int TVMFFIPyArgSetterFFIOpaquePtrCompatible_(
     return 0
 
 
-cdef dict _OPAQUE_PTR_HANDLERS = opaque_ptr_handlers
+_OPAQUE_PTR_HANDLERS = {}
 
 
 cdef object _lookup_opaque_ptr_handler(object type_cls):

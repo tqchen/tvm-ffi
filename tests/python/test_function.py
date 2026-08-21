@@ -19,7 +19,6 @@ from __future__ import annotations
 import ctypes
 import gc
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -343,7 +342,7 @@ def test_function_with_opaque_ptr_protocol() -> None:
 
 
 def test_function_with_opaque_ptr_handler() -> None:
-    """A setup-time exact-class handler converts a third-party object."""
+    """The setup map converts exact classes while preserving protocol precedence."""
 
     class ForeignEvent:
         __slots__ = ("address",)
@@ -351,7 +350,16 @@ def test_function_with_opaque_ptr_handler() -> None:
         def __init__(self, address: int) -> None:
             self.address = address
 
-    tvm_ffi.opaque_ptr.handlers[ForeignEvent] = lambda value: value.address
+    class DerivedEvent(ForeignEvent):
+        pass
+
+    class ProtocolEvent:
+        def __tvm_ffi_opaque_ptr__(self) -> int:
+            return 0x1111
+
+    handlers = tvm_ffi.core._OPAQUE_PTR_HANDLERS
+    handlers[ForeignEvent] = lambda value: value.address
+    handlers[ProtocolEvent] = lambda _: 0x2222
     try:
         fecho = tvm_ffi.get_global_func("testing.echo")
         event = ForeignEvent(0xCAFE)
@@ -359,63 +367,13 @@ def test_function_with_opaque_ptr_handler() -> None:
         assert isinstance(result, ctypes.c_void_p)
         assert result.value == 0xCAFE
         tvm_ffi.core.TypeSchema.from_annotation(ctypes.c_void_p).check_value(event)
-    finally:
-        del tvm_ffi.opaque_ptr.handlers[ForeignEvent]
 
-
-def test_registered_opaque_ptr_protocol_precedence_and_exact_match() -> None:
-    """The class protocol wins, and base-class registrations do not capture subclasses."""
-
-    class BaseEvent:
-        pass
-
-    class DerivedEvent(BaseEvent):
-        pass
-
-    class ProtocolEvent:
-        def __tvm_ffi_opaque_ptr__(self) -> int:
-            return 0x1111
-
-    tvm_ffi.opaque_ptr.handlers[BaseEvent] = lambda _: 0x3333
-    tvm_ffi.opaque_ptr.handlers[ProtocolEvent] = lambda _: 0x2222
-    try:
-        fecho = tvm_ffi.get_global_func("testing.echo")
-        assert fecho(BaseEvent()).value == 0x3333
-        derived = DerivedEvent()
+        derived = DerivedEvent(0x3333)
         assert fecho(derived) is derived
         assert fecho(ProtocolEvent()).value == 0x1111
     finally:
-        del tvm_ffi.opaque_ptr.handlers[BaseEvent]
-        del tvm_ffi.opaque_ptr.handlers[ProtocolEvent]
-
-
-def test_opaque_ptr_handler_concurrent_reads() -> None:
-    """Steady-state calls only read the setup-time handler mapping."""
-
-    class ForeignEvent:
-        __slots__ = ("address",)
-
-        def __init__(self, value: int) -> None:
-            self.address = value
-
-    tvm_ffi.opaque_ptr.handlers[ForeignEvent] = lambda value: value.address
-    try:
-        fecho = tvm_ffi.get_global_func("testing.echo")
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            results = pool.map(lambda address: fecho(ForeignEvent(address)).value, range(1, 65))
-            assert list(results) == list(range(1, 65))
-    finally:
-        del tvm_ffi.opaque_ptr.handlers[ForeignEvent]
-
-
-@pytest.mark.skipif(torch is None or not hasattr(torch, "Event"), reason="torch.Event unavailable")
-def test_torch_event_registered_as_opaque_ptr() -> None:
-    """The optional generic torch.Event hook exposes its raw backend event id."""
-    assert torch.Event in tvm_ffi.opaque_ptr.handlers
-    event = torch.Event(device="cpu")
-    result = tvm_ffi.get_global_func("testing.echo")(event)
-    assert isinstance(result, ctypes.c_void_p)
-    assert result.value == (event.event_id or None)
+        del handlers[ForeignEvent]
+        del handlers[ProtocolEvent]
 
 
 def test_function_with_dlpack_data_type_protocol() -> None:

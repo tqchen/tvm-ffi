@@ -92,7 +92,6 @@ if TYPE_CHECKING or not _is_config_mode():
     from . import serialization
     from . import access_path
     from . import dataclasses
-    from . import opaque_ptr
     from . import structural
     from . import cpp
 
@@ -180,7 +179,6 @@ __all__ = [
     "init_ffi_api",
     "load_module",
     "method",
-    "opaque_ptr",
     "register_error",
     "register_global_func",
     "register_object",

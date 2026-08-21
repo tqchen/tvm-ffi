@@ -206,6 +206,8 @@ class DLTensorTestWrapper:
 
 def _dltensor_test_wrapper_c_dlpack_from_pyobject_as_intptr() -> int: ...
 
+_OPAQUE_PTR_HANDLERS: dict[type, Callable[[Any], int]]
+
 class Function(Object):
     @property
     def release_gil(self) -> bool: ...

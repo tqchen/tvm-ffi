@@ -177,14 +177,12 @@ class ForeignWorkspace:
         self.address = address
 
 
-tvm_ffi.opaque_ptr.handlers[ForeignWorkspace] = lambda workspace: workspace.address
+tvm_ffi.core._OPAQUE_PTR_HANDLERS[ForeignWorkspace] = lambda workspace: workspace.address
 ```
 
-Configure {py:data}`tvm_ffi.opaque_ptr.handlers` before instances of those classes are passed to
-FFI, then treat the mapping as read-only while FFI calls are running. Dispatch matches exact
-classes rather than subclasses, and a class's own `__tvm_ffi_opaque_ptr__` takes precedence. When
-PyTorch provides the generic `torch.Event` class, TVM FFI adds its documented raw `event_id` to
-this mapping without making PyTorch a required dependency.
+Configure `tvm_ffi.core._OPAQUE_PTR_HANDLERS` before instances of those classes are passed to FFI,
+then treat the mapping as read-only while FFI calls are running. Dispatch matches exact classes
+rather than subclasses, and a class's own `__tvm_ffi_opaque_ptr__` takes precedence.
 
 ## Container Types
 
