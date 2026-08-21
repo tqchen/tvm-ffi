@@ -551,6 +551,11 @@ cdef int TVMFFIPyArgSetterFFIOpaquePtrCompatible_(
 
 
 _OPAQUE_PTR_HANDLERS = {}
+"""Map exact Python classes to their setup-time opaque-pointer handlers.
+
+Populate this dictionary before instances of registered classes are passed to
+TVM FFI, then treat it as read-only while FFI calls are running.
+"""
 
 
 cdef object _lookup_opaque_ptr_handler(object type_cls):

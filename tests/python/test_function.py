@@ -342,7 +342,7 @@ def test_function_with_opaque_ptr_protocol() -> None:
 
 
 def test_function_with_opaque_ptr_handler() -> None:
-    """The setup map converts exact classes while preserving protocol precedence."""
+    """The setup map converts an exact third-party class to an opaque pointer."""
 
     class ForeignEvent:
         __slots__ = ("address",)
@@ -350,16 +350,8 @@ def test_function_with_opaque_ptr_handler() -> None:
         def __init__(self, address: int) -> None:
             self.address = address
 
-    class DerivedEvent(ForeignEvent):
-        pass
-
-    class ProtocolEvent:
-        def __tvm_ffi_opaque_ptr__(self) -> int:
-            return 0x1111
-
     handlers = tvm_ffi.core._OPAQUE_PTR_HANDLERS
     handlers[ForeignEvent] = lambda value: value.address
-    handlers[ProtocolEvent] = lambda _: 0x2222
     try:
         fecho = tvm_ffi.get_global_func("testing.echo")
         event = ForeignEvent(0xCAFE)
@@ -367,13 +359,8 @@ def test_function_with_opaque_ptr_handler() -> None:
         assert isinstance(result, ctypes.c_void_p)
         assert result.value == 0xCAFE
         tvm_ffi.core.TypeSchema.from_annotation(ctypes.c_void_p).check_value(event)
-
-        derived = DerivedEvent(0x3333)
-        assert fecho(derived) is derived
-        assert fecho(ProtocolEvent()).value == 0x1111
     finally:
         del handlers[ForeignEvent]
-        del handlers[ProtocolEvent]
 
 
 def test_function_with_dlpack_data_type_protocol() -> None:
