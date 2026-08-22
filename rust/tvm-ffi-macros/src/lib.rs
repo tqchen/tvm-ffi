@@ -25,8 +25,7 @@ mod match_any;
 mod object_macros;
 mod utils;
 
-/// Generate typed structural visit or map dispatch from the `visit_*` or
-/// `map_*` methods in an inherent implementation.
+/// Generate `walk`, `map`, `visit`, or `mutate` dispatch from an inherent impl.
 #[proc_macro_error]
 #[proc_macro_attribute]
 pub fn dispatch(attr: TokenStream, item: TokenStream) -> TokenStream {
