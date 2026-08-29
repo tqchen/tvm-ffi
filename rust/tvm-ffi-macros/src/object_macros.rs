@@ -161,8 +161,15 @@ pub fn derive_object_ref(input: proc_macro::TokenStream) -> TokenStream {
                 this.data
             }
             #[inline]
-            fn from_data(data: ObjectArc<Self::ContainerType>) -> Self {
+            unsafe fn from_data(data: ObjectArc<Self::ContainerType>) -> Self {
                 Self { data}
+            }
+        }
+
+        impl ::std::convert::From<&#struct_name> for #struct_name {
+            #[inline]
+            fn from(value: &#struct_name) -> Self {
+                value.clone()
             }
         }
 
