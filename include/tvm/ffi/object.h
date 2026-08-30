@@ -1436,6 +1436,7 @@ struct TypeTraits<ObjectPtr<TObject>,
     }
     TVMFFIObject* obj_ptr = details::ObjectUnsafe::TVMFFIObjectPtrFromObjectPtr(src);
     result->type_index = obj_ptr->type_index;
+    TVM_FFI_UNSAFE_ASSUME(result->type_index >= TypeIndex::kTVMFFIStaticObjectBegin);
     result->zero_padding = 0;
     TVM_FFI_CLEAR_PTR_PADDING_IN_FFI_ANY(result);
     result->v_obj = obj_ptr;
@@ -1448,6 +1449,7 @@ struct TypeTraits<ObjectPtr<TObject>,
     }
     TVMFFIObject* obj_ptr = details::ObjectUnsafe::MoveObjectPtrToTVMFFIObjectPtr(std::move(src));
     result->type_index = obj_ptr->type_index;
+    TVM_FFI_UNSAFE_ASSUME(result->type_index >= TypeIndex::kTVMFFIStaticObjectBegin);
     result->zero_padding = 0;
     TVM_FFI_CLEAR_PTR_PADDING_IN_FFI_ANY(result);
     result->v_obj = obj_ptr;
@@ -1543,6 +1545,7 @@ struct ObjectRefTypeTraitsBase : public TypeTraitsBase {
     }
     TVMFFIObject* obj_ptr = details::ObjectUnsafe::TVMFFIObjectPtrFromObjectRef(src);
     result->type_index = obj_ptr->type_index;
+    TVM_FFI_UNSAFE_ASSUME(result->type_index >= TypeIndex::kTVMFFIStaticObjectBegin);
     result->zero_padding = 0;
     TVM_FFI_CLEAR_PTR_PADDING_IN_FFI_ANY(result);
     result->v_obj = obj_ptr;
@@ -1557,6 +1560,7 @@ struct ObjectRefTypeTraitsBase : public TypeTraitsBase {
     }
     TVMFFIObject* obj_ptr = details::ObjectUnsafe::MoveObjectRefToTVMFFIObjectPtr(std::move(src));
     result->type_index = obj_ptr->type_index;
+    TVM_FFI_UNSAFE_ASSUME(result->type_index >= TypeIndex::kTVMFFIStaticObjectBegin);
     result->zero_padding = 0;
     TVM_FFI_CLEAR_PTR_PADDING_IN_FFI_ANY(result);
     result->v_obj = obj_ptr;
@@ -1660,6 +1664,7 @@ struct TypeTraits<TObject*, std::enable_if_t<std::is_base_of_v<Object, TObject>>
   TVM_FFI_INLINE static void CopyToAnyView(TObject* src, TVMFFIAny* result) {
     TVMFFIObject* obj_ptr = details::ObjectUnsafe::GetHeader(src);
     result->type_index = obj_ptr->type_index;
+    TVM_FFI_UNSAFE_ASSUME(result->type_index >= TypeIndex::kTVMFFIStaticObjectBegin);
     result->zero_padding = 0;
     TVM_FFI_CLEAR_PTR_PADDING_IN_FFI_ANY(result);
     result->v_obj = obj_ptr;
@@ -1668,6 +1673,7 @@ struct TypeTraits<TObject*, std::enable_if_t<std::is_base_of_v<Object, TObject>>
   TVM_FFI_INLINE static void MoveToAny(TObject* src, TVMFFIAny* result) {
     TVMFFIObject* obj_ptr = details::ObjectUnsafe::GetHeader(src);
     result->type_index = obj_ptr->type_index;
+    TVM_FFI_UNSAFE_ASSUME(result->type_index >= TypeIndex::kTVMFFIStaticObjectBegin);
     result->zero_padding = 0;
     TVM_FFI_CLEAR_PTR_PADDING_IN_FFI_ANY(result);
     result->v_obj = obj_ptr;
