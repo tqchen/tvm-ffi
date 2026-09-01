@@ -24,6 +24,7 @@
 
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -155,6 +156,63 @@ TEST(StructuralMap, PreOrderRecursivelyMapsCallbackResult) {
   EXPECT_FALSE(mapped_value.same_as(replacement));
   EXPECT_EQ(replacement[0].cast<int64_t>(), 10);
   EXPECT_EQ(mapped_value[0].cast<int64_t>(), 11);
+}
+
+TEST(StructuralMap, AcceptsExpectedCallbackReturnTypes) {
+  static_assert(std::is_convertible_v<Expected<TVar>, Expected<Any>>,
+                "Expected<T> should implicitly convert to Expected<Any>");
+  static_assert(std::is_convertible_v<TVar, Expected<Any>>,
+                "Bare values convertible to Any should convert to Expected<Any>");
+  TVar root("n");
+
+  TVar bare = StructuralMap<WalkOrder::kPostOrder>(root, [](const TVar&) -> TVar {
+                return TVar("bare");
+              }).cast<TVar>();
+  EXPECT_EQ(bare->name, "bare");
+
+  // Any already converted directly to Expected<Any> before Expected<U> support was added.
+  TVar any = StructuralMap<WalkOrder::kPostOrder>(root, [](const TVar&) -> Any {
+               return Any(TVar("any"));
+             }).cast<TVar>();
+  EXPECT_EQ(any->name, "any");
+
+  TVar expected_object =
+      StructuralMap<WalkOrder::kPostOrder>(root, [](const TVar&) -> Expected<TVar> {
+        return TVar("expected-object");
+      }).cast<TVar>();
+  EXPECT_EQ(expected_object->name, "expected-object");
+
+  TVar expected_any = StructuralMap<WalkOrder::kPostOrder>(root, [](const TVar&) -> Expected<Any> {
+                        return Any(TVar("expected-any"));
+                      }).cast<TVar>();
+  EXPECT_EQ(expected_any->name, "expected-any");
+
+  auto check_error = [](auto callback, const char* expected_message) {
+    Expected<Any> result =
+        StructuralMapExpected<WalkOrder::kPostOrder>(TVar("n"), std::move(callback));
+    ASSERT_TRUE(result.is_err());
+    EXPECT_EQ(result.error().kind(), "ValueError");
+    EXPECT_EQ(result.error().message(), expected_message);
+  };
+  check_error(
+      [](const TVar&) -> Expected<TVar> {
+        return Error("ValueError", "expected object error", "");
+      },
+      "expected object error");
+  check_error(
+      [](const TVar&) -> Expected<Any> { return Error("ValueError", "expected any error", ""); },
+      "expected any error");
+  check_error([](const TVar&) -> Any { return Any(Error("ValueError", "any error", "")); },
+              "any error");
+  check_error([](const TVar&) -> Error { return Error("ValueError", "direct error", ""); },
+              "direct error");
+  check_error(
+      [](const TVar&) -> Unexpected<Error> {
+        return Unexpected(Error("ValueError", "unexpected error", ""));
+      },
+      "unexpected error");
+  check_error([](const TVar&) -> Expected<TVar> { throw Error("ValueError", "thrown error", ""); },
+              "thrown error");
 }
 
 template <WalkOrder order>
