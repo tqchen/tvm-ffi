@@ -44,6 +44,7 @@
 #include <string>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 
 namespace tvm {
@@ -552,7 +553,7 @@ namespace details {
  *
  * \tparam order Callback placement relative to child mapping.
  * \tparam Dispatch Callback dispatcher with signature
- *                  ``Expected<Any>(AnyView, TVMFFIDefRegionKind)``.
+ *                  ``std::optional<Expected<Any>>(AnyView, TVMFFIDefRegionKind)``.
  *                  \sa StructuralMapCallbackChain
  */
 template <WalkOrder order, typename Dispatch>
@@ -617,12 +618,12 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
           Error("TypeError", "Variable-remap key must be an object-backed value", ""));
     }
     try {
-      ObjectRef var_ref = var.cast<ObjectRef>();
-      std::optional<Any> result = var_remap_.Get(var_ref);
-      if (!result.has_value()) {
+      const Object* var_ptr = var.as<Object>();
+      auto it = var_remap_.find(var_ptr);
+      if (it == var_remap_.end()) {
         return Any(nullptr);
       }
-      return *std::move(result);
+      return it->second;
     } catch (const Error& err) {
       return Unexpected(err);
     }
@@ -640,9 +641,8 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
           Error("TypeError", "Variable-remap key must be an object-backed value", ""));
     }
     try {
-      ObjectRef var_ref = var.cast<ObjectRef>();
       Any owned_mapped_value(mapped_value);
-      var_remap_.Set(var_ref, owned_mapped_value);
+      var_remap_.insert_or_assign(var.as<Object>(), std::move(owned_mapped_value));
       return Expected<void>();
     } catch (const Error& err) {
       return Unexpected(err);
@@ -681,10 +681,15 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
   Expected<Any> MaybeInplaceMutateImpl(AnyView value) noexcept {
     return MutateWithIdentityRemapExpected(value, [&]() -> Expected<Any> {
       if constexpr (order == WalkOrder::kPreOrder) {
-        Expected<Any> callback_result = dispatch_(value, def_region_kind());
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(callback_result, value);
+        std::optional<Expected<Any>> callback_result = dispatch_(value, def_region_kind());
+        if (!callback_result.has_value()) {
+          Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
+          TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
+          return result;
+        }
         // A pre-order result can be mutated in place if unchanged or uniquely owned.
-        const Any& mapped_value = ExpectedUnsafe::GetData(callback_result);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(*callback_result, value);
+        const Any& mapped_value = ExpectedUnsafe::GetData(*callback_result);
         const TVMFFIAny* mapped_data = AnyUnsafe::TVMFFIAnyPtrFromAny(mapped_value);
         const TVMFFIAny input_data = value.CopyToTVMFFIAny();
         if (mapped_data->type_index != input_data.type_index ||
@@ -702,7 +707,7 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
         // temporary reference before checking whether the borrowed input is
         // uniquely owned, otherwise the callback itself defeats in-place
         // mutation for every non-matching node.
-        callback_result = Expected<Any>(Any(nullptr));
+        callback_result.reset();
         Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
         TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
         return result;
@@ -711,9 +716,10 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
         TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
 
         const Any& mapped_value = ExpectedUnsafe::GetData(result);
-        Expected<Any> callback_result = dispatch_(mapped_value, def_region_kind());
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(callback_result, mapped_value);
-        return callback_result;
+        std::optional<Expected<Any>> callback_result = dispatch_(mapped_value, def_region_kind());
+        if (!callback_result.has_value()) return result;
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(*callback_result, mapped_value);
+        return *std::move(callback_result);
       }
     });
   }
@@ -726,10 +732,12 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
   Expected<Any> MutateImpl(AnyView value) noexcept {
     return MutateWithIdentityRemapExpected(value, [&]() -> Expected<Any> {
       if constexpr (order == WalkOrder::kPreOrder) {
-        Expected<Any> callback_result = dispatch_(value, def_region_kind());
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(callback_result, value);
-
-        const Any& mapped_value = ExpectedUnsafe::GetData(callback_result);
+        std::optional<Expected<Any>> callback_result = dispatch_(value, def_region_kind());
+        if (!callback_result.has_value()) {
+          return DefaultMutateExpected(value);
+        }
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(*callback_result, value);
+        const Any& mapped_value = ExpectedUnsafe::GetData(*callback_result);
         Expected<Any> result = DefaultMutateExpected(mapped_value);
         TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, mapped_value);
         return result;
@@ -738,9 +746,10 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
         TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
 
         const Any& mapped_value = ExpectedUnsafe::GetData(result);
-        Expected<Any> callback_result = dispatch_(mapped_value, def_region_kind());
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(callback_result, mapped_value);
-        return callback_result;
+        std::optional<Expected<Any>> callback_result = dispatch_(mapped_value, def_region_kind());
+        if (!callback_result.has_value()) return result;
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(*callback_result, mapped_value);
+        return *std::move(callback_result);
       }
     });
   }
@@ -749,7 +758,7 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
   Dispatch dispatch_;
 
   /*! \brief Identity-substitution table. */
-  Map<ObjectRef, Any> var_remap_;
+  std::unordered_map<const Object*, Any> var_remap_;
 };
 
 /*!
@@ -767,7 +776,8 @@ struct StructuralMapCallbackChain {
   static auto FromChain(Callbacks... callbacks) {
     auto callback_tuple = std::make_tuple(std::move(callbacks)...);
     return [callbacks = std::move(callback_tuple)](
-               AnyView value, TVMFFIDefRegionKind kind) mutable -> Expected<Any> {
+               AnyView value, TVMFFIDefRegionKind kind) mutable
+               -> std::optional<Expected<Any>> {
       try {
         std::optional<Expected<Any>> result;
         // Fold expression: each TryCallLink returns empty std::optional on no-match
@@ -776,11 +786,11 @@ struct StructuralMapCallbackChain {
             [&](auto&... callback) { (... || (result = TryCallLink(callback, value, kind))); },
             callbacks);
         if (result.has_value()) {
-          return *std::move(result);
+          return result;
         }
-        return Any(value);
+        return std::nullopt;
       } catch (const Error& err) {
-        return Unexpected(err);
+        return Expected<Any>(Unexpected(err));
       }
     };
   }

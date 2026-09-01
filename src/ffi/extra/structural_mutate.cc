@@ -51,7 +51,7 @@ Expected<Any> StructuralMapExpected(
     AnyView root, const Array<Tuple<int32_t, Function>>& callbacks,
     const Array<Tuple<int32_t, Function>>& callbacks_with_def_region_kind, int order) noexcept {
   auto dispatch = [callbacks, callbacks_with_def_region_kind](
-                      AnyView x, TVMFFIDefRegionKind kind) -> Expected<Any> {
+                      AnyView x, TVMFFIDefRegionKind kind) -> std::optional<Expected<Any>> {
     for (const auto& entry : callbacks) {
       int32_t type_index = entry.template get<0>();
       if (!RuntimeTypeIndexMatch(x.type_index(), type_index)) {
@@ -68,7 +68,7 @@ Expected<Any> StructuralMapExpected(
       Function fn = entry.template get<1>();
       return fn.CallExpected<Any>(x, kind);
     }
-    return Any(x);
+    return std::nullopt;
   };
 
   if (order == static_cast<int>(WalkOrder::kPreOrder)) {

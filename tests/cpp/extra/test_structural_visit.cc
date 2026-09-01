@@ -326,6 +326,23 @@ TEST(StructuralVisitor, WalkPostOrder) {
   ExpectTrace(visited, {"lhs", "rhs", "pair"});
 }
 
+TEST(StructuralVisitor, WalkPostOrderDeduplicatesSharedObjectsWhenRequested) {
+  ObjectRef shared = TVar("shared");
+  ObjectRef root = TPair(shared, shared);
+  std::vector<const Object*> visited;
+
+  Optional<VisitInterrupt> result = StructuralWalk<WalkOrder::kPostOrder, true>(
+      root, [&](const ObjectRef& node) -> Expected<WalkResult> {
+        visited.push_back(node.get());
+        return WalkResult::Advance();
+      });
+
+  EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(std::count(visited.begin(), visited.end(), shared.get()), 1);
+  ASSERT_FALSE(visited.empty());
+  EXPECT_EQ(visited.back(), root.get());
+}
+
 TEST(StructuralVisitor, WalkInterrupts) {
   ObjectRef lhs = TVar("lhs");
   ObjectRef rhs = TVar("rhs");

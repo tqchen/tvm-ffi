@@ -42,6 +42,7 @@
 #include <string>
 #include <tuple>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 
 namespace tvm {
@@ -485,7 +486,7 @@ namespace details {
  *                   the active def-region kind. User callbacks wrapped by this dispatcher may
  *                   accept either ``(value)`` or ``(value, def_region_kind)``.
  */
-template <WalkOrder order, typename Dispatch>
+template <WalkOrder order, bool deduplicate, typename Dispatch>
 class StructuralWalkVisitorObj : public StructuralVisitorObj {
  public:
   /*!
@@ -527,6 +528,13 @@ class StructuralWalkVisitorObj : public StructuralVisitorObj {
       return details::ExpectedUnsafe::MoveToTVMFFIAny(
           Expected<Optional<VisitInterrupt>>(std::nullopt));
     }
+    if constexpr (deduplicate) {
+      const Object* object = value.as<Object>();
+      if (object != nullptr && !visited_.insert(object).second) {
+        return details::ExpectedUnsafe::MoveToTVMFFIAny(
+            Expected<Optional<VisitInterrupt>>(std::nullopt));
+      }
+    }
     if constexpr (order == WalkOrder::kPreOrder) {
       auto result = dispatch_(value, this->def_region_kind());
       TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
@@ -556,6 +564,7 @@ class StructuralWalkVisitorObj : public StructuralVisitorObj {
 
   /*! \brief Composed dispatch closure invoked once per visited node. */
   Dispatch dispatch_;
+  std::unordered_set<const Object*> visited_;
 };
 
 /*!
@@ -695,13 +704,13 @@ struct StructuralWalkCallbackChain {
  *
  * \note Return type of each callback should be ``Expected<WalkResult>``.
  */
-template <WalkOrder order, typename... Callbacks>
+template <WalkOrder order, bool deduplicate = false, typename... Callbacks>
 Expected<Optional<VisitInterrupt>> StructuralWalkExpected(AnyView root,
                                                           Callbacks&&... callbacks) noexcept {
   static_assert(sizeof...(Callbacks) != 0, "StructuralWalk requires at least one callback");
   auto dispatch =
       details::StructuralWalkCallbackChain::FromChain(std::forward<Callbacks>(callbacks)...);
-  using Visitor = details::StructuralWalkVisitorObj<order, decltype(dispatch)>;
+  using Visitor = details::StructuralWalkVisitorObj<order, deduplicate, decltype(dispatch)>;
   StructuralVisitor visitor(make_object<Visitor>(std::move(dispatch)));
   return visitor->VisitExpected(root);
 }
@@ -723,9 +732,11 @@ Expected<Optional<VisitInterrupt>> StructuralWalkExpected(AnyView root,
  *
  * \note Return type of each callback should be ``Expected<WalkResult>``.
  */
-template <WalkOrder order, typename... Callbacks>
+template <WalkOrder order, bool deduplicate = false, typename... Callbacks>
 Optional<VisitInterrupt> StructuralWalk(AnyView root, Callbacks&&... callbacks) {
-  return StructuralWalkExpected<order>(root, std::forward<Callbacks>(callbacks)...).value();
+  return StructuralWalkExpected<order, deduplicate>(root,
+                                                    std::forward<Callbacks>(callbacks)...)
+      .value();
 }
 
 }  // namespace ffi
