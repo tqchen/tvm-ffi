@@ -812,17 +812,20 @@ struct StructuralMapCallbackChain {
 
   /*!
    * \brief Invoke a matched callback with optional def-region context.
-   * \tparam Callback Callable whose result is convertible to ``Expected<Any>``.
+   * \tparam Callback Callable returning a value implicitly convertible to ``Expected<Any>``.
    * \tparam Value Type of the converted value passed to the callback.
    * \param callback The matched callback.
    * \param value The converted value passed to the callback.
    * \param kind The active def-region kind.
-   * \return The callback result converted to ``Expected<Any>``.
+   * \return The callback result normalized to ``Expected<Any>``.
    */
   template <typename Callback, typename Value>
   TVM_FFI_INLINE static Expected<Any> InvokeCallbackLink(Callback& callback, Value&& value,
                                                          TVMFFIDefRegionKind kind) {
     using FuncInfo = FunctionInfo<std::decay_t<Callback>>;
+    static_assert(std::is_convertible_v<typename FuncInfo::RetType, Expected<Any>>,
+                  "StructuralMap callbacks must return a replacement value, Error, Unexpected, "
+                  "or Expected<U> implicitly convertible to Expected<Any>");
     if constexpr (FuncInfo::num_args == 1) {
       return callback(std::forward<Value>(value));
     } else {
@@ -843,8 +846,9 @@ struct StructuralMapCallbackChain {
  * argument is borrowed and must not be retained after the callback returns.
  *
  * Each callback should follow map semantics: it must not mutate the input in place and should
- * return ``Expected<Any>`` containing either the unchanged input or its replacement. An ``Error``
- * stops the mapping. In pre-order, an unchanged input or uniquely owned replacement may
+ * return a bare Any-convertible replacement or ``Expected<U>`` where ``U`` is Any-convertible.
+ * A callback may instead return an error value or throw ``Error`` to stop the mapping. In
+ * pre-order, an unchanged input or uniquely owned replacement may
  * continue through ``MaybeInplaceMutate``; a shared replacement uses ``Mutate``. In post-order,
  * the callback runs after the node's optional in-place mutation. In-place mutation is available
  * only through an explicit ``__s_maybe_inplace_mutate__`` hook.
@@ -877,10 +881,12 @@ struct StructuralMapCallbackChain {
  * \tparam Callbacks Callback types whose first parameters select matching values.
  * \param root The borrowed root value to map.
  * \param callbacks Callbacks tested in declaration order. Each accepts ``(value)`` or
- *        ``(value, def_region_kind)`` and should return ``Expected<Any>``.
+ *        ``(value, def_region_kind)`` and returns a bare Any-convertible replacement,
+ *        ``Expected<U>`` where ``U`` is Any-convertible, or an error value.
  * \return The mapped owning value, or an Error if mapping or a callback fails.
  *
- * \note Return type of each callback should be ``Expected<Any>``.
+ * \note Returning ``Expected<U>`` expresses errors as values; throwing ``Error`` is also
+ *       supported and is converted to the error state.
  */
 template <WalkOrder order, typename... Callbacks>
 Expected<Any> StructuralMapExpected(AnyView root, Callbacks&&... callbacks) noexcept {
@@ -902,11 +908,13 @@ Expected<Any> StructuralMapExpected(AnyView root, Callbacks&&... callbacks) noex
  * \tparam Callbacks Callback types whose first parameters select matching values.
  * \param root The borrowed root value to map.
  * \param callbacks Callbacks tested in declaration order. Each accepts ``(value)`` or
- *        ``(value, def_region_kind)`` and should return ``Expected<Any>``.
+ *        ``(value, def_region_kind)`` and returns a bare Any-convertible replacement,
+ *        ``Expected<U>`` where ``U`` is Any-convertible, or an error value.
  * \return The mapped owning value.
  * \throws Error if mapping or a callback fails.
  *
- * \note Return type of each callback should be ``Expected<Any>``.
+ * \note Returning ``Expected<U>`` expresses errors as values; throwing ``Error`` is also
+ *       supported and is rethrown by this interface.
  */
 template <WalkOrder order, typename... Callbacks>
 Any StructuralMap(AnyView root, Callbacks&&... callbacks) {

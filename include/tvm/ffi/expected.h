@@ -64,9 +64,24 @@ template <typename E>
 Unexpected(E) -> Unexpected<E>;
 #endif
 
+template <typename T>
+class Expected;
+
 namespace details {
 
 struct ExpectedUnsafe;
+
+template <typename T>
+inline constexpr bool is_expected_v = false;
+
+template <typename T>
+inline constexpr bool is_expected_v<Expected<T>> = true;
+
+template <typename T>
+inline constexpr bool is_unexpected_v = false;
+
+template <typename E>
+inline constexpr bool is_unexpected_v<Unexpected<E>> = true;
 
 }  // namespace details
 
@@ -110,6 +125,52 @@ class Expected {
    */
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
   Expected(T value) : data_(Any(std::move(value))) {}
+
+  /*!
+   * \brief Implicit constructor from a different success value type.
+   * \tparam U Source type implicitly convertible to ``T``.
+   * \param value The success value to convert.
+   */
+  // Excludes Error, Unexpected, and Expected deliberately: Any subsumes all three, so without
+  // these an Expected<Any> built from an error would store it as a success value. The Expected
+  // exclusion also keeps this overload disjoint from Expected(Expected<U>) instead of relying on
+  // partial ordering to choose between two paths that must agree.
+  //
+  // std::expected admits constructible sources and uses C++20 explicit(bool) to separate its
+  // implicit subset. Under C++17, convertibility keeps exactly that implicit subset and drops only
+  // explicit-only conversions; is_constructible plus explicit(bool) can extend it after an upgrade.
+  template <typename U, typename = std::enable_if_t<!details::is_expected_v<std::decay_t<U>> &&
+                                                    !details::is_unexpected_v<std::decay_t<U>> &&
+                                                    !std::is_base_of_v<Error, std::decay_t<U>> &&
+                                                    std::is_convertible_v<U, T>>>
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  Expected(U&& value) : data_(Any(T(std::forward<U>(value)))) {}
+
+  /*!
+   * \brief Implicit converting constructor from another Expected success type.
+   * \tparam U Source success type whose storage is subsumed by or implicitly convertible to ``T``.
+   * \param other The Expected value to convert.
+   */
+  // Subsumption belongs only here: this source already contains a materialized U or Error whose
+  // representation may be reused. Applying type_subsumes_v<Any, U> to the bare-value constructor
+  // would accept every U, including types that cannot be materialized as Any, and fail in its body.
+  // Taking by value gives a local to move from, copying an lvalue source and moving an rvalue. The
+  // implicit copy constructor still wins for Expected<T> itself by the non-template tiebreaker.
+  template <typename U,
+            typename = std::enable_if_t<!std::is_void_v<U> &&
+                                        (type_subsumes_v<T, U> || std::is_convertible_v<U, T>)>>
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  Expected(Expected<U> other) {
+    if constexpr (type_subsumes_v<T, U>) {
+      // data_ holds a T or an Error. Subsumption proves the source representation already
+      // satisfies that invariant, so the Any moves without inspecting its state. Do not make
+      // this unconditional: value() reads back through MoveFromAnyAfterCheck<T>, whose check is
+      // the success/error state, not the type.
+      data_ = std::move(other.data_);
+    } else {
+      data_ = other.is_err() ? Any(std::move(other).error()) : Any(T(std::move(other).value()));
+    }
+  }
 
   /*!
    * \brief Implicit constructor from an error.
@@ -199,6 +260,8 @@ class Expected {
   }
 
  private:
+  template <typename>
+  friend class Expected;
   Expected() = default;
 
   friend struct details::ExpectedUnsafe;
