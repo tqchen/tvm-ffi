@@ -698,6 +698,11 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
           TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, mapped_value);
           return result;
         }
+        // The unchanged callback result owns the input object.  Release that
+        // temporary reference before checking whether the borrowed input is
+        // uniquely owned, otherwise the callback itself defeats in-place
+        // mutation for every non-matching node.
+        callback_result = Expected<Any>(Any(nullptr));
         Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
         TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
         return result;
