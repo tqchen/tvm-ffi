@@ -156,15 +156,25 @@ which leaves properties of the host binary rather than of the node set:
 - **Type-table density.** The `__s_mutate__` attribute column spans 162 entries
   in the standalone process and 290 in TVM, and the fixture node types land at
   type indices 155-160 rather than 182-207. `DefaultMutateExpected` indexes that
-  column once per node, so a denser table costs more.
+  column once per node, so a denser table costs more. This one was measured
+  rather than asserted: a scratch probe that registers 128 extra expression node
+  types, bringing the column to 291 entries, and is otherwise the identical
+  source compiled by the identical command, moves rung 2a from -8.6%/-6.4% to
+  -4.2%/-1.3% against TVM. Column density therefore accounts for roughly half to
+  all of the rung 2a residual. It is an attribution experiment, not a change to
+  make: padding the table pushes the other three mutate rungs from within 2% out
+  to +3-9%, so the unpadded benchmark is the better overall model.
 - **Build configuration.** The calibration TVM build sets
   `HIDE_PRIVATE_SYMBOLS=OFF` to simplify linking the driver, which changes
   symbol visibility and therefore interprocedural optimization inside TVM.
 
 The residual is therefore an optimistic bias of the standalone model on the
-pure-hook rungs, bounded at about 9%, and it comes from where the code is placed
-rather than from what the code does. Both bullet points are host-binary effects
-that the tvm-ffi checkout cannot recreate; they are recorded rather than closed.
+pure-hook rungs, bounded at about 9%, and it comes from how the host binary is
+built rather than from what the node set is. Type-table density is measured to
+carry about half of it; instruction footprint is the remaining candidate and was
+not separated further, because a 180x `.text` difference cannot be recreated in
+a benchmark that is meant to build from a tvm-ffi checkout alone. Both are
+recorded rather than closed.
 
 ## The hook body was the dominant error
 
