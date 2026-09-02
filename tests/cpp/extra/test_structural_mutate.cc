@@ -264,6 +264,27 @@ TEST(StructuralMap, ReusesFinalCallbackResultForRepeatedVar) {
   CheckRepeatedVarRemap<WalkOrder::kPostOrder>();
 }
 
+TEST(StructuralMap, DefinitionDoesNotSuppressLaterUseCallback) {
+  TVar var("n");
+  TFunc root({var}, {var}, std::nullopt);
+  int callback_count = 0;
+
+  TFunc mapped =
+      StructuralMap<WalkOrder::kPostOrder>(
+          root,
+          OnStructuralIdentity(
+              [&](const TVarObj* value, TVMFFIDefRegionKind kind) -> Expected<Any> {
+                ++callback_count;
+                EXPECT_EQ(kind, kTVMFFIDefRegionKindNone);
+                return Any(TVar(value->name + "-mapped"));
+              }))
+          .cast<TFunc>();
+
+  EXPECT_EQ(callback_count, 1);
+  EXPECT_TRUE(mapped->params[0].same_as(var));
+  EXPECT_EQ(mapped->body[0].as<TVar>().value()->name, "n-mapped");
+}
+
 template <WalkOrder order>
 void CheckIdentityOnlyCallback() {
   TVar var("n");

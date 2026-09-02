@@ -376,6 +376,12 @@ class StructuralMutatorObj : public Object {
     if (!is_remappable_identity) {
       return invoke_mutation(false);
     }
+    // A definition is traversed so its dynamic metadata remains visible, but it is not a
+    // substitution occurrence.  Bypass callback dispatch and identity caching here; later use
+    // occurrences must still be eligible for their callback.
+    if (def_region_kind() != kTVMFFIDefRegionKindNone) {
+      return invoke_mutation(false);
+    }
 
     Expected<Any> mapped_value = VarRemapGetExpected(value);
     if (TVM_FFI_PREDICT_FALSE(mapped_value.is_err())) {
