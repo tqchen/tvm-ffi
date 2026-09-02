@@ -391,6 +391,47 @@ struct ExpectedUnsafe {
   }
 
   /*!
+   * \brief Move-access the underlying Any storage.
+   * \tparam T The Expected success type.
+   * \param result The Expected value to move from.
+   * \return Rvalue reference to the raw Any storage.
+   */
+  template <typename T>
+  TVM_FFI_INLINE static Any&& GetData(Expected<T>& result) noexcept {
+    return std::move(result.data_);
+  }
+
+  /*!
+   * \brief Proxy that defers unchecked moved-data conversion to its destination type.
+   *
+   * The producer must already have checked that the Expected stores a successful value.
+   * A destination declared as ``auto`` retains this proxy instead of performing conversion;
+   * callers must use a concrete destination type.
+   */
+  struct CastProxy {
+    Any value;
+
+    template <typename T>
+    TVM_FFI_INLINE operator T() && {  // NOLINT(*-explicit-constructor)
+      if constexpr (!std::is_same_v<T, Any>) {
+        TVM_FFI_DCHECK(value.as<T>().has_value());
+      }
+      return AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(value));
+    }
+  };
+
+  /*!
+   * \brief Move successful Expected storage and defer conversion to the destination type.
+   * \tparam U The Expected success type.
+   * \param result A previously success-checked Expected value.
+   * \return A conversion proxy owning the moved payload.
+   */
+  template <typename U>
+  TVM_FFI_INLINE static CastProxy MoveDataAutoCast(Expected<U>& result) {
+    return CastProxy{std::move(GetData(result))};
+  }
+
+  /*!
    * \brief Read an Expected success value as a compatible raw storage type.
    * \tparam T The type to read from the underlying Any storage, or ``void`` to validate an
    *           ``Expected<void>`` success state.

@@ -385,6 +385,22 @@ TEST(Expected, ExpectedUnsafeGetDataCompatibleStorageType) {
       details::ExpectedUnsafe::GetData(true_result)));
 }
 
+TEST(Expected, ExpectedUnsafeMoveDataAutoCast) {
+  static_assert(
+      std::is_same_v<decltype(details::ExpectedUnsafe::GetData(std::declval<Expected<String>&>())),
+                     Any&&>);
+
+  String original("hello");
+  Expected<String> result = original;
+  String moved = details::ExpectedUnsafe::MoveDataAutoCast(result);
+  EXPECT_EQ(moved, "hello");
+  EXPECT_EQ(details::ExpectedUnsafe::GetData(result).type_index(), TypeIndex::kTVMFFINone);
+
+  Expected<Any> any_result = Any(int64_t{42});
+  Any moved_any = details::ExpectedUnsafe::MoveDataAutoCast(any_result);
+  EXPECT_EQ(moved_any.cast<int64_t>(), 42);
+}
+
 TEST(Expected, ExpectedUnsafeMoveBetweenExpectedStorageTypes) {
   Expected<String> src = String("hello");
   TVMFFIAny raw = details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(src));
