@@ -15,8 +15,13 @@ taskset -c 22 build-benchmark/bin/tvm_ffi_benchmark_structural_map_cost
 
 `TVM_FFI_BENCH_REPEATS` overrides the default iteration count. Run on an
 otherwise idle, performance-governor core and retain the repository SHA with
-the output. The reported unit is median nanoseconds per unique expression node
-over eleven in-process samples.
+the output. The reported unit is median nanoseconds per processed expression
+node over eleven in-process samples.
+
+The target detects whether the checked-out tvm-ffi exposes the historical
+`StructuralWalk<order, deduplicate>` API used by the calibration pin. It enables
+that pin's deduplicating walk when available and otherwise builds against the
+current non-deduplicating walk API.
 
 TVM calibration is intentionally separate from this target. Build
 `tests/benchmark/structural_map_tvm_calibration.cc` against the matching TVM

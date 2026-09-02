@@ -140,7 +140,11 @@ void Run(const char* name, const PrimExpr& root, const Var& target, const PrimEx
   OldSubstitute old_count(target, replacement);
   old_count(root);
   size_t old_mutate_nodes = old_count.visits();
-  size_t map_nodes = name == std::string("base_distinct") ? 15 : 155;
+  size_t map_nodes = 0;
+  ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(root, [&](const Expr& value) -> ffi::Any {
+    ++map_nodes;
+    return ffi::Any(value);
+  });
 
   auto old_walk = [&] {
     OldPostOrder visitor([](const ffi::ObjectRef& value) {

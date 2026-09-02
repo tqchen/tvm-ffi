@@ -106,13 +106,31 @@ test::TestExpr SplitNested(const test::TestVar& fo, const test::TestVar& fi, int
              FloorMod(right, factors[depth]));
 }
 
-size_t CountUnique(const test::TestExpr& root) {
+size_t CountWalkNodes(const test::TestExpr& root) {
   size_t count = 0;
+#ifdef TVM_FFI_BENCHMARK_WALK_DEDUP_TEMPLATE
   ffi::StructuralWalk<ffi::WalkOrder::kPostOrder, true>(
       root, [&](const test::TestExpr&) -> ffi::WalkResult {
         ++count;
         return ffi::WalkResult::Advance();
       });
+#else
+  ffi::StructuralWalk<ffi::WalkOrder::kPostOrder>(root,
+                                                  [&](const test::TestExpr&) -> ffi::WalkResult {
+                                                    ++count;
+                                                    return ffi::WalkResult::Advance();
+                                                  });
+#endif
+  return count;
+}
+
+size_t CountMapNodes(const test::TestExpr& root) {
+  size_t count = 0;
+  ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(root,
+                                                 [&](const test::TestExpr& value) -> ffi::Any {
+                                                   ++count;
+                                                   return ffi::Any(value);
+                                                 });
   return count;
 }
 
@@ -205,22 +223,27 @@ double MedianNs(int repeats, F&& workload) {
 void Run(const char* name, const test::TestExpr& root, const test::TestVar& target,
          const test::TestExpr& replacement, int repeats) {
   test::TestExpr stable_owner = root;
-  size_t walk_nodes = CountUnique(root);
+  size_t walk_nodes = CountWalkNodes(root);
   size_t mutation_nodes = CountOccurrences(root);
-  // StructuralMap identity-memoizes the two shared FreeVars.  The test fixtures
-  // contain (mutation_nodes - map_nodes) repeated FreeVar occurrences.
-  size_t map_nodes =
-      name == std::string("base_shared") || name == std::string("base_distinct") ? 15 : 155;
+  size_t map_nodes = CountMapNodes(root);
   auto old_walk = [&] {
     OldVisitor visitor;
     visitor.Visit(root);
   };
   auto structural_walk = [&] {
+#ifdef TVM_FFI_BENCHMARK_WALK_DEDUP_TEMPLATE
     ffi::StructuralWalk<ffi::WalkOrder::kPostOrder, true>(
         root, [](const test::TestVar&) -> ffi::WalkResult {
           ++sink;
           return ffi::WalkResult::Advance();
         });
+#else
+    ffi::StructuralWalk<ffi::WalkOrder::kPostOrder>(root,
+                                                    [](const test::TestVar&) -> ffi::WalkResult {
+                                                      ++sink;
+                                                      return ffi::WalkResult::Advance();
+                                                    });
+#endif
   };
   auto old_changed = [&] {
     OldMutator mutator(target, replacement);

@@ -25,3 +25,27 @@ set_target_properties(
 )
 target_link_libraries(tvm_ffi_benchmark_structural_map_cost PRIVATE tvm_ffi_shared)
 tvm_ffi_add_cxx_warning(tvm_ffi_benchmark_structural_map_cost)
+
+# The calibrated 2b50d28 API exposed walk deduplication as a template flag;
+# current main has removed that flag. Keep the benchmark source buildable at
+# both the calibration pin and the branch base.
+include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_INCLUDES "${CMAKE_SOURCE_DIR}/include;${CMAKE_SOURCE_DIR}/3rdparty/dlpack/include")
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+check_cxx_source_compiles(
+  "#include <tvm/ffi/extra/structural_visit.h>
+   int main() {
+     tvm::ffi::StructuralWalk<tvm::ffi::WalkOrder::kPostOrder, true>(
+       tvm::ffi::Any(nullptr), [](tvm::ffi::AnyView) {
+         return tvm::ffi::WalkResult::Advance();
+       });
+   }"
+  TVM_FFI_BENCHMARK_HAS_WALK_DEDUP_TEMPLATE
+)
+unset(CMAKE_REQUIRED_INCLUDES)
+unset(CMAKE_TRY_COMPILE_TARGET_TYPE)
+if (TVM_FFI_BENCHMARK_HAS_WALK_DEDUP_TEMPLATE)
+  target_compile_definitions(
+    tvm_ffi_benchmark_structural_map_cost PRIVATE TVM_FFI_BENCHMARK_WALK_DEDUP_TEMPLATE=1
+  )
+endif ()
