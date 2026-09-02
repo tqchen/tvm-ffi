@@ -343,6 +343,61 @@ TEST(StructuralVisitor, WalkPostOrderDeduplicatesSharedObjectsWhenRequested) {
   EXPECT_EQ(visited.back(), root.get());
 }
 
+TEST(StructuralVisitor, WalkPostOrderDedupPreservesNonAdjacentAndUnrelatedNodes) {
+  ObjectRef shared = TVar("shared");
+  ObjectRef middle = TVar("middle");
+  ObjectRef unrelated = TVar("unrelated");
+  ObjectRef left = TPair(shared, middle);
+  ObjectRef right = TPair(unrelated, shared);
+  ObjectRef root = TPair(left, right);
+  std::vector<const Object*> visited;
+
+  Optional<VisitInterrupt> result = StructuralWalk<WalkOrder::kPostOrder, true>(
+      root, [&](const ObjectRef& node) -> Expected<WalkResult> {
+        visited.push_back(node.get());
+        return WalkResult::Advance();
+      });
+
+  EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(std::count(visited.begin(), visited.end(), shared.get()), 1);
+  EXPECT_EQ(std::count(visited.begin(), visited.end(), middle.get()), 1);
+  EXPECT_EQ(std::count(visited.begin(), visited.end(), unrelated.get()), 1);
+  EXPECT_EQ(visited, (std::vector<const Object*>{shared.get(), middle.get(), left.get(),
+                                                 unrelated.get(), right.get(), root.get()}));
+}
+
+TEST(StructuralVisitor, WalkPostOrderDedupDoesNotCompleteInterruptedOrFailedNodes) {
+  ObjectRef shared = TVar("shared");
+  ObjectRef root = TPair(shared, shared);
+  size_t error_callback_count = 0;
+
+  Expected<Optional<VisitInterrupt>> error_result =
+      StructuralWalkExpected<WalkOrder::kPostOrder, true>(
+          root, [&](const ObjectRef& node) -> Expected<WalkResult> {
+            ++error_callback_count;
+            EXPECT_TRUE(node.same_as(shared));
+            return Unexpected(Error("ValueError", "shared callback failed", ""));
+          });
+
+  ASSERT_TRUE(error_result.is_err());
+  EXPECT_EQ(error_result.error().message(), "shared callback failed");
+  EXPECT_EQ(error_callback_count, 1U);
+
+  size_t interrupt_callback_count = 0;
+  Expected<Optional<VisitInterrupt>> interrupt_result =
+      StructuralWalkExpected<WalkOrder::kPostOrder, true>(
+          root, [&](const ObjectRef& node) -> Expected<WalkResult> {
+            ++interrupt_callback_count;
+            EXPECT_TRUE(node.same_as(shared));
+            return WalkResult::Interrupt(VisitInterrupt(String("stop at shared")));
+          });
+
+  ASSERT_FALSE(interrupt_result.is_err());
+  ASSERT_TRUE(interrupt_result.value().has_value());
+  EXPECT_EQ(interrupt_result.value().value()->value.cast<String>(), "stop at shared");
+  EXPECT_EQ(interrupt_callback_count, 1U);
+}
+
 TEST(StructuralVisitor, WalkInterrupts) {
   ObjectRef lhs = TVar("lhs");
   ObjectRef rhs = TVar("rhs");
@@ -452,11 +507,41 @@ TEST(StructuralVisitor, WalkCatchesError) {
   Expected<Optional<VisitInterrupt>> result = StructuralWalkExpected<WalkOrder::kPreOrder>(
       root, [&](const ObjectRef&) -> Expected<WalkResult> {
         TVM_FFI_THROW(ValueError) << "walk callback threw";
+        return WalkResult::Advance();
       });
 
   ASSERT_TRUE(result.is_err());
   EXPECT_EQ(result.error().kind(), "ValueError");
   EXPECT_EQ(result.error().message(), "walk callback threw");
+}
+
+TEST(StructuralVisitor, WalkSingleCallbackDirectDispatchPreservesSemantics) {
+  TVar root("root");
+  int matches = 0;
+  Optional<VisitInterrupt> matched = StructuralWalk<WalkOrder::kPreOrder>(
+      root, [&](const TVar&, TVMFFIDefRegionKind kind) -> Expected<WalkResult> {
+        EXPECT_EQ(kind, kTVMFFIDefRegionKindNone);
+        ++matches;
+        return WalkResult::Advance();
+      });
+  EXPECT_FALSE(matched.has_value());
+  EXPECT_EQ(matches, 1);
+
+  int unmatched_calls = 0;
+  Optional<VisitInterrupt> unmatched = StructuralWalk<WalkOrder::kPreOrder>(
+      root, [&](int64_t) -> Expected<WalkResult> {
+        ++unmatched_calls;
+        return WalkResult::Advance();
+      });
+  EXPECT_FALSE(unmatched.has_value());
+  EXPECT_EQ(unmatched_calls, 0);
+
+  Expected<Optional<VisitInterrupt>> error = StructuralWalkExpected<WalkOrder::kPreOrder>(
+      root, [](const TVar&) -> Expected<WalkResult> {
+        return Unexpected(Error("ValueError", "single callback error", ""));
+      });
+  ASSERT_TRUE(error.is_err());
+  EXPECT_EQ(error.error().message(), "single callback error");
 }
 
 TEST(StructuralVisitor, WalkFirstMatch) {

@@ -215,6 +215,29 @@ TEST(StructuralMap, AcceptsExpectedCallbackReturnTypes) {
               "thrown error");
 }
 
+TEST(StructuralMap, SingleCallbackDirectDispatchPreservesSemantics) {
+  TVar root("root");
+  TVar matched = StructuralMap<WalkOrder::kPostOrder>(
+                     root, [](const TVar&, TVMFFIDefRegionKind kind) -> TVar {
+                       EXPECT_EQ(kind, kTVMFFIDefRegionKindNone);
+                       return TVar("matched");
+                     })
+                     .cast<TVar>();
+  EXPECT_EQ(matched->name, "matched");
+
+  TVar unmatched =
+      StructuralMap<WalkOrder::kPostOrder>(root, [](int64_t value) -> Any { return Any(value); })
+          .cast<TVar>();
+  EXPECT_TRUE(unmatched.same_as(root));
+
+  Expected<Any> error = StructuralMapExpected<WalkOrder::kPostOrder>(
+      root, [](const TVar&) -> Unexpected<Error> {
+        return Unexpected(Error("ValueError", "single map callback error", ""));
+      });
+  ASSERT_TRUE(error.is_err());
+  EXPECT_EQ(error.error().message(), "single map callback error");
+}
+
 template <WalkOrder order>
 void CheckRepeatedVarRemap() {
   TVar var("n");

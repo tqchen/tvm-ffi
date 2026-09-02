@@ -576,6 +576,31 @@ class StructuralWalkVisitorObj : public StructuralVisitorObj {
  * through and traversal continues normally.
  */
 struct StructuralWalkCallbackChain {
+  template <typename Callback>
+  static auto FromChain(Callback callback) {
+    return [callback = std::move(callback)](
+               AnyView x, TVMFFIDefRegionKind kind) mutable -> Expected<WalkResult> {
+      try {
+        using FuncInfo = FunctionInfo<std::decay_t<Callback>>;
+        static_assert(FuncInfo::num_args == 1 || FuncInfo::num_args == 2,
+                      "StructuralWalk callbacks must take one argument (value) or two arguments "
+                      "(value, def-region kind)");
+        using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
+        using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
+        if constexpr (std::is_same_v<TSub, AnyView>) {
+          return InvokeCallback(callback, x, kind);
+        } else if constexpr (std::is_same_v<TSub, Any>) {
+          return InvokeCallback(callback, Any(x), kind);
+        } else if (auto opt = x.template as<TSub>()) {
+          return InvokeCallback(callback, *std::move(opt), kind);
+        }
+        return WalkResult::Advance();
+      } catch (const Error& err) {
+        return Unexpected(err);
+      }
+    };
+  }
+
   /*!
    * \brief Build a dispatcher closure over a chain of typed callbacks.
    * \tparam Callbacks Callable types whose first parameter selects the dispatched
@@ -585,14 +610,17 @@ struct StructuralWalkCallbackChain {
    *         TVMFFIDefRegionKind)``. Each user callback may take either
    *         ``(value)`` or ``(value, def_region_kind)``.
    */
-  template <typename... Callbacks>
-  static auto FromChain(Callbacks... callbacks) {
-    return [=](AnyView x, TVMFFIDefRegionKind kind) mutable -> Expected<WalkResult> {
+  template <typename First, typename Second, typename... Rest>
+  static auto FromChain(First first, Second second, Rest... rest) {
+    return [callbacks = std::make_tuple(std::move(first), std::move(second), std::move(rest)...)](
+               AnyView x, TVMFFIDefRegionKind kind) mutable -> Expected<WalkResult> {
       try {
         Optional<Expected<WalkResult>> result;
         // Fold expression: each TryCallLink returns empty Optional on no-match
         // (falsy) or a result on match (truthy); || short-circuits on first match.
-        (... || (result = TryCallLink(callbacks, x, kind)));
+        std::apply(
+            [&](auto&... callback) { (... || (result = TryCallLink(callback, x, kind))); },
+            callbacks);
         if (result.has_value()) {
           return std::move(result).value();
         }

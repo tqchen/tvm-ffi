@@ -1174,8 +1174,8 @@ template <typename TargetType>
 TVM_FFI_INLINE bool IsObjectInstance(int32_t object_type_index) {
   static_assert(std::is_base_of_v<Object, TargetType>);
   // Everything is a subclass of object.
-  if constexpr (std::is_same_v<TargetType, Object>) {
-    return true;
+  if constexpr (std::is_same_v<std::remove_cv_t<TargetType>, Object>) {
+    return object_type_index >= TypeIndex::kTVMFFIStaticObjectBegin;
   } else if constexpr (TargetType::_type_final) {
     // if the target type is a final type
     // then we only need to check the equivalence.

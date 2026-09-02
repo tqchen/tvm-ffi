@@ -182,7 +182,7 @@ class TypeAttrColumn {
    * \param type_index The type index.
    * \return The type attribute column.
    */
-  AnyView operator[](int32_t type_index) const {
+  TVM_FFI_INLINE AnyView operator[](int32_t type_index) const {
     int32_t offset = type_index - column_->begin_index;
     if (offset < 0 || offset >= column_->size) {
       return AnyView();

@@ -618,7 +618,7 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
           Error("TypeError", "Variable-remap key must be an object-backed value", ""));
     }
     try {
-      const Object* var_ptr = var.as<Object>();
+      const Object* var_ptr = var.cast<const Object*>();
       auto it = var_remap_.find(var_ptr);
       if (it == var_remap_.end()) {
         return Any(nullptr);
@@ -642,7 +642,7 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
     }
     try {
       Any owned_mapped_value(mapped_value);
-      var_remap_.insert_or_assign(var.as<Object>(), std::move(owned_mapped_value));
+      var_remap_.insert_or_assign(var.cast<const Object*>(), std::move(owned_mapped_value));
       return Expected<void>();
     } catch (const Error& err) {
       return Unexpected(err);
@@ -766,16 +766,27 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
  */
 struct StructuralMapCallbackChain {
  public:
+  template <typename Callback>
+  static auto FromChain(Callback callback) {
+    return [callback = std::move(callback)](AnyView value, TVMFFIDefRegionKind kind) mutable
+               -> std::optional<Expected<Any>> {
+      try {
+        return TryCallLink(callback, value, kind);
+      } catch (const Error& err) {
+        return Expected<Any>(Unexpected(err));
+      }
+    };
+  }
+
   /*!
    * \brief Construct a dispatcher owning \p callbacks.
    * \tparam Callbacks Callback types.
    * \param callbacks Callbacks tested in declaration order.
    * \return A callback-aware structural-map dispatcher.
    */
-  template <typename... Callbacks>
-  static auto FromChain(Callbacks... callbacks) {
-    auto callback_tuple = std::make_tuple(std::move(callbacks)...);
-    return [callbacks = std::move(callback_tuple)](
+  template <typename First, typename Second, typename... Rest>
+  static auto FromChain(First first, Second second, Rest... rest) {
+    return [callbacks = std::make_tuple(std::move(first), std::move(second), std::move(rest)...)](
                AnyView value, TVMFFIDefRegionKind kind) mutable
                -> std::optional<Expected<Any>> {
       try {

@@ -210,6 +210,41 @@ TEST(Object, InstanceCheck) {
   EXPECT_TRUE(b->IsInstance<TFloatObj>());
 }
 
+TEST(Object, CvQualifiedRootInstanceCheck) {
+  const int32_t object_type_index = Object::RuntimeTypeIndex();
+  const int32_t subclass_type_index = TIntObj::RuntimeTypeIndex();
+  const int32_t primitive_type_index = TypeIndex::kTVMFFIInt;
+
+  EXPECT_TRUE(details::IsObjectInstance<Object>(object_type_index));
+  EXPECT_TRUE(details::IsObjectInstance<const Object>(object_type_index));
+  EXPECT_TRUE(details::IsObjectInstance<volatile Object>(object_type_index));
+  EXPECT_TRUE(details::IsObjectInstance<const volatile Object>(object_type_index));
+  EXPECT_TRUE(details::IsObjectInstance<Object>(subclass_type_index));
+  EXPECT_TRUE(details::IsObjectInstance<const Object>(subclass_type_index));
+  EXPECT_FALSE(details::IsObjectInstance<Object>(primitive_type_index));
+  EXPECT_FALSE(details::IsObjectInstance<const Object>(primitive_type_index));
+
+  TInt int_object(1);
+  AnyView object_view = int_object;
+  EXPECT_NE(object_view.as<Object>(), nullptr);
+  EXPECT_TRUE(object_view.as<const Object*>().has_value());
+
+  AnyView none_view;
+  AnyView integer_view = 1;
+  AnyView raw_string_view = "raw";
+  EXPECT_EQ(none_view.as<Object>(), nullptr);
+  EXPECT_EQ(integer_view.as<Object>(), nullptr);
+  EXPECT_EQ(raw_string_view.as<Object>(), nullptr);
+
+  String inline_string("inline");
+  String heap_string(std::string(64, 'x'));
+  Array<TInt> object_container({int_object});
+  EXPECT_EQ(AnyView(inline_string).as<Object>(), nullptr);
+  EXPECT_NE(AnyView(heap_string).as<Object>(), nullptr);
+  EXPECT_NE(AnyView(object_container).as<Object>(), nullptr);
+
+}
+
 TEST(ObjectRef, as) {
   ObjectRef a = TInt(10);
   ObjectRef b = TFloat(20);
