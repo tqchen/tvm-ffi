@@ -264,6 +264,28 @@ TEST(StructuralMap, ReusesFinalCallbackResultForRepeatedVar) {
   CheckRepeatedVarRemap<WalkOrder::kPostOrder>();
 }
 
+template <WalkOrder order>
+void CheckIdentityOnlyCallback() {
+  TVar var("n");
+  AnyArray root{int64_t{1}, var};
+  int callback_count = 0;
+  AnyArray mapped =
+      StructuralMap<order>(
+          root, OnStructuralIdentity([&](AnyView value) -> Any {
+            ++callback_count;
+            EXPECT_TRUE(value.as<TVarObj>() != nullptr);
+            return Any(value);
+          }))
+          .template cast<AnyArray>();
+  EXPECT_EQ(callback_count, 1);
+  EXPECT_TRUE(mapped.same_as(root));
+}
+
+TEST(StructuralMap, RestrictsWrappedCallbacksToIdentityNodes) {
+  CheckIdentityOnlyCallback<WalkOrder::kPreOrder>();
+  CheckIdentityOnlyCallback<WalkOrder::kPostOrder>();
+}
+
 AnyArray MakeStringAndBytesLeaves() {
   return AnyArray{int64_t{1}, String("1234567"), String("12345678"), Bytes("1234567", 7),
                   Bytes("12345678", 8)};

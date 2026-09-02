@@ -159,6 +159,11 @@ class StructuralMutatorObj : public Object {
     return details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>((*vtable_->mutate)(this, value));
   }
 
+  /*! \brief Raw-ABI form of \ref MutateExpected for compiled structural hooks. */
+  TVM_FFI_INLINE TVMFFIAny MutateRaw(AnyView value) noexcept {
+    return (*vtable_->mutate)(this, value);
+  }
+
   /*!
    * \brief Mutate a value, permitting an in-place implementation when it is safe.
    *
@@ -184,6 +189,11 @@ class StructuralMutatorObj : public Object {
         (*vtable_->maybe_inplace_mutate)(this, value));
   }
 
+  /*! \brief Raw-ABI form of \ref MaybeInplaceMutateExpected for compiled structural hooks. */
+  TVM_FFI_INLINE TVMFFIAny MaybeInplaceMutateRaw(AnyView value) noexcept {
+    return (*vtable_->maybe_inplace_mutate)(this, value);
+  }
+
   /*!
    * \brief Mutate a value, using in-place mutation only for a uniquely owned object.
    *
@@ -196,6 +206,14 @@ class StructuralMutatorObj : public Object {
       return MaybeInplaceMutateExpected(value);
     }
     return MutateExpected(value);
+  }
+
+  /*!
+   * \brief Raw-ABI form of \ref MaybeInplaceMutateIfUniqueExpected for compiled structural hooks.
+   */
+  TVM_FFI_INLINE TVMFFIAny MaybeInplaceMutateIfUniqueRaw(AnyView value) noexcept {
+    const Object* obj = value.as<Object>();
+    return obj != nullptr && obj->unique() ? MaybeInplaceMutateRaw(value) : MutateRaw(value);
   }
 
   /*!
@@ -338,9 +356,16 @@ class StructuralMutatorObj : public Object {
   template <typename Mutation>
   TVM_FFI_INLINE Expected<Any> MutateWithIdentityRemapExpected(AnyView value,
                                                                Mutation&& mutation) noexcept {
+    auto invoke_mutation = [&](bool is_identity) -> Expected<Any> {
+      if constexpr (std::is_invocable_v<Mutation, bool>) {
+        return mutation(is_identity);
+      } else {
+        return mutation();
+      }
+    };
     int32_t type_index = value.type_index();
     if (type_index < TypeIndex::kTVMFFIStaticObjectBegin) {
-      return mutation();
+      return invoke_mutation(false);
     }
 
     const TVMFFITypeInfo* type_info = TVMFFIGetTypeInfo(type_index);
@@ -349,7 +374,7 @@ class StructuralMutatorObj : public Object {
         (type_info->metadata->structural_eq_hash_kind == kTVMFFISEqHashKindFreeVar ||
          type_info->metadata->structural_eq_hash_kind == kTVMFFISEqHashKindDAGNode);
     if (!is_remappable_identity) {
-      return mutation();
+      return invoke_mutation(false);
     }
 
     Expected<Any> mapped_value = VarRemapGetExpected(value);
@@ -360,7 +385,7 @@ class StructuralMutatorObj : public Object {
       return mapped_value;
     }
 
-    Expected<Any> result = mutation();
+    Expected<Any> result = invoke_mutation(true);
     if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
       return result;
     }
@@ -530,7 +555,43 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
 // Structural Map API.
 // ---------------------------------------------------------------------------
 
+/*!
+ * \brief Callback wrapper restricting a structural-map callback to identity nodes.
+ * \tparam Callback Typed structural-map callback.
+ *
+ * All callbacks passed to one map must use this wrapper for the identity-only fast path.  The
+ * wrapped callback keeps its normal typed matching behavior, but is considered only for objects
+ * marked ``kTVMFFISEqHashKindFreeVar`` or ``kTVMFFISEqHashKindDAGNode``.
+ */
+template <typename Callback>
+struct StructuralIdentityCallback {
+  Callback callback;
+};
+
+/*! \brief Wrap a typed structural-map callback that can match only identity nodes. */
+template <typename Callback>
+StructuralIdentityCallback<std::decay_t<Callback>> OnStructuralIdentity(Callback&& callback) {
+  return {std::forward<Callback>(callback)};
+}
+
 namespace details {
+
+template <typename T>
+struct IsStructuralIdentityCallback : std::false_type {};
+
+template <typename Callback>
+struct IsStructuralIdentityCallback<StructuralIdentityCallback<Callback>> : std::true_type {};
+
+template <typename Callback>
+TVM_FFI_INLINE Callback& UnwrapStructuralMapCallback(Callback& callback) {
+  return callback;
+}
+
+template <typename Callback>
+TVM_FFI_INLINE Callback& UnwrapStructuralMapCallback(
+    StructuralIdentityCallback<Callback>& callback) {
+  return callback.callback;
+}
 
 class StructuralMapIdentityRemap {
  public:
@@ -613,7 +674,7 @@ class StructuralMapIdentityRemap {
  *                  ``std::optional<Expected<Any>>(AnyView, TVMFFIDefRegionKind)``.
  *                  \sa StructuralMapCallbackChain
  */
-template <WalkOrder order, typename Dispatch>
+template <WalkOrder order, bool identity_callbacks_only, typename Dispatch>
 class StructuralMapMutatorObj : public StructuralMutatorObj {
  public:
   /*!
@@ -736,9 +797,14 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
    * \return The mutated value or an Error.
    */
   Expected<Any> MaybeInplaceMutateImpl(AnyView value) noexcept {
-    return MutateWithIdentityRemapExpected(value, [&]() -> Expected<Any> {
+    return MutateWithIdentityRemapExpected(value, [&](bool is_identity) -> Expected<Any> {
       if constexpr (order == WalkOrder::kPreOrder) {
-        std::optional<Expected<Any>> callback_result = dispatch_(value, def_region_kind());
+        std::optional<Expected<Any>> callback_result;
+        if constexpr (!identity_callbacks_only) {
+          callback_result = dispatch_(value, def_region_kind());
+        } else if (is_identity) {
+          callback_result = dispatch_(value, def_region_kind());
+        }
         if (!callback_result.has_value()) {
           Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
           TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
@@ -773,7 +839,12 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
         TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
 
         const Any& mapped_value = ExpectedUnsafe::GetData(result);
-        std::optional<Expected<Any>> callback_result = dispatch_(mapped_value, def_region_kind());
+        std::optional<Expected<Any>> callback_result;
+        if constexpr (!identity_callbacks_only) {
+          callback_result = dispatch_(mapped_value, def_region_kind());
+        } else if (is_identity) {
+          callback_result = dispatch_(mapped_value, def_region_kind());
+        }
         if (TVM_FFI_PREDICT_TRUE(!callback_result.has_value())) return result;
         TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(*callback_result, mapped_value);
         return *std::move(callback_result);
@@ -787,9 +858,14 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
    * \return The mutated value or an Error.
    */
   Expected<Any> MutateImpl(AnyView value) noexcept {
-    return MutateWithIdentityRemapExpected(value, [&]() -> Expected<Any> {
+    return MutateWithIdentityRemapExpected(value, [&](bool is_identity) -> Expected<Any> {
       if constexpr (order == WalkOrder::kPreOrder) {
-        std::optional<Expected<Any>> callback_result = dispatch_(value, def_region_kind());
+        std::optional<Expected<Any>> callback_result;
+        if constexpr (!identity_callbacks_only) {
+          callback_result = dispatch_(value, def_region_kind());
+        } else if (is_identity) {
+          callback_result = dispatch_(value, def_region_kind());
+        }
         if (!callback_result.has_value()) {
           return DefaultMutateExpected(value);
         }
@@ -803,7 +879,12 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
         TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
 
         const Any& mapped_value = ExpectedUnsafe::GetData(result);
-        std::optional<Expected<Any>> callback_result = dispatch_(mapped_value, def_region_kind());
+        std::optional<Expected<Any>> callback_result;
+        if constexpr (!identity_callbacks_only) {
+          callback_result = dispatch_(mapped_value, def_region_kind());
+        } else if (is_identity) {
+          callback_result = dispatch_(mapped_value, def_region_kind());
+        }
         if (TVM_FFI_PREDICT_TRUE(!callback_result.has_value())) return result;
         TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(*callback_result, mapped_value);
         return *std::move(callback_result);
@@ -875,19 +956,20 @@ struct StructuralMapCallbackChain {
   template <typename Callback>
   TVM_FFI_INLINE static std::optional<Expected<Any>> TryCallLink(Callback& callback, AnyView value,
                                                                  TVMFFIDefRegionKind kind) {
-    using FuncInfo = FunctionInfo<std::decay_t<Callback>>;
+    auto& unwrapped = UnwrapStructuralMapCallback(callback);
+    using FuncInfo = FunctionInfo<std::decay_t<decltype(unwrapped)>>;
     static_assert(FuncInfo::num_args == 1 || FuncInfo::num_args == 2,
                   "StructuralMap callbacks must take one argument (value) or two arguments "
                   "(value, def-region kind)");
     using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
     using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
     if constexpr (std::is_same_v<TSub, AnyView>) {
-      return InvokeCallbackLink(callback, value, kind);
+      return InvokeCallbackLink(unwrapped, value, kind);
     } else if constexpr (std::is_same_v<TSub, Any>) {
-      return InvokeCallbackLink(callback, Any(value), kind);
+      return InvokeCallbackLink(unwrapped, Any(value), kind);
     } else {
       if (auto opt = value.template as<TSub>()) {
-        return InvokeCallbackLink(callback, *std::move(opt), kind);
+        return InvokeCallbackLink(unwrapped, *std::move(opt), kind);
       }
     }
     return std::nullopt;
@@ -940,6 +1022,8 @@ struct StructuralMapCallbackChain {
  * identity-substituted. A callback is invoked only for the first occurrence of each identity; its
  * final result, including an unchanged result, is reused for every later occurrence in the same
  * structural-map invocation.
+ * Use \ref OnStructuralIdentity when every callback intentionally selects only such identity
+ * nodes; this avoids testing those callbacks on ordinary values while retaining typed matching.
  *
  * \sa WalkOrder, StructuralMutator
  *
@@ -974,9 +1058,16 @@ struct StructuralMapCallbackChain {
 template <WalkOrder order, typename... Callbacks>
 Expected<Any> StructuralMapExpected(AnyView root, Callbacks&&... callbacks) noexcept {
   static_assert(sizeof...(Callbacks) != 0, "StructuralMap requires at least one callback");
+  constexpr bool any_identity_callback =
+      (details::IsStructuralIdentityCallback<std::decay_t<Callbacks>>::value || ...);
+  constexpr bool identity_callbacks_only =
+      (details::IsStructuralIdentityCallback<std::decay_t<Callbacks>>::value && ...);
+  static_assert(!any_identity_callback || identity_callbacks_only,
+                "OnStructuralIdentity must wrap every callback in one StructuralMap invocation");
   auto dispatch =
       details::StructuralMapCallbackChain::FromChain(std::forward<Callbacks>(callbacks)...);
-  using Mutator = details::StructuralMapMutatorObj<order, decltype(dispatch)>;
+  using Mutator =
+      details::StructuralMapMutatorObj<order, identity_callbacks_only, decltype(dispatch)>;
   StructuralMutator mutator(make_object<Mutator>(std::move(dispatch)));
   return mutator->MaybeInplaceMutateIfUniqueExpected(root);
 }

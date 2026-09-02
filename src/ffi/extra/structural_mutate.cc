@@ -72,11 +72,11 @@ Expected<Any> StructuralMapExpected(
   };
 
   if (order == static_cast<int>(WalkOrder::kPreOrder)) {
-    using Mutator = StructuralMapMutatorObj<WalkOrder::kPreOrder, decltype(dispatch)>;
+    using Mutator = StructuralMapMutatorObj<WalkOrder::kPreOrder, false, decltype(dispatch)>;
     StructuralMutator mutator(make_object<Mutator>(std::move(dispatch)));
     return mutator->MaybeInplaceMutateIfUniqueExpected(root);
   } else {
-    using Mutator = StructuralMapMutatorObj<WalkOrder::kPostOrder, decltype(dispatch)>;
+    using Mutator = StructuralMapMutatorObj<WalkOrder::kPostOrder, false, decltype(dispatch)>;
     StructuralMutator mutator(make_object<Mutator>(std::move(dispatch)));
     return mutator->MaybeInplaceMutateIfUniqueExpected(root);
   }
