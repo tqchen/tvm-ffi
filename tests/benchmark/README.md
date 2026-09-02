@@ -1,15 +1,30 @@
 # Structural map cost benchmark
 
-This opt-in C++ target measures the five-rung structural-map cost ladder on a
-small expression model with the same two non-traversed base fields as TVM's
-`ExprNode`. It has no TVM dependency.
+Two opt-in C++ targets measure the same five-rung structural-map cost ladder,
+differing only in the expression model they run it on. Neither has a TVM
+dependency.
+
+- `tvm_ffi_benchmark_structural_map_tvm_ast_cost` runs the ladder on the TVM
+  primitive expression node set copied verbatim into
+  `src/ffi/testing/structural_map_tvm_ast.h`: the real `Var` / `IntImm` /
+  `Add` / `Mul` / `FloorDiv` / `FloorMod` classes, their `span` and `ty`
+  fields, their `_type_s_eq_hash_kind` values, and their registered
+  `__s_visit__` / `__s_mutate__` / `__s_maybe_inplace_mutate__` bodies. It
+  aborts before measuring if any fixture node type is missing a compiled hook,
+  because a reflection fallback would measure a different code path. This is
+  the target to use as a TVM proxy.
+- `tvm_ffi_benchmark_structural_map_cost` runs the ladder on the smaller
+  synthetic model that shares only the two non-traversed base fields. It is
+  measurably cheaper than the copied AST and is kept for contrast, not as a
+  proxy.
 
 ```bash
 cmake -S . -B build-benchmark -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CXX_FLAGS_RELEASE='-O3 -DNDEBUG' \
   -DTVM_FFI_BUILD_BENCHMARKS=ON
-cmake --build build-benchmark --target tvm_ffi_benchmark_structural_map_cost
+cmake --build build-benchmark
+taskset -c 22 build-benchmark/bin/tvm_ffi_benchmark_structural_map_tvm_ast_cost
 taskset -c 22 build-benchmark/bin/tvm_ffi_benchmark_structural_map_cost
 ```
 
@@ -18,10 +33,13 @@ otherwise idle, performance-governor core and retain the repository SHA with
 the output. The reported unit is median nanoseconds per processed expression
 node over eleven in-process samples.
 
-The target detects whether the checked-out tvm-ffi exposes the historical
-`StructuralWalk<order, deduplicate>` API used by the calibration pin. It enables
-that pin's deduplicating walk when available and otherwise builds against the
-current non-deduplicating walk API.
+Both targets detect whether the checked-out tvm-ffi exposes the historical
+`StructuralWalk<order, deduplicate>` API used by the calibration pin. They
+enable that pin's deduplicating walk when available and otherwise build against
+the current non-deduplicating walk API. The walk denominator differs between
+the two APIs -- deduplicating walks report 15 and 155 nodes on the split/fuse
+base and nested-4 fixtures, the non-deduplicating walk reports 17 and 185 -- so
+a walk rung is only comparable against a run using the same API.
 
 TVM calibration is intentionally separate from this target. Build
 `tests/benchmark/structural_map_tvm_calibration.cc` against the matching TVM
