@@ -57,6 +57,19 @@ class StructuralMutatorObj;
  * \param mutator The active structural mutator.
  * \param value The borrowed value to mutate.
  * \return Raw ``TVMFFIAny`` containing the mutated value or an Error.
+ *
+ * \note The hook is exception-free like \ref FStructuralVisit: every representable failure is
+ *       returned as an Error, and the hook body carries no ``try``/``catch``. A hook body should
+ *       therefore avoid throwing accessors:
+ *       - Use \ref AnyView::as rather than ``cast`` to unpack \p value. The engine already
+ *         dispatched on the node's ``type_index``, so the type is known and a check that could
+ *         throw only inhibits optimization.
+ *       - Use \ref Any::as on a mapped child result and return an explicit Error when it is
+ *         nullopt. That cast is the one genuinely reachable failure, because a user callback may
+ *         return the wrong type.
+ *       - Treat allocation failure as fatal. Exception-free means representable errors travel as
+ *         \ref Expected; it does not mean ``std::bad_alloc`` becomes one. An escaping exception
+ *         terminates through this ``noexcept`` boundary.
  */
 using FStructuralMutate = TVMFFIAny (*)(StructuralMutatorObj* mutator, AnyView value) noexcept;
 

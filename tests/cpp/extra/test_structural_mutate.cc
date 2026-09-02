@@ -18,6 +18,8 @@
  */
 #include <gtest/gtest.h>
 #include <tvm/ffi/container/array.h>
+#include <tvm/ffi/container/dict.h>
+#include <tvm/ffi/container/list.h>
 #include <tvm/ffi/container/map.h>
 #include <tvm/ffi/extra/structural_mutate.h>
 #include <tvm/ffi/string.h>
@@ -213,6 +215,44 @@ TEST(StructuralMap, AcceptsExpectedCallbackReturnTypes) {
       "unexpected error");
   check_error([](const TVar&) -> Expected<TVar> { throw Error("ValueError", "thrown error", ""); },
               "thrown error");
+}
+
+// The built-in container mutate hooks are exception-free: they carry no catch handler, so a
+// callback that raises inside a container must still surface as an Expected error rather than
+// escaping through their noexcept boundary.
+template <WalkOrder order>
+void CheckContainerCallbackErrorsStayExpected() {
+  auto check_error = [](AnyView root, auto callback, const char* expected_message) {
+    Expected<Any> result = StructuralMapExpected<order>(root, std::move(callback));
+    ASSERT_TRUE(result.is_err());
+    EXPECT_EQ(result.error().kind(), "ValueError");
+    EXPECT_EQ(result.error().message(), expected_message);
+  };
+  auto raise = [](const TVar&) -> Expected<Any> { throw Error("ValueError", "raised", ""); };
+  auto returns_error = [](const TVar&) -> Expected<Any> {
+    return Unexpected(Error("ValueError", "returned", ""));
+  };
+
+  AnyArray array_root{Any(TVar("n"))};
+  check_error(array_root, raise, "raised");
+  check_error(array_root, returns_error, "returned");
+
+  List<Any> list_root{Any(TVar("n"))};
+  check_error(list_root, raise, "raised");
+  check_error(list_root, returns_error, "returned");
+
+  StringMap map_root{{"value", TVar("n")}};
+  check_error(map_root, raise, "raised");
+  check_error(map_root, returns_error, "returned");
+
+  Dict<Any, Any> dict_root{{String("value"), Any(TVar("n"))}};
+  check_error(dict_root, raise, "raised");
+  check_error(dict_root, returns_error, "returned");
+}
+
+TEST(StructuralMap, ContainerCallbackErrorsStayExpected) {
+  CheckContainerCallbackErrorsStayExpected<WalkOrder::kPreOrder>();
+  CheckContainerCallbackErrorsStayExpected<WalkOrder::kPostOrder>();
 }
 
 template <WalkOrder order>
