@@ -179,9 +179,20 @@ class Object {
   }
 
   /*!
-   * \return Whether the object.use_count() == 1.
+   * \return Whether the object has one strong reference and no external weak references.
+   * \note Checking both weak and strong count is needed to ensure correctness in decisions such as
+   *       copy-on-write in multi-threaded setting.
    */
-  bool unique() const { return use_count() == 1; }
+  bool unique() const {
+#ifdef _MSC_VER
+    return (reinterpret_cast<const volatile uint64_t*>(
+               &header_.combined_ref_count))[0] ==  // NOLINT(*)
+           kCombinedRefCountBothOne;
+#else
+    return __atomic_load_n(&(header_.combined_ref_count), __ATOMIC_RELAXED) ==
+           kCombinedRefCountBothOne;
+#endif
+  }
 
   /*!
    * \return The usage count of the cell.
@@ -496,7 +507,7 @@ class ObjectPtr {
   /*! \return The use count of the ptr, for debug purposes */
   int use_count() const { return data_ != nullptr ? data_->use_count() : 0; }
   /*! \return whether the reference is unique */
-  bool unique() const { return data_ != nullptr && data_->use_count() == 1; }
+  bool unique() const { return data_ != nullptr && data_->unique(); }
   /*! \return Whether two ObjectPtr do not equal each other */
   bool operator==(const ObjectPtr<T>& other) const { return data_ == other.data_; }
   /*! \return Whether two ObjectPtr equals each other */
