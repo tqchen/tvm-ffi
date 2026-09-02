@@ -516,6 +516,11 @@ using DependentMutatorObj = std::conditional_t<(sizeof(TNode) > 0), StructuralMu
                                                StructuralMutatorObj>;
 }  // namespace detail
 
+/*! \brief Error returned when a mapped child does not have the expected node type. */
+inline Expected<Any> BadMappedChildType() {
+  return Unexpected(Error("TypeError", "structural mutation produced an unexpected node type", ""));
+}
+
 /*! \brief Copied from src/ir/expr.cc: IsTIRXBufferType. */
 inline bool IsTIRXBufferType(const Type& ty) {
   static const int32_t buffer_type_index = TypeKeyToIndex("testing.tvmast.BufferType");
@@ -552,79 +557,79 @@ inline TVMFFIAny VisitVar(StructuralVisitorObj* visitor, AnyView value) noexcept
 
 // Copied from src/ir/expr.cc.
 inline TVMFFIAny MutateVar(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  try {
-    const VarNode* self = value.cast<const VarNode*>();
-    const bool is_buffer_var = IsTIRXBufferType(self->ty);
-    if (self->ty.as<PrimType>().has_value() ||
-        (is_buffer_var && mutator->def_region_kind() == kTVMFFIDefRegionKindNone)) {
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
-    }
-    auto mutate_ty = [&]() { return mutator->MutateExpected(self->ty); };
-    auto ty_result = mutator->def_region_kind() == kTVMFFIDefRegionKindNonRecursive
-                         ? mutator->WithDefRegionKind(kTVMFFIDefRegionKindNone, mutate_ty)
-                         : mutate_ty();
-    if (TVM_FFI_PREDICT_FALSE(ty_result.is_err())) {
-      AnyView error_context(self->ty);
-      if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
-        Error error = ty_result.error();
-        details::UpdateVisitErrorContext(error, error_context.cast<ObjectRef>());
-      }
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(ty_result));
-    }
-    Type mapped_ty = std::move(details::ExpectedUnsafe::GetData(ty_result)).cast<Type>();
-    Any mapped_var = Any(value);
-    if (!mapped_ty.same_as(self->ty)) {
-      ObjectPtr<VarNode> copy = make_object<VarNode>(*self);
-      copy->ty = std::move(mapped_ty);
-      mapped_var = Any(ObjectRef(std::move(copy)));
-    }
-    if (is_buffer_var && mutator->def_region_kind() == kTVMFFIDefRegionKindNonRecursive) {
-      auto set_result = mutator->VarRemapSetExpected(value, mapped_var);
-      if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(
-            Expected<Any>(Unexpected(std::move(set_result).error())));
-      }
-    }
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(std::move(mapped_var)));
-  } catch (const Error& err) {
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Unexpected(err)));
+  const VarNode* self = value.as<VarNode>();
+  const bool is_buffer_var = IsTIRXBufferType(self->ty);
+  if (self->ty.as<PrimType>().has_value() ||
+      (is_buffer_var && mutator->def_region_kind() == kTVMFFIDefRegionKindNone)) {
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
   }
+  auto mutate_ty = [&]() { return mutator->MutateExpected(self->ty); };
+  auto ty_result = mutator->def_region_kind() == kTVMFFIDefRegionKindNonRecursive
+                       ? mutator->WithDefRegionKind(kTVMFFIDefRegionKindNone, mutate_ty)
+                       : mutate_ty();
+  if (TVM_FFI_PREDICT_FALSE(ty_result.is_err())) {
+    AnyView error_context(self->ty);
+    if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
+      Error error = ty_result.error();
+      details::UpdateVisitErrorContext(error, *error_context.as<ObjectRef>());
+    }
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(ty_result));
+  }
+  std::optional<Type> opt_ty = std::move(details::ExpectedUnsafe::GetData(ty_result)).as<Type>();
+  if (TVM_FFI_PREDICT_FALSE(!opt_ty.has_value())) {
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(BadMappedChildType());
+  }
+  Type mapped_ty = *std::move(opt_ty);
+  Any mapped_var = Any(value);
+  if (!mapped_ty.same_as(self->ty)) {
+    ObjectPtr<VarNode> copy = make_object<VarNode>(*self);
+    copy->ty = std::move(mapped_ty);
+    mapped_var = Any(ObjectRef(std::move(copy)));
+  }
+  if (is_buffer_var && mutator->def_region_kind() == kTVMFFIDefRegionKindNonRecursive) {
+    auto set_result = mutator->VarRemapSetExpected(value, mapped_var);
+    if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(
+          Expected<Any>(Unexpected(std::move(set_result).error())));
+    }
+  }
+  return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(std::move(mapped_var)));
 }
 
 // Copied from src/ir/expr.cc.
 inline TVMFFIAny MaybeInplaceMutateVar(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  try {
-    VarNode* self = const_cast<VarNode*>(value.cast<const VarNode*>());
-    const bool is_buffer_var = IsTIRXBufferType(self->ty);
-    if (self->ty.as<PrimType>().has_value() ||
-        (is_buffer_var && mutator->def_region_kind() == kTVMFFIDefRegionKindNone)) {
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
-    }
-    auto mutate_ty = [&]() { return mutator->MaybeInplaceMutateIfUniqueExpected(self->ty); };
-    auto ty_result = mutator->def_region_kind() == kTVMFFIDefRegionKindNonRecursive
-                         ? mutator->WithDefRegionKind(kTVMFFIDefRegionKindNone, mutate_ty)
-                         : mutate_ty();
-    if (TVM_FFI_PREDICT_FALSE(ty_result.is_err())) {
-      AnyView error_context(self->ty);
-      if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
-        Error error = ty_result.error();
-        details::UpdateVisitErrorContext(error, error_context.cast<ObjectRef>());
-      }
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(ty_result));
-    }
-    Type mapped_ty = std::move(details::ExpectedUnsafe::GetData(ty_result)).cast<Type>();
-    if (!mapped_ty.same_as(self->ty)) self->ty = std::move(mapped_ty);
-    if (is_buffer_var && mutator->def_region_kind() == kTVMFFIDefRegionKindNonRecursive) {
-      auto set_result = mutator->VarRemapSetExpected(value, value);
-      if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(
-            Expected<Any>(Unexpected(std::move(set_result).error())));
-      }
-    }
+  VarNode* self = const_cast<VarNode*>(value.as<VarNode>());
+  const bool is_buffer_var = IsTIRXBufferType(self->ty);
+  if (self->ty.as<PrimType>().has_value() ||
+      (is_buffer_var && mutator->def_region_kind() == kTVMFFIDefRegionKindNone)) {
     return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
-  } catch (const Error& err) {
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Unexpected(err)));
   }
+  auto mutate_ty = [&]() { return mutator->MaybeInplaceMutateIfUniqueExpected(self->ty); };
+  auto ty_result = mutator->def_region_kind() == kTVMFFIDefRegionKindNonRecursive
+                       ? mutator->WithDefRegionKind(kTVMFFIDefRegionKindNone, mutate_ty)
+                       : mutate_ty();
+  if (TVM_FFI_PREDICT_FALSE(ty_result.is_err())) {
+    AnyView error_context(self->ty);
+    if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
+      Error error = ty_result.error();
+      details::UpdateVisitErrorContext(error, *error_context.as<ObjectRef>());
+    }
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(ty_result));
+  }
+  std::optional<Type> opt_ty = std::move(details::ExpectedUnsafe::GetData(ty_result)).as<Type>();
+  if (TVM_FFI_PREDICT_FALSE(!opt_ty.has_value())) {
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(BadMappedChildType());
+  }
+  Type mapped_ty = *std::move(opt_ty);
+  if (!mapped_ty.same_as(self->ty)) self->ty = std::move(mapped_ty);
+  if (is_buffer_var && mutator->def_region_kind() == kTVMFFIDefRegionKindNonRecursive) {
+    auto set_result = mutator->VarRemapSetExpected(value, value);
+    if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(
+          Expected<Any>(Unexpected(std::move(set_result).error())));
+    }
+  }
+  return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
 }
 
 // Copied from src/ir/prim/expr.cc.
@@ -640,140 +645,156 @@ TVMFFIAny VisitBinary(StructuralVisitorObj* visitor, AnyView value) noexcept {
 // Copied from src/ir/prim/expr.cc.
 template <typename TNode>
 TVMFFIAny MutateBinary(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  try {
-    const TNode* self = value.cast<const TNode*>();
-    if constexpr (detail::kHasRawMutate) {
-      TVMFFIAny mapped_a = static_cast<detail::DependentMutatorObj<TNode>*>(mutator)->MutateRaw(self->a);
-      if (TVM_FFI_PREDICT_FALSE(mapped_a.type_index == TypeIndex::kTVMFFIError)) {
-        auto error_result = details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(mapped_a);
-        AnyView error_context(self->a);
-        if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
-          Error error = error_result.error();
-          details::UpdateVisitErrorContext(error, error_context.cast<ObjectRef>());
-        }
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(error_result));
+  const TNode* self = value.as<TNode>();
+  if constexpr (detail::kHasRawMutate) {
+    TVMFFIAny mapped_a = static_cast<detail::DependentMutatorObj<TNode>*>(mutator)->MutateRaw(self->a);
+    if (TVM_FFI_PREDICT_FALSE(mapped_a.type_index == TypeIndex::kTVMFFIError)) {
+      auto error_result = details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(mapped_a);
+      AnyView error_context(self->a);
+      if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
+        Error error = error_result.error();
+        details::UpdateVisitErrorContext(error, *error_context.as<ObjectRef>());
       }
-      TVMFFIAny mapped_b = static_cast<detail::DependentMutatorObj<TNode>*>(mutator)->MutateRaw(self->b);
-      if (TVM_FFI_PREDICT_FALSE(mapped_b.type_index == TypeIndex::kTVMFFIError)) {
-        // Release the already-owned left result before propagating the right-child error.
-        details::AnyUnsafe::MoveTVMFFIAnyToAny(&mapped_a);
-        auto error_result = details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(mapped_b);
-        AnyView error_context(self->b);
-        if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
-          Error error = error_result.error();
-          details::UpdateVisitErrorContext(error, error_context.cast<ObjectRef>());
-        }
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(error_result));
-      }
-      Any owned_a = details::AnyUnsafe::MoveTVMFFIAnyToAny(&mapped_a);
-      Any owned_b = details::AnyUnsafe::MoveTVMFFIAnyToAny(&mapped_b);
-      PrimExpr a = std::move(owned_a).cast<PrimExpr>();
-      PrimExpr b = std::move(owned_b).cast<PrimExpr>();
-      if (a.same_as(self->a) && b.same_as(self->b)) {
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
-      }
-      ObjectPtr<TNode> copy = make_object<TNode>(*self);
-      copy->a = std::move(a);
-      copy->b = std::move(b);
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(
-          Expected<Any>(Any(ObjectRef(std::move(copy)))));
-    } else {
-      Expected<Any> result_a = mutator->MutateExpected(self->a);
-      if (TVM_FFI_PREDICT_FALSE(result_a.is_err())) {
-        AnyView error_context(self->a);
-        if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
-          Error error = result_a.error();
-          details::UpdateVisitErrorContext(error, error_context.cast<ObjectRef>());
-        }
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result_a));
-      }
-      Expected<Any> result_b = mutator->MutateExpected(self->b);
-      if (TVM_FFI_PREDICT_FALSE(result_b.is_err())) {
-        AnyView error_context(self->b);
-        if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
-          Error error = result_b.error();
-          details::UpdateVisitErrorContext(error, error_context.cast<ObjectRef>());
-        }
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result_b));
-      }
-      PrimExpr a = std::move(details::ExpectedUnsafe::GetData(result_a)).cast<PrimExpr>();
-      PrimExpr b = std::move(details::ExpectedUnsafe::GetData(result_b)).cast<PrimExpr>();
-      if (a.same_as(self->a) && b.same_as(self->b)) {
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
-      }
-      ObjectPtr<TNode> copy = make_object<TNode>(*self);
-      copy->a = std::move(a);
-      copy->b = std::move(b);
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(
-          Expected<Any>(Any(ObjectRef(std::move(copy)))));
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(error_result));
     }
-  } catch (const Error& err) {
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Unexpected(err)));
+    TVMFFIAny mapped_b = static_cast<detail::DependentMutatorObj<TNode>*>(mutator)->MutateRaw(self->b);
+    if (TVM_FFI_PREDICT_FALSE(mapped_b.type_index == TypeIndex::kTVMFFIError)) {
+      // Release the already-owned left result before propagating the right-child error.
+      details::AnyUnsafe::MoveTVMFFIAnyToAny(&mapped_a);
+      auto error_result = details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(mapped_b);
+      AnyView error_context(self->b);
+      if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
+        Error error = error_result.error();
+        details::UpdateVisitErrorContext(error, *error_context.as<ObjectRef>());
+      }
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(error_result));
+    }
+    Any owned_a = details::AnyUnsafe::MoveTVMFFIAnyToAny(&mapped_a);
+    Any owned_b = details::AnyUnsafe::MoveTVMFFIAnyToAny(&mapped_b);
+    std::optional<PrimExpr> opt_a = std::move(owned_a).as<PrimExpr>();
+    std::optional<PrimExpr> opt_b = std::move(owned_b).as<PrimExpr>();
+    if (TVM_FFI_PREDICT_FALSE(!opt_a.has_value() || !opt_b.has_value())) {
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(BadMappedChildType());
+    }
+    PrimExpr a = *std::move(opt_a);
+    PrimExpr b = *std::move(opt_b);
+    if (a.same_as(self->a) && b.same_as(self->b)) {
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
+    }
+    ObjectPtr<TNode> copy = make_object<TNode>(*self);
+    copy->a = std::move(a);
+    copy->b = std::move(b);
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(
+        Expected<Any>(Any(ObjectRef(std::move(copy)))));
+  } else {
+    Expected<Any> result_a = mutator->MutateExpected(self->a);
+    if (TVM_FFI_PREDICT_FALSE(result_a.is_err())) {
+      AnyView error_context(self->a);
+      if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
+        Error error = result_a.error();
+        details::UpdateVisitErrorContext(error, *error_context.as<ObjectRef>());
+      }
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result_a));
+    }
+    Expected<Any> result_b = mutator->MutateExpected(self->b);
+    if (TVM_FFI_PREDICT_FALSE(result_b.is_err())) {
+      AnyView error_context(self->b);
+      if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
+        Error error = result_b.error();
+        details::UpdateVisitErrorContext(error, *error_context.as<ObjectRef>());
+      }
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result_b));
+    }
+    std::optional<PrimExpr> opt_a =
+        std::move(details::ExpectedUnsafe::GetData(result_a)).as<PrimExpr>();
+    std::optional<PrimExpr> opt_b =
+        std::move(details::ExpectedUnsafe::GetData(result_b)).as<PrimExpr>();
+    if (TVM_FFI_PREDICT_FALSE(!opt_a.has_value() || !opt_b.has_value())) {
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(BadMappedChildType());
+    }
+    PrimExpr a = *std::move(opt_a);
+    PrimExpr b = *std::move(opt_b);
+    if (a.same_as(self->a) && b.same_as(self->b)) {
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
+    }
+    ObjectPtr<TNode> copy = make_object<TNode>(*self);
+    copy->a = std::move(a);
+    copy->b = std::move(b);
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(
+        Expected<Any>(Any(ObjectRef(std::move(copy)))));
   }
 }
 
 // Copied from src/ir/prim/expr.cc.
 template <typename TNode>
 TVMFFIAny MaybeInplaceMutateBinary(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  try {
-    TNode* self = const_cast<TNode*>(value.cast<const TNode*>());
-    if constexpr (detail::kHasRawMutate) {
-      TVMFFIAny mapped_a = static_cast<detail::DependentMutatorObj<TNode>*>(mutator)->MaybeInplaceMutateIfUniqueRaw(self->a);
-      if (TVM_FFI_PREDICT_FALSE(mapped_a.type_index == TypeIndex::kTVMFFIError)) {
-        auto error_result = details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(mapped_a);
-        AnyView error_context(self->a);
-        if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
-          Error error = error_result.error();
-          details::UpdateVisitErrorContext(error, error_context.cast<ObjectRef>());
-        }
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(error_result));
+  TNode* self = const_cast<TNode*>(value.as<TNode>());
+  if constexpr (detail::kHasRawMutate) {
+    TVMFFIAny mapped_a = static_cast<detail::DependentMutatorObj<TNode>*>(mutator)->MaybeInplaceMutateIfUniqueRaw(self->a);
+    if (TVM_FFI_PREDICT_FALSE(mapped_a.type_index == TypeIndex::kTVMFFIError)) {
+      auto error_result = details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(mapped_a);
+      AnyView error_context(self->a);
+      if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
+        Error error = error_result.error();
+        details::UpdateVisitErrorContext(error, *error_context.as<ObjectRef>());
       }
-      TVMFFIAny mapped_b = static_cast<detail::DependentMutatorObj<TNode>*>(mutator)->MaybeInplaceMutateIfUniqueRaw(self->b);
-      if (TVM_FFI_PREDICT_FALSE(mapped_b.type_index == TypeIndex::kTVMFFIError)) {
-        // Release the already-owned left result before propagating the right-child error.
-        details::AnyUnsafe::MoveTVMFFIAnyToAny(&mapped_a);
-        auto error_result = details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(mapped_b);
-        AnyView error_context(self->b);
-        if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
-          Error error = error_result.error();
-          details::UpdateVisitErrorContext(error, error_context.cast<ObjectRef>());
-        }
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(error_result));
-      }
-      Any owned_a = details::AnyUnsafe::MoveTVMFFIAnyToAny(&mapped_a);
-      Any owned_b = details::AnyUnsafe::MoveTVMFFIAnyToAny(&mapped_b);
-      PrimExpr a = std::move(owned_a).cast<PrimExpr>();
-      PrimExpr b = std::move(owned_b).cast<PrimExpr>();
-      if (!a.same_as(self->a)) self->a = std::move(a);
-      if (!b.same_as(self->b)) self->b = std::move(b);
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
-    } else {
-      Expected<Any> result_a = mutator->MaybeInplaceMutateIfUniqueExpected(self->a);
-      if (TVM_FFI_PREDICT_FALSE(result_a.is_err())) {
-        AnyView error_context(self->a);
-        if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
-          Error error = result_a.error();
-          details::UpdateVisitErrorContext(error, error_context.cast<ObjectRef>());
-        }
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result_a));
-      }
-      Expected<Any> result_b = mutator->MaybeInplaceMutateIfUniqueExpected(self->b);
-      if (TVM_FFI_PREDICT_FALSE(result_b.is_err())) {
-        AnyView error_context(self->b);
-        if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
-          Error error = result_b.error();
-          details::UpdateVisitErrorContext(error, error_context.cast<ObjectRef>());
-        }
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result_b));
-      }
-      PrimExpr a = std::move(details::ExpectedUnsafe::GetData(result_a)).cast<PrimExpr>();
-      PrimExpr b = std::move(details::ExpectedUnsafe::GetData(result_b)).cast<PrimExpr>();
-      if (!a.same_as(self->a)) self->a = std::move(a);
-      if (!b.same_as(self->b)) self->b = std::move(b);
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(error_result));
     }
-  } catch (const Error& err) {
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Unexpected(err)));
+    TVMFFIAny mapped_b = static_cast<detail::DependentMutatorObj<TNode>*>(mutator)->MaybeInplaceMutateIfUniqueRaw(self->b);
+    if (TVM_FFI_PREDICT_FALSE(mapped_b.type_index == TypeIndex::kTVMFFIError)) {
+      // Release the already-owned left result before propagating the right-child error.
+      details::AnyUnsafe::MoveTVMFFIAnyToAny(&mapped_a);
+      auto error_result = details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(mapped_b);
+      AnyView error_context(self->b);
+      if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
+        Error error = error_result.error();
+        details::UpdateVisitErrorContext(error, *error_context.as<ObjectRef>());
+      }
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(error_result));
+    }
+    Any owned_a = details::AnyUnsafe::MoveTVMFFIAnyToAny(&mapped_a);
+    Any owned_b = details::AnyUnsafe::MoveTVMFFIAnyToAny(&mapped_b);
+    std::optional<PrimExpr> opt_a = std::move(owned_a).as<PrimExpr>();
+    std::optional<PrimExpr> opt_b = std::move(owned_b).as<PrimExpr>();
+    if (TVM_FFI_PREDICT_FALSE(!opt_a.has_value() || !opt_b.has_value())) {
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(BadMappedChildType());
+    }
+    PrimExpr a = *std::move(opt_a);
+    PrimExpr b = *std::move(opt_b);
+    if (!a.same_as(self->a)) self->a = std::move(a);
+    if (!b.same_as(self->b)) self->b = std::move(b);
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
+  } else {
+    Expected<Any> result_a = mutator->MaybeInplaceMutateIfUniqueExpected(self->a);
+    if (TVM_FFI_PREDICT_FALSE(result_a.is_err())) {
+      AnyView error_context(self->a);
+      if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
+        Error error = result_a.error();
+        details::UpdateVisitErrorContext(error, *error_context.as<ObjectRef>());
+      }
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result_a));
+    }
+    Expected<Any> result_b = mutator->MaybeInplaceMutateIfUniqueExpected(self->b);
+    if (TVM_FFI_PREDICT_FALSE(result_b.is_err())) {
+      AnyView error_context(self->b);
+      if (error_context.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin) {
+        Error error = result_b.error();
+        details::UpdateVisitErrorContext(error, *error_context.as<ObjectRef>());
+      }
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result_b));
+    }
+    std::optional<PrimExpr> opt_a =
+        std::move(details::ExpectedUnsafe::GetData(result_a)).as<PrimExpr>();
+    std::optional<PrimExpr> opt_b =
+        std::move(details::ExpectedUnsafe::GetData(result_b)).as<PrimExpr>();
+    if (TVM_FFI_PREDICT_FALSE(!opt_a.has_value() || !opt_b.has_value())) {
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(BadMappedChildType());
+    }
+    PrimExpr a = *std::move(opt_a);
+    PrimExpr b = *std::move(opt_b);
+    if (!a.same_as(self->a)) self->a = std::move(a);
+    if (!b.same_as(self->b)) self->b = std::move(b);
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(Any(value)));
   }
 }
 
