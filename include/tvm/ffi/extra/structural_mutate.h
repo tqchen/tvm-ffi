@@ -774,7 +774,7 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
 
         const Any& mapped_value = ExpectedUnsafe::GetData(result);
         std::optional<Expected<Any>> callback_result = dispatch_(mapped_value, def_region_kind());
-        if (!callback_result.has_value()) return result;
+        if (TVM_FFI_PREDICT_TRUE(!callback_result.has_value())) return result;
         TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(*callback_result, mapped_value);
         return *std::move(callback_result);
       }
@@ -804,7 +804,7 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
 
         const Any& mapped_value = ExpectedUnsafe::GetData(result);
         std::optional<Expected<Any>> callback_result = dispatch_(mapped_value, def_region_kind());
-        if (!callback_result.has_value()) return result;
+        if (TVM_FFI_PREDICT_TRUE(!callback_result.has_value())) return result;
         TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(*callback_result, mapped_value);
         return *std::move(callback_result);
       }
