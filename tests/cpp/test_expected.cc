@@ -385,6 +385,30 @@ TEST(Expected, ExpectedUnsafeGetDataCompatibleStorageType) {
       details::ExpectedUnsafe::GetData(true_result)));
 }
 
+// The non-const GetData overload is what makes std::move(GetData(x)) actually move. Without it
+// the const overload is the only candidate and the expression binds the copy constructor.
+TEST(Expected, ExpectedUnsafeGetDataRvalueMovesInsteadOfCopying) {
+  TVar var("x");
+  Expected<Any> result = Any(var);
+  int before = var.use_count();  // var plus the Expected payload.
+
+  Any moved = std::move(details::ExpectedUnsafe::GetData(result));
+  EXPECT_TRUE(moved.as<TVar>().value().same_as(var));
+  // A copy would leave the payload in place and raise the count; a move transfers it.
+  EXPECT_EQ(var.use_count(), before);
+}
+
+// The const overload still applies to a const Expected and must not disturb the payload.
+TEST(Expected, ExpectedUnsafeGetDataConstOverloadBorrows) {
+  TVar var("x");
+  const Expected<Any> result = Any(var);
+  int before = var.use_count();
+
+  const Any& borrowed = details::ExpectedUnsafe::GetData(result);
+  EXPECT_TRUE(borrowed.as<TVar>().value().same_as(var));
+  EXPECT_EQ(var.use_count(), before);  // A borrow leaves the payload and its reference in place.
+}
+
 TEST(Expected, ExpectedUnsafeMoveBetweenExpectedStorageTypes) {
   Expected<String> src = String("hello");
   TVMFFIAny raw = details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(src));

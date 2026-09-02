@@ -380,6 +380,23 @@ struct ExpectedUnsafe {
   }
 
   /*!
+   * \brief Return the underlying Any storage as an rvalue reference.
+   * \tparam T The Expected success type.
+   * \param result The Expected value to move from.
+   * \return Rvalue reference to the raw Any storage.
+   *
+   * \note This overload is what makes ``std::move(GetData(x))`` actually move. Without it the
+   *       const overload below is the only candidate, so the expression yields ``const Any&&``
+   *       and binds the copy constructor, taking a reference count the call site looks like it
+   *       is avoiding. Nothing is moved until the returned reference is consumed, so \p result
+   *       is left intact when the caller only inspects it.
+   */
+  template <typename T>
+  TVM_FFI_INLINE static Any&& GetData(Expected<T>& result) noexcept {
+    return std::move(result.data_);
+  }
+
+  /*!
    * \brief Return the underlying Any storage.
    * \tparam T The Expected success type.
    * \param result The Expected value to inspect.
