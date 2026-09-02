@@ -42,8 +42,8 @@
 #include <string>
 #include <tuple>
 #include <type_traits>
-#include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace tvm {
 namespace ffi {
@@ -446,6 +446,54 @@ enum class WalkOrder : int32_t {
 
 namespace details {
 
+/*!
+ * \brief Traversal-local open-addressed set for visited object identities.
+ *
+ * Structural walks only need insertion and membership testing, and their keys
+ * are non-null, aligned object pointers.  Keeping the table in contiguous
+ * storage avoids the per-node allocations of ``std::unordered_set`` on the
+ * recursive hot path.
+ */
+class StructuralWalkIdentitySet {
+ public:
+  TVM_FFI_INLINE bool Insert(const Object* object) {
+    if (slots_.empty()) Grow(16);
+    if (size_ * 2 >= slots_.size()) Grow(slots_.size() * 2);
+    size_t index = Hash(object) & (slots_.size() - 1);
+    while (const Object* current = slots_[index]) {
+      if (current == object) return false;
+      index = (index + 1) & (slots_.size() - 1);
+    }
+    slots_[index] = object;
+    ++size_;
+    return true;
+  }
+
+ private:
+  TVM_FFI_INLINE static size_t Hash(const Object* object) {
+    size_t value = reinterpret_cast<size_t>(object) >> 4;
+    if constexpr (sizeof(size_t) == 8) {
+      return value * size_t{0x9e3779b97f4a7c15ULL};
+    } else {
+      return value * size_t{0x9e3779b9UL};
+    }
+  }
+
+  void Grow(size_t capacity) {
+    std::vector<const Object*> old_slots = std::move(slots_);
+    slots_.assign(capacity, nullptr);
+    for (const Object* object : old_slots) {
+      if (object == nullptr) continue;
+      size_t index = Hash(object) & (capacity - 1);
+      while (slots_[index] != nullptr) index = (index + 1) & (capacity - 1);
+      slots_[index] = object;
+    }
+  }
+
+  std::vector<const Object*> slots_;
+  size_t size_{0};
+};
+
 /// \cond Doxygen_Suppress
 // Return from the current ABI visit function if Result stops traversal.
 // Result must evaluate to Expected whose raw storage can be moved to TVMFFIAny.
@@ -530,7 +578,7 @@ class StructuralWalkVisitorObj : public StructuralVisitorObj {
     }
     if constexpr (deduplicate) {
       const Object* object = value.as<Object>();
-      if (object != nullptr && !visited_.insert(object).second) {
+      if (object != nullptr && !visited_.Insert(object)) {
         return details::ExpectedUnsafe::MoveToTVMFFIAny(
             Expected<Optional<VisitInterrupt>>(std::nullopt));
       }
@@ -564,7 +612,7 @@ class StructuralWalkVisitorObj : public StructuralVisitorObj {
 
   /*! \brief Composed dispatch closure invoked once per visited node. */
   Dispatch dispatch_;
-  std::unordered_set<const Object*> visited_;
+  StructuralWalkIdentitySet visited_;
 };
 
 /*!

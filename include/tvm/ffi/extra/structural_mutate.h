@@ -44,8 +44,8 @@
 #include <string>
 #include <tuple>
 #include <type_traits>
-#include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace tvm {
 namespace ffi {
@@ -387,6 +387,7 @@ class StructuralMutatorObj : public Object {
    * \brief Current def-region context for def-region-aware structural mutation.
    */
   TVMFFIDefRegionKind def_region_mode_ = kTVMFFIDefRegionKindNone;
+
 };
 
 /*!
@@ -531,6 +532,62 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
 
 namespace details {
 
+class StructuralMapIdentityRemap {
+ public:
+  TVM_FFI_INLINE const Any* Find(const Object* object) const {
+    if (slots_.empty()) return nullptr;
+    size_t index = Hash(object) & (slots_.size() - 1);
+    while (const Object* current = slots_[index].object) {
+      if (current == object) return &slots_[index].value;
+      index = (index + 1) & (slots_.size() - 1);
+    }
+    return nullptr;
+  }
+
+  TVM_FFI_INLINE void Set(const Object* object, Any value) {
+    if (slots_.empty()) Grow(8);
+    if (size_ * 2 >= slots_.size()) Grow(slots_.size() * 2);
+    size_t index = Hash(object) & (slots_.size() - 1);
+    while (const Object* current = slots_[index].object) {
+      if (current == object) {
+        slots_[index].value = std::move(value);
+        return;
+      }
+      index = (index + 1) & (slots_.size() - 1);
+    }
+    slots_[index].object = object;
+    slots_[index].value = std::move(value);
+    ++size_;
+  }
+
+ private:
+  struct Entry {
+    const Object* object{nullptr};
+    Any value{nullptr};
+  };
+
+  TVM_FFI_INLINE static size_t Hash(const Object* object) {
+    size_t value = reinterpret_cast<size_t>(object) >> 4;
+    if constexpr (sizeof(size_t) == 8) {
+      return value * size_t{0x9e3779b97f4a7c15ULL};
+    } else {
+      return value * size_t{0x9e3779b9UL};
+    }
+  }
+
+  void Grow(size_t capacity) {
+    std::vector<Entry> old_slots = std::move(slots_);
+    slots_.resize(capacity);
+    size_ = 0;
+    for (Entry& entry : old_slots) {
+      if (entry.object != nullptr) Set(entry.object, std::move(entry.value));
+    }
+  }
+
+  std::vector<Entry> slots_;
+  size_t size_{0};
+};
+
 /// \cond Doxygen_Suppress
 // Return from the current mutation function if Result is an Error.
 // Append Node to the mutate error context before returning.
@@ -619,11 +676,11 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
     }
     try {
       const Object* var_ptr = var.cast<const Object*>();
-      auto it = var_remap_.find(var_ptr);
-      if (it == var_remap_.end()) {
+      const Any* mapped_value = var_remap_.Find(var_ptr);
+      if (mapped_value == nullptr) {
         return Any(nullptr);
       }
-      return it->second;
+      return *mapped_value;
     } catch (const Error& err) {
       return Unexpected(err);
     }
@@ -642,7 +699,7 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
     }
     try {
       Any owned_mapped_value(mapped_value);
-      var_remap_.insert_or_assign(var.cast<const Object*>(), std::move(owned_mapped_value));
+      var_remap_.Set(var.cast<const Object*>(), std::move(owned_mapped_value));
       return Expected<void>();
     } catch (const Error& err) {
       return Unexpected(err);
@@ -758,7 +815,7 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
   Dispatch dispatch_;
 
   /*! \brief Identity-substitution table. */
-  std::unordered_map<const Object*, Any> var_remap_;
+  StructuralMapIdentityRemap var_remap_;
 };
 
 /*!
