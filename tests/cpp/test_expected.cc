@@ -409,6 +409,35 @@ TEST(Expected, ExpectedUnsafeGetDataConstOverloadBorrows) {
   EXPECT_EQ(var.use_count(), before);  // A borrow leaves the payload and its reference in place.
 }
 
+// MoveDataAutoCast moves the payload out and converts it to the type of the target.
+TEST(Expected, ExpectedUnsafeMoveDataAutoCastToConcreteType) {
+  TVar var("x");
+  Expected<Any> result = Any(var);
+  int before = var.use_count();
+
+  TVar out = details::ExpectedUnsafe::MoveDataAutoCast(result);
+  EXPECT_TRUE(out.same_as(var));
+  EXPECT_EQ(var.use_count(), before);
+}
+
+// Any on the left short-circuits through MoveFromAnyAfterCheck<Any> to a plain move.
+TEST(Expected, ExpectedUnsafeMoveDataAutoCastToAny) {
+  TVar var("x");
+  Expected<Any> result = Any(var);
+  int before = var.use_count();
+
+  Any out = details::ExpectedUnsafe::MoveDataAutoCast(result);
+  EXPECT_TRUE(out.as<TVar>().value().same_as(var));
+  EXPECT_EQ(var.use_count(), before);
+}
+
+// A typed Expected payload converts to its own success type through the proxy.
+TEST(Expected, ExpectedUnsafeMoveDataAutoCastFromTypedExpected) {
+  Expected<String> result = String("hello");
+  String out = details::ExpectedUnsafe::MoveDataAutoCast(result);
+  EXPECT_EQ(out, "hello");
+}
+
 TEST(Expected, ExpectedUnsafeMoveBetweenExpectedStorageTypes) {
   Expected<String> src = String("hello");
   TVMFFIAny raw = details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(src));
