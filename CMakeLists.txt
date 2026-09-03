@@ -203,7 +203,6 @@ endif ()
 
 option(TVM_FFI_ATTACH_DEBUG_SYMBOLS "Attach debug symbols even in release mode" OFF)
 option(TVM_FFI_BUILD_TESTS "Adding test targets." OFF)
-option(TVM_FFI_BUILD_BENCHMARKS "Build opt-in C++ microbenchmarks." OFF)
 
 if (TVM_FFI_ATTACH_DEBUG_SYMBOLS)
   if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -228,10 +227,6 @@ if (TVM_FFI_BUILD_TESTS)
   include(cmake/Utils/AddGoogleTest.cmake)
   add_subdirectory(tests/cpp/)
   tvm_ffi_add_cxx_warning(tvm_ffi_objs)
-endif ()
-
-if (TVM_FFI_BUILD_BENCHMARKS)
-  add_subdirectory(tests/benchmark)
 endif ()
 
 # ######### Adding python module ##########
