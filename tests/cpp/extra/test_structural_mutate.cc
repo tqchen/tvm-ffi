@@ -120,10 +120,9 @@ TEST(StructuralMap, RegisteredMutateHookUsesAssignOrReturn) {
   Optional<VisitErrorContext> context = VisitErrorContext::TryGetFromError(failed.error());
   ASSERT_TRUE(context.has_value());
   const List<ObjectRef>& reverse_pattern = context.value()->reverse_visit_pattern;
-  ASSERT_EQ(reverse_pattern.size(), 3U);
+  ASSERT_EQ(reverse_pattern.size(), 2U);
   EXPECT_TRUE(reverse_pattern[0].same_as(lhs));
   EXPECT_TRUE(reverse_pattern[1].same_as(root));
-  EXPECT_TRUE(reverse_pattern[2].same_as(root));
 
   TMutatePair nullable(ObjectRef(nullptr), rhs);
   TMutatePair nullable_mapped =
