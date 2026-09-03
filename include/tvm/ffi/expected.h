@@ -349,6 +349,28 @@ class Expected<void> {
 namespace details {
 
 /*!
+ * \brief Conversion helper for assign-or-return macros.
+ *
+ * \note ``auto`` on the left of the macro deduces this helper instead of triggering its
+ *       conversion. The destination must have a concrete type.
+ */
+class AssignOrReturnHelper {
+ public:
+  TVM_FFI_INLINE explicit AssignOrReturnHelper(Any&& data) : data_(std::move(data)) {}
+
+  template <typename T>
+  TVM_FFI_INLINE operator T() && {  // NOLINT(google-explicit-constructor)
+    if constexpr (!std::is_same_v<T, Any>) {
+      TVM_FFI_DCHECK(data_.as<T>().has_value());
+    }
+    return AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
+  }
+
+ private:
+  Any data_;
+};
+
+/*!
  * \brief Unsafe raw-storage helpers for Expected.
  *
  * These helpers bypass normal value checking and are intended for ABI boundaries
@@ -377,6 +399,17 @@ struct ExpectedUnsafe {
   template <typename T>
   TVM_FFI_INLINE static TVMFFIAny MoveToTVMFFIAny(Expected<T>&& result) {
     return AnyUnsafe::MoveAnyToTVMFFIAny(std::move(result.data_));
+  }
+
+  /*!
+   * \brief Return the underlying Any storage as an rvalue reference.
+   *
+   * \note Without this overload, ``std::move(GetData(x))`` yields ``const Any&&`` and binds the
+   *       copy constructor.
+   */
+  template <typename T>
+  TVM_FFI_INLINE static Any&& GetData(Expected<T>& result) noexcept {
+    return std::move(result.data_);
   }
 
   /*!

@@ -358,8 +358,10 @@ class TFuncObj : public Object {
   static TVMFFIAny StructuralVisit(StructuralVisitorObj* visitor, AnyView value) noexcept {
     const auto* self = value.cast<const TFuncObj*>();
 
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->WithDefRegionKind(
-        kTVMFFIDefRegionKindRecursive, [&]() { return visitor->VisitExpected(self->params); }));
+    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(
+        visitor->WithDefRegionKind(kTVMFFIDefRegionKindRecursive,
+                                   [&]() { return visitor->VisitExpected(self->params); }),
+        value);
 
     return details::ExpectedUnsafe::MoveToTVMFFIAny(visitor->VisitExpected(self->body));
   }

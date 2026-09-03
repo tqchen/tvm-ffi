@@ -385,6 +385,63 @@ TEST(Expected, ExpectedUnsafeGetDataCompatibleStorageType) {
       details::ExpectedUnsafe::GetData(true_result)));
 }
 
+// The non-const GetData overload is what makes std::move(GetData(x)) actually move. Without it
+// the const overload is the only candidate and the expression binds the copy constructor.
+TEST(Expected, ExpectedUnsafeGetDataRvalueMovesInsteadOfCopying) {
+  TVar var("x");
+  Expected<Any> result = Any(var);
+  int before = var.use_count();  // var plus the Expected payload.
+
+  Any moved = std::move(details::ExpectedUnsafe::GetData(result));
+  EXPECT_TRUE(moved.as<TVar>().value().same_as(var));
+  // A copy would leave the payload in place and raise the count; a move transfers it.
+  EXPECT_EQ(var.use_count(), before);
+}
+
+// The const overload still applies to a const Expected and must not disturb the payload.
+TEST(Expected, ExpectedUnsafeGetDataConstOverloadBorrows) {
+  TVar var("x");
+  const Expected<Any> result = Any(var);
+  int before = var.use_count();
+
+  const Any& borrowed = details::ExpectedUnsafe::GetData(result);
+  EXPECT_TRUE(borrowed.as<TVar>().value().same_as(var));
+  EXPECT_EQ(var.use_count(), before);  // A borrow leaves the payload and its reference in place.
+}
+
+// AssignOrReturnHelper converts a moved payload to the type of the target.
+TEST(Expected, AssignOrReturnHelperToConcreteType) {
+  TVar var("x");
+  Expected<Any> result = Any(var);
+  int before = var.use_count();
+
+  TVar out = details::AssignOrReturnHelper(std::move(details::ExpectedUnsafe::GetData(result)));
+  EXPECT_TRUE(out.same_as(var));
+  EXPECT_EQ(var.use_count(), before);
+}
+
+// Any on the left short-circuits through MoveFromAnyAfterCheck<Any> to a plain move.
+TEST(Expected, AssignOrReturnHelperToAny) {
+  TVar var("x");
+  Expected<Any> result = Any(var);
+  int before = var.use_count();
+
+  Any out = details::AssignOrReturnHelper(std::move(details::ExpectedUnsafe::GetData(result)));
+  EXPECT_TRUE(out.as<TVar>().value().same_as(var));
+  EXPECT_EQ(var.use_count(), before);
+}
+
+// Conversion is rvalue-only so the helper cannot be consumed more than once accidentally.
+TEST(Expected, AssignOrReturnHelperConversionIsRvalueOnly) {
+  static_assert(!std::is_convertible_v<details::AssignOrReturnHelper&, String>);
+  static_assert(std::is_convertible_v<details::AssignOrReturnHelper&&, String>);
+
+  Expected<String> result = String("hello");
+  details::AssignOrReturnHelper helper(std::move(details::ExpectedUnsafe::GetData(result)));
+  String out = std::move(helper);
+  EXPECT_EQ(out, "hello");
+}
+
 TEST(Expected, ExpectedUnsafeMoveBetweenExpectedStorageTypes) {
   Expected<String> src = String("hello");
   TVMFFIAny raw = details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(src));
