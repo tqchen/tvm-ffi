@@ -570,10 +570,7 @@ namespace details {
  * \brief Structural mutator that invokes typed callbacks during recursive mapping.
  *
  * \tparam order Callback placement relative to child mapping.
- * \tparam Dispatch Callback dispatcher with signature
- *                  ``Expected<Any>(AnyView, TVMFFIDefRegionKind, OnMatch, OnNoMatch)``. It runs
- *                  the link type tests and calls ``on_match(invoke_callback)`` for the first
- *                  matching link, or ``on_no_match()`` when the node matches none.
+ * \tparam Dispatch Callback dispatcher.
  *                  \sa StructuralMapCallbackChain
  */
 template <WalkOrder order, typename Dispatch>
@@ -700,9 +697,15 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
    * \return The mutated value or an Error.
    */
   Expected<Any> MaybeInplaceMutateImpl(AnyView value) noexcept {
-    // Match before descent and keep remapping inside the continuation so unmatched nodes skip
-    // variable-type detection and callback-chain work. Reflected fallback can record a remap
-    // during descent, which would suppress callback execution if matching happened afterward.
+    // The link match is tested before any descent, and the identity remap lives
+    // inside the match continuation, so the var-type detection only runs when a
+    // callback signature actually matches. Unmatched nodes skip both it and the
+    // callback chain.
+    //
+    // The ordering is load-bearing: DefaultMutateExpected's reflected fallback
+    // writes its own remap entry for this node, so testing the match after descent
+    // would let the remap read that entry, treat the node as already handled, and
+    // never run the callback.
     if constexpr (order == WalkOrder::kPreOrder) {
       return dispatch_(
           value, def_region_kind(),
@@ -756,9 +759,15 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
    * \return The mutated value or an Error.
    */
   Expected<Any> MutateImpl(AnyView value) noexcept {
-    // Match before descent and keep remapping inside the continuation so unmatched nodes skip
-    // variable-type detection and callback-chain work. Reflected fallback can record a remap
-    // during descent, which would suppress callback execution if matching happened afterward.
+    // The link match is tested before any descent, and the identity remap lives
+    // inside the match continuation, so the var-type detection only runs when a
+    // callback signature actually matches. Unmatched nodes skip both it and the
+    // callback chain.
+    //
+    // The ordering is load-bearing: DefaultMutateExpected's reflected fallback
+    // writes its own remap entry for this node, so testing the match after descent
+    // would let the remap read that entry, treat the node as already handled, and
+    // never run the callback.
     if constexpr (order == WalkOrder::kPreOrder) {
       return dispatch_(
           value, def_region_kind(),
@@ -799,16 +808,13 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
   Map<ObjectRef, Any> var_remap_;
 };
 
-/*!
- * \brief Build a callback dispatcher from a typed callback chain.
- *
- * The dispatcher answers "which link matches this node" as control flow rather than as a value.
- * It takes the node, the active def-region kind, an on-match continuation, and an on-no-match
- * continuation, and returns whichever one applies. The on-match continuation receives a callable
- * ``invoke_callback(AnyView target)`` that converts \p target to the matched link's argument type
- * and invokes it, so the caller decides what wraps the invocation. A node that matches no link
- * therefore pays one type test per link and nothing else.
- */
+// Build a callback dispatcher from a typed callback chain. The dispatcher answers "which link
+// matches this node" as control flow rather than as a value. It takes the node, the active
+// def-region kind, an on-match continuation, and an on-no-match continuation, and returns whichever
+// one applies. The on-match continuation receives a callable `invoke_callback(AnyView target)` that
+// converts target to the matched link's argument type and invokes it, so the caller decides what
+// wraps the invocation. A node that matches no link therefore pays one type test per link and
+// nothing else.
 struct StructuralMapCallbackChain {
  public:
   /*!
@@ -827,8 +833,8 @@ struct StructuralMapCallbackChain {
       auto run_match = [&](auto&& invoke_callback) {
         result.emplace(on_match(std::forward<decltype(invoke_callback)>(invoke_callback)));
       };
-      // Fold expression: each TryCallLink returns false on no-match, or hands the matched link to
-      // run_match and returns true; || short-circuits on the first match.
+      // Selection is control flow: the first matching link hands its invocation thunk to
+      // run_match, while a node matching no link goes directly to on_no_match.
       bool matched = std::apply(
           [&](auto&... callback) { return (... || TryCallLink(callback, value, kind, run_match)); },
           callbacks);
@@ -840,22 +846,9 @@ struct StructuralMapCallbackChain {
   }
 
  private:
-  /*!
-   * \brief Hand the matched link to \p on_match, or report that \p value matches no link.
-   *
-   * \tparam Callback Callback type whose first argument selects the value type.
-   * \tparam OnMatch Continuation invoked with ``invoke_callback(AnyView target)``.
-   * \param callback The callback under test.
-   * \param value The value whose type selects the link.
-   * \param kind The active def-region kind.
-   * \param on_match Continuation deciding what wraps the callback invocation.
-   * \return True when the link matched and \p on_match ran, false otherwise.
-   *
-   * \note The conversion to the callback argument type stays here, but it is applied to the
-   *       ``target`` handed to ``invoke_callback`` rather than to \p value, so a post-order
-   *       caller can select the link on the input node and still invoke it on the node whose
-   *       children have already been mapped.
-   */
+  // Hand the matched link's invocation thunk to on_match, or return false on no match. The
+  // target conversion stays in the thunk so post-order can select on the input and invoke on the
+  // node whose children have already been mapped.
   template <typename Callback, typename OnMatch>
   TVM_FFI_INLINE static bool TryCallLink(Callback& callback, AnyView value,
                                          TVMFFIDefRegionKind kind, OnMatch&& on_match) {
@@ -875,21 +868,18 @@ struct StructuralMapCallbackChain {
         return InvokeCallbackLink(callback, Any(target), kind);
       });
       return true;
-    } else {
-      if (!value.template as<TSub>().has_value()) {
-        return false;
-      }
+    } else if (auto opt = value.template as<TSub>()) {
       on_match([&](AnyView target) -> Expected<Any> {
         std::optional<TSub> converted = target.template as<TSub>();
-        if (TVM_FFI_PREDICT_FALSE(!converted.has_value())) {
-          // Only reachable when a custom mutation hook changed this node's type while mapping
-          // its children, so the link selected on the input node no longer applies.
+        if (!converted.has_value()) {
+          // A custom post-order hook may change the node type after the input selected this link.
           return Any(target);
         }
         return InvokeCallbackLink(callback, *std::move(converted), kind);
       });
       return true;
     }
+    return false;
   }
 
   /*!
@@ -899,8 +889,7 @@ struct StructuralMapCallbackChain {
    * \param callback The matched callback.
    * \param value The converted value passed to the callback.
    * \param kind The active def-region kind.
-   * \return The callback result normalized to ``Expected<Any>``, including an ``Error`` thrown
-   *         by the callback.
+   * \return The callback result normalized to ``Expected<Any>``.
    */
   template <typename Callback, typename Value>
   TVM_FFI_INLINE static Expected<Any> InvokeCallbackLink(Callback& callback, Value&& value,
@@ -929,10 +918,8 @@ struct StructuralMapCallbackChain {
  * Each callback is selected by the type of its first argument. The argument may be ``AnyView``,
  * ``Any``, an object reference type, an object pointer type, or another FFI-convertible POD type. A
  * callback may optionally take a second ``TVMFFIDefRegionKind`` argument. Callbacks are tested in
- * declaration order against the input node and only the first strict type match is invoked. In
- * post-order the callback is still selected by the input node's type, and receives the node after
- * its children have been mapped. An ``AnyView`` callback argument is borrowed and must not be
- * retained after the callback returns.
+ * declaration order and only the first strict type match is invoked. An ``AnyView`` callback
+ * argument is borrowed and must not be retained after the callback returns.
  *
  * Each callback should follow map semantics: it must not mutate the input in place and should
  * return a bare Any-convertible replacement or ``Expected<U>`` where ``U`` is Any-convertible.
@@ -945,10 +932,7 @@ struct StructuralMapCallbackChain {
  * Objects marked ``kTVMFFISEqHashKindFreeVar`` or ``kTVMFFISEqHashKindDAGNode`` are
  * identity-substituted. A callback is invoked only for the first occurrence of each identity; its
  * final result, including an unchanged result, is reused for every later occurrence in the same
- * structural-map invocation. A node that matches no callback is identity-substituted by
- * \ref StructuralMutatorObj::DefaultMutateExpected on its reflected fallback path, so a type with
- * a registered ``__s_mutate__`` hook remains responsible for its own remap exactly as that hook
- * attribute documents.
+ * structural-map invocation.
  *
  * \sa WalkOrder, StructuralMutator
  *
