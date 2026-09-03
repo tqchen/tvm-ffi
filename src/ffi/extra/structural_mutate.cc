@@ -108,7 +108,7 @@ Expected<Any> MutateSeqContainerExpected(StructuralMutatorObj* mutator, AnyView 
       if (TVM_FFI_PREDICT_FALSE(mapped_item.is_err())) {
         return Unexpected(std::move(mapped_item).error());
       }
-      Any mapped_value = details::ExpectedUnsafe::MoveDataAutoCast(mapped_item);
+      Any mapped_value = std::move(details::ExpectedUnsafe::GetData(mapped_item));
 
       if (output == nullptr) {
         if (item.same_as(mapped_value)) {
@@ -150,7 +150,7 @@ Expected<Any> MaybeInplaceMutateSeqContainerExpected(StructuralMutatorObj* mutat
       if (TVM_FFI_PREDICT_FALSE(mapped_item.is_err())) {
         return Unexpected(std::move(mapped_item).error());
       }
-      Any mapped_value = details::ExpectedUnsafe::MoveDataAutoCast(mapped_item);
+      Any mapped_value = std::move(details::ExpectedUnsafe::GetData(mapped_item));
 
       if (!item.same_as(mapped_value)) {
         target->SetItem(i, std::move(mapped_value));
@@ -186,7 +186,7 @@ Expected<Any> MutateMapValuesExpected(StructuralMutatorObj* mutator, AnyView val
         return Unexpected(std::move(mapped_value).error());
       }
 
-      Any new_value = details::ExpectedUnsafe::MoveDataAutoCast(mapped_value);
+      Any new_value = std::move(details::ExpectedUnsafe::GetData(mapped_value));
       bool changed = !old_value.same_as(new_value);
       if (output == nullptr) {
         if (!changed) {
@@ -232,7 +232,7 @@ Expected<Any> MaybeInplaceMutateMapValuesExpected(StructuralMutatorObj* mutator,
       if (TVM_FFI_PREDICT_FALSE(mapped_value.is_err())) {
         return Unexpected(std::move(mapped_value).error());
       }
-      Any new_value = details::ExpectedUnsafe::MoveDataAutoCast(mapped_value);
+      Any new_value = std::move(details::ExpectedUnsafe::GetData(mapped_value));
 
       if (!old_value.same_as(new_value)) {
         it->second = std::move(new_value);

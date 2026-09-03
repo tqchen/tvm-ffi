@@ -85,17 +85,19 @@ Expected<Optional<VisitInterrupt>> StructuralWalkExpected(
 }
 
 /*! \brief Visit entries in a sequence container. */
-TVMFFIAny VisitSeqContainer(StructuralVisitorObj* visitor, const SeqBaseObj* seq) noexcept {
+TVMFFIAny VisitSeqContainer(StructuralVisitorObj* visitor, AnyView value,
+                            const SeqBaseObj* seq) noexcept {
   for (const Any& item : *seq) {
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(item), item);
+    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(item), value);
   }
   return ExpectedUnsafe::MoveToTVMFFIAny(Expected<Optional<VisitInterrupt>>(std::nullopt));
 }
 
 /*! \brief Visit values in a map container while treating keys as structural anchors. */
-TVMFFIAny VisitMapContainer(StructuralVisitorObj* visitor, const MapBaseObj* map) noexcept {
+TVMFFIAny VisitMapContainer(StructuralVisitorObj* visitor, AnyView value,
+                            const MapBaseObj* map) noexcept {
   for (const auto& kv : *map) {
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(kv.second), kv.second);
+    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(kv.second), value);
   }
   return ExpectedUnsafe::MoveToTVMFFIAny(Expected<Optional<VisitInterrupt>>(std::nullopt));
 }
@@ -103,25 +105,25 @@ TVMFFIAny VisitMapContainer(StructuralVisitorObj* visitor, const MapBaseObj* map
 /*! \brief Structural visit hook for ArrayObj. */
 TVMFFIAny VisitArray(StructuralVisitorObj* visitor, AnyView value) noexcept {
   const auto* array = value.cast<const ArrayObj*>();
-  return VisitSeqContainer(visitor, array);
+  return VisitSeqContainer(visitor, value, array);
 }
 
 /*! \brief Structural visit hook for ListObj. */
 TVMFFIAny VisitList(StructuralVisitorObj* visitor, AnyView value) noexcept {
   const auto* list = value.cast<const ListObj*>();
-  return VisitSeqContainer(visitor, list);
+  return VisitSeqContainer(visitor, value, list);
 }
 
 /*! \brief Structural visit hook for MapObj. */
 TVMFFIAny VisitMap(StructuralVisitorObj* visitor, AnyView value) noexcept {
   const auto* map = value.cast<const MapObj*>();
-  return VisitMapContainer(visitor, map);
+  return VisitMapContainer(visitor, value, map);
 }
 
 /*! \brief Structural visit hook for DictObj. */
 TVMFFIAny VisitDict(StructuralVisitorObj* visitor, AnyView value) noexcept {
   const auto* dict = value.cast<const DictObj*>();
-  return VisitMapContainer(visitor, dict);
+  return VisitMapContainer(visitor, value, dict);
 }
 
 }  // namespace details

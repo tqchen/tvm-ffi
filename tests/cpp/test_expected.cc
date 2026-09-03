@@ -409,32 +409,36 @@ TEST(Expected, ExpectedUnsafeGetDataConstOverloadBorrows) {
   EXPECT_EQ(var.use_count(), before);  // A borrow leaves the payload and its reference in place.
 }
 
-// MoveDataAutoCast moves the payload out and converts it to the type of the target.
-TEST(Expected, ExpectedUnsafeMoveDataAutoCastToConcreteType) {
+// AssignOrReturnHelper converts a moved payload to the type of the target.
+TEST(Expected, AssignOrReturnHelperToConcreteType) {
   TVar var("x");
   Expected<Any> result = Any(var);
   int before = var.use_count();
 
-  TVar out = details::ExpectedUnsafe::MoveDataAutoCast(result);
+  TVar out = details::AssignOrReturnHelper(std::move(details::ExpectedUnsafe::GetData(result)));
   EXPECT_TRUE(out.same_as(var));
   EXPECT_EQ(var.use_count(), before);
 }
 
 // Any on the left short-circuits through MoveFromAnyAfterCheck<Any> to a plain move.
-TEST(Expected, ExpectedUnsafeMoveDataAutoCastToAny) {
+TEST(Expected, AssignOrReturnHelperToAny) {
   TVar var("x");
   Expected<Any> result = Any(var);
   int before = var.use_count();
 
-  Any out = details::ExpectedUnsafe::MoveDataAutoCast(result);
+  Any out = details::AssignOrReturnHelper(std::move(details::ExpectedUnsafe::GetData(result)));
   EXPECT_TRUE(out.as<TVar>().value().same_as(var));
   EXPECT_EQ(var.use_count(), before);
 }
 
-// A typed Expected payload converts to its own success type through the proxy.
-TEST(Expected, ExpectedUnsafeMoveDataAutoCastFromTypedExpected) {
+// Conversion is rvalue-only so the helper cannot be consumed more than once accidentally.
+TEST(Expected, AssignOrReturnHelperConversionIsRvalueOnly) {
+  static_assert(!std::is_convertible_v<details::AssignOrReturnHelper&, String>);
+  static_assert(std::is_convertible_v<details::AssignOrReturnHelper&&, String>);
+
   Expected<String> result = String("hello");
-  String out = details::ExpectedUnsafe::MoveDataAutoCast(result);
+  details::AssignOrReturnHelper helper(std::move(details::ExpectedUnsafe::GetData(result)));
+  String out = std::move(helper);
   EXPECT_EQ(out, "hello");
 }
 

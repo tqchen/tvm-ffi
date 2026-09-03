@@ -349,6 +349,28 @@ class Expected<void> {
 namespace details {
 
 /*!
+ * \brief Conversion helper for assign-or-return macros.
+ *
+ * \note ``auto`` on the left of the macro deduces this helper instead of triggering its
+ *       conversion. The destination must have a concrete type.
+ */
+class AssignOrReturnHelper {
+ public:
+  TVM_FFI_INLINE explicit AssignOrReturnHelper(Any&& data) : data_(std::move(data)) {}
+
+  template <typename T>
+  TVM_FFI_INLINE operator T() && {  // NOLINT(google-explicit-constructor)
+    if constexpr (!std::is_same_v<T, Any>) {
+      TVM_FFI_DCHECK(data_.as<T>().has_value());
+    }
+    return AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
+  }
+
+ private:
+  Any data_;
+};
+
+/*!
  * \brief Unsafe raw-storage helpers for Expected.
  *
  * These helpers bypass normal value checking and are intended for ABI boundaries
@@ -381,15 +403,9 @@ struct ExpectedUnsafe {
 
   /*!
    * \brief Return the underlying Any storage as an rvalue reference.
-   * \tparam T The Expected success type.
-   * \param result The Expected value to move from.
-   * \return Rvalue reference to the raw Any storage.
    *
-   * \note This overload is what makes ``std::move(GetData(x))`` actually move. Without it the
-   *       const overload below is the only candidate, so the expression yields ``const Any&&``
-   *       and binds the copy constructor, taking a reference count the call site looks like it
-   *       is avoiding. Nothing is moved until the returned reference is consumed, so \p result
-   *       is left intact when the caller only inspects it.
+   * \note Without this overload, ``std::move(GetData(x))`` yields ``const Any&&`` and binds the
+   *       copy constructor.
    */
   template <typename T>
   TVM_FFI_INLINE static Any&& GetData(Expected<T>& result) noexcept {
@@ -405,53 +421,6 @@ struct ExpectedUnsafe {
   template <typename T>
   TVM_FFI_INLINE static const Any& GetData(const Expected<T>& result) noexcept {
     return result.data_;
-  }
-
-  /*!
-   * \brief Proxy that converts a moved-out Expected payload to the destination type.
-   *
-   * \note Produced only by MoveDataAutoCast. The conversion is resolved against the declared
-   *       type of the initialization target, so no explicit type argument appears at the call
-   *       site. The conversion is unchecked in release builds; the debug assert is the only
-   *       guard, so the caller must already know the payload type.
-   */
-  struct CastProxy {
-    /*! \brief The moved-out payload awaiting conversion. */
-    Any value;
-
-    /*!
-     * \brief Convert the payload to the destination type.
-     * \tparam T The destination type, deduced from the initialization target.
-     * \return The payload decoded as T.
-     */
-    template <typename T>
-    TVM_FFI_INLINE operator T() && {  // NOLINT(runtime/explicit)
-      if constexpr (!std::is_same_v<T, Any>) {
-        TVM_FFI_DCHECK(value.as<T>().has_value());
-      }
-      return AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(value));
-    }
-  };
-
-  /*!
-   * \brief Move the payload out of an Expected without re-testing its success state.
-   * \tparam U The Expected success type.
-   * \param ref The Expected to move the payload out of. Left holding a moved-from Any.
-   * \return Proxy that converts to the destination type.
-   *
-   * \note For use directly after an early-return check has established that \p ref holds a
-   *       value. Neither the skipped success test nor the unchecked conversion appears at the
-   *       call site.
-   *
-   * \note ``auto`` on the left does not work: it deduces CastProxy instead of triggering the
-   *       conversion. The destination must be a concrete type, which is the normal case for a
-   *       structural hook writing a field of declared type. Write ``Any x = ...`` when the
-   *       payload should stay type-erased; ``MoveFromAnyAfterCheck<Any>`` short-circuits to a
-   *       plain move, so that costs nothing.
-   */
-  template <typename U>
-  TVM_FFI_INLINE static CastProxy MoveDataAutoCast(Expected<U>& ref) {
-    return CastProxy{std::move(GetData(ref))};
   }
 
   /*!

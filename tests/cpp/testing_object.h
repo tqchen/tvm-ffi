@@ -361,7 +361,7 @@ class TFuncObj : public Object {
     TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(
         visitor->WithDefRegionKind(kTVMFFIDefRegionKindRecursive,
                                    [&]() { return visitor->VisitExpected(self->params); }),
-        self->params);
+        value);
 
     return details::ExpectedUnsafe::MoveToTVMFFIAny(visitor->VisitExpected(self->body));
   }
