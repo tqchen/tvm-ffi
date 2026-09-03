@@ -532,27 +532,66 @@ namespace details {
 
 /// \cond Doxygen_Suppress
 // Return from the current mutation function if Result is an Error.
-// Append Node to the mutate error context before returning.
-#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(Result, Node)                       \
+// Append Node to the mutate error context before returning. Node is required: dropping it
+// silently degrades every error message produced below this frame.
+// A raw pointer Node must be non-null; pass nullable nodes as ObjectRef or Any so None is skipped.
+#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result, Node)                                          \
   do {                                                                                             \
     auto&& tvm_ffi_res_ = (Result);                                                                \
     if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.type_index() == ::tvm::ffi::TypeIndex::kTVMFFIError)) { \
-      if ((Node).type_index() >= ::tvm::ffi::TypeIndex::kTVMFFIStaticObjectBegin) {                \
+      auto&& tvm_ffi_mutate_node_owner_ = (Node);                                                  \
+      ::tvm::ffi::AnyView tvm_ffi_mutate_node_ = tvm_ffi_mutate_node_owner_;                       \
+      if (tvm_ffi_mutate_node_.type_index() >= ::tvm::ffi::TypeIndex::kTVMFFIStaticObjectBegin) {  \
         ::tvm::ffi::Error tvm_ffi_mutate_err_ = tvm_ffi_res_.error();                              \
-        ::tvm::ffi::details::UpdateVisitErrorContext(tvm_ffi_mutate_err_,                          \
-                                                     (Node).cast<::tvm::ffi::ObjectRef>());        \
+        ::tvm::ffi::details::UpdateVisitErrorContext(                                              \
+            tvm_ffi_mutate_err_, tvm_ffi_mutate_node_.cast<::tvm::ffi::ObjectRef>());              \
       }                                                                                            \
       return ::std::move(tvm_ffi_res_);                                                            \
     }                                                                                              \
   } while (0)
+
+#define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Converted, Type, Name, ResultExpr, Node) \
+  auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */                           \
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result, Node);                                             \
+  auto Converted = /* NOLINT(bugprone-macro-parentheses) */                                      \
+      ::tvm::ffi::details::AssignOrReturnHelper(                                                 \
+          ::std::move(::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))                     \
+          .template TryMove<Type>();                                                             \
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Converted, Node);                                          \
+  Type Name = ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                       \
+      ::std::move(::tvm::ffi::details::ExpectedUnsafe::GetData(Converted)))
 /// \endcond
+
+/*!
+ * \brief Unwrap a successful mutation result into a newly declared value or return its error.
+ *
+ * ``Type`` must be concrete; use a type alias when it contains a top-level comma. A type mismatch
+ * returns ``Unexpected(TypeError)`` through the surrounding ``Expected`` function without
+ * throwing. This macro declares ``Name`` into the enclosing scope and must be used in a braced
+ * block, never as an unbraced control-flow body. A raw pointer node must be non-null; pass nullable
+ * nodes as ``ObjectRef`` or ``Any`` so ``None`` is skipped when constructing error context.
+ *
+ * Example:
+ * \code{.cpp}
+ * TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
+ *     ObjectRef, child, mutator->MutateExpected(self->child), self);
+ * \endcode
+ *
+ * \param Type The concrete type of the successful value.
+ * \param Name The name of the value declared in the enclosing scope.
+ * \param ResultExpr An expression producing the ``Expected`` value to unwrap.
+ * \param Node The current mutation node appended to the error context on failure.
+ */
+#define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Type, Name, ResultExpr, Node) \
+  TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(                              \
+      TVM_FFI_STR_CONCAT(tvm_ffi_mutate_result_, __COUNTER__),          \
+      TVM_FFI_STR_CONCAT(tvm_ffi_mutate_converted_, __COUNTER__), Type, Name, ResultExpr, Node)
 
 /*!
  * \brief Structural mutator that invokes typed callbacks during recursive mapping.
  *
  * \tparam order Callback placement relative to child mapping.
- * \tparam Dispatch Callback dispatcher with signature
- *                  ``Expected<Any>(AnyView, TVMFFIDefRegionKind)``.
+ * \tparam Dispatch Callback dispatcher.
  *                  \sa StructuralMapCallbackChain
  */
 template <WalkOrder order, typename Dispatch>
@@ -679,38 +718,60 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
    * \return The mutated value or an Error.
    */
   Expected<Any> MaybeInplaceMutateImpl(AnyView value) noexcept {
-    return MutateWithIdentityRemapExpected(value, [&]() -> Expected<Any> {
-      if constexpr (order == WalkOrder::kPreOrder) {
-        Expected<Any> callback_result = dispatch_(value, def_region_kind());
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(callback_result, value);
-        // A pre-order result can be mutated in place if unchanged or uniquely owned.
-        const Any& mapped_value = ExpectedUnsafe::GetData(callback_result);
-        const TVMFFIAny* mapped_data = AnyUnsafe::TVMFFIAnyPtrFromAny(mapped_value);
-        const TVMFFIAny input_data = value.CopyToTVMFFIAny();
-        if (mapped_data->type_index != input_data.type_index ||
-            mapped_data->zero_padding != input_data.zero_padding ||
-            mapped_data->v_int64 != input_data.v_int64) {
-          const Object* mapped_obj = mapped_value.as<Object>();
-          bool can_mutate_mapped_value_inplace = mapped_obj != nullptr && mapped_obj->unique();
-          Expected<Any> result = can_mutate_mapped_value_inplace
-                                     ? DefaultMaybeInplaceMutateExpected(mapped_value)
-                                     : DefaultMutateExpected(mapped_value);
-          TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, mapped_value);
-          return result;
-        }
-        Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
-        return result;
-      } else {
-        Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
+    // The link match is tested before any descent, and the identity remap lives
+    // inside the match continuation, so the var-type detection only runs when a
+    // callback signature actually matches. Unmatched nodes skip both it and the
+    // callback chain.
+    //
+    // The ordering is load-bearing: DefaultMutateExpected's reflected fallback
+    // writes its own remap entry for this node, so testing the match after descent
+    // would let the remap read that entry, treat the node as already handled, and
+    // never run the callback.
+    if constexpr (order == WalkOrder::kPreOrder) {
+      return dispatch_(
+          value, def_region_kind(),
+          [&](auto&& invoke_callback) -> Expected<Any> {
+            return MutateWithIdentityRemapExpected(value, [&]() -> Expected<Any> {
+              Expected<Any> callback_result = invoke_callback(value);
+              TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(callback_result, value);
+              // A pre-order result can be mutated in place if unchanged or uniquely owned.
+              const Any& mapped_value = ExpectedUnsafe::GetData(callback_result);
+              const TVMFFIAny* mapped_data = AnyUnsafe::TVMFFIAnyPtrFromAny(mapped_value);
+              const TVMFFIAny input_data = value.CopyToTVMFFIAny();
+              if (mapped_data->type_index != input_data.type_index ||
+                  mapped_data->zero_padding != input_data.zero_padding ||
+                  mapped_data->v_int64 != input_data.v_int64) {
+                const Object* mapped_obj = mapped_value.as<Object>();
+                bool can_mutate_mapped_value_inplace =
+                    mapped_obj != nullptr && mapped_obj->unique();
+                Expected<Any> result = can_mutate_mapped_value_inplace
+                                           ? DefaultMaybeInplaceMutateExpected(mapped_value)
+                                           : DefaultMutateExpected(mapped_value);
+                TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, mapped_value);
+                return result;
+              }
+              Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
+              TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, value);
+              return result;
+            });
+          },
+          [&]() -> Expected<Any> { return DefaultMaybeInplaceMutateExpected(value); });
+    } else {
+      return dispatch_(
+          value, def_region_kind(),
+          [&](auto&& invoke_callback) -> Expected<Any> {
+            return MutateWithIdentityRemapExpected(value, [&]() -> Expected<Any> {
+              Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
+              TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, value);
 
-        const Any& mapped_value = ExpectedUnsafe::GetData(result);
-        Expected<Any> callback_result = dispatch_(mapped_value, def_region_kind());
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(callback_result, mapped_value);
-        return callback_result;
-      }
-    });
+              const Any& mapped_value = ExpectedUnsafe::GetData(result);
+              Expected<Any> callback_result = invoke_callback(mapped_value);
+              TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(callback_result, mapped_value);
+              return callback_result;
+            });
+          },
+          [&]() -> Expected<Any> { return DefaultMaybeInplaceMutateExpected(value); });
+    }
   }
 
   /*!
@@ -719,25 +780,46 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
    * \return The mutated value or an Error.
    */
   Expected<Any> MutateImpl(AnyView value) noexcept {
-    return MutateWithIdentityRemapExpected(value, [&]() -> Expected<Any> {
-      if constexpr (order == WalkOrder::kPreOrder) {
-        Expected<Any> callback_result = dispatch_(value, def_region_kind());
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(callback_result, value);
+    // The link match is tested before any descent, and the identity remap lives
+    // inside the match continuation, so the var-type detection only runs when a
+    // callback signature actually matches. Unmatched nodes skip both it and the
+    // callback chain.
+    //
+    // The ordering is load-bearing: DefaultMutateExpected's reflected fallback
+    // writes its own remap entry for this node, so testing the match after descent
+    // would let the remap read that entry, treat the node as already handled, and
+    // never run the callback.
+    if constexpr (order == WalkOrder::kPreOrder) {
+      return dispatch_(
+          value, def_region_kind(),
+          [&](auto&& invoke_callback) -> Expected<Any> {
+            return MutateWithIdentityRemapExpected(value, [&]() -> Expected<Any> {
+              Expected<Any> callback_result = invoke_callback(value);
+              TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(callback_result, value);
 
-        const Any& mapped_value = ExpectedUnsafe::GetData(callback_result);
-        Expected<Any> result = DefaultMutateExpected(mapped_value);
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, mapped_value);
-        return result;
-      } else {
-        Expected<Any> result = DefaultMutateExpected(value);
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
+              const Any& mapped_value = ExpectedUnsafe::GetData(callback_result);
+              Expected<Any> result = DefaultMutateExpected(mapped_value);
+              TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, mapped_value);
+              return result;
+            });
+          },
+          [&]() -> Expected<Any> { return DefaultMutateExpected(value); });
+    } else {
+      return dispatch_(
+          value, def_region_kind(),
+          [&](auto&& invoke_callback) -> Expected<Any> {
+            return MutateWithIdentityRemapExpected(value, [&]() -> Expected<Any> {
+              Expected<Any> result = DefaultMutateExpected(value);
+              TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, value);
 
-        const Any& mapped_value = ExpectedUnsafe::GetData(result);
-        Expected<Any> callback_result = dispatch_(mapped_value, def_region_kind());
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(callback_result, mapped_value);
-        return callback_result;
-      }
-    });
+              const Any& mapped_value = ExpectedUnsafe::GetData(result);
+              Expected<Any> callback_result = invoke_callback(mapped_value);
+              TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(callback_result, mapped_value);
+              return callback_result;
+            });
+          },
+          [&]() -> Expected<Any> { return DefaultMutateExpected(value); });
+    }
   }
 
   /*! \brief Composed callback dispatcher owned by this mutator. */
@@ -747,9 +829,13 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
   Map<ObjectRef, Any> var_remap_;
 };
 
-/*!
- * \brief Build a callback dispatcher from a typed callback chain.
- */
+// Build a callback dispatcher from a typed callback chain. The dispatcher answers "which link
+// matches this node" as control flow rather than as a value. It takes the node, the active
+// def-region kind, an on-match continuation, and an on-no-match continuation, and returns whichever
+// one applies. The on-match continuation receives a callable `invoke_callback(AnyView target)` that
+// converts target to the matched link's argument type and invokes it, so the caller decides what
+// wraps the invocation. A node that matches no link therefore pays one type test per link and
+// nothing else.
 struct StructuralMapCallbackChain {
  public:
   /*!
@@ -761,37 +847,32 @@ struct StructuralMapCallbackChain {
   template <typename... Callbacks>
   static auto FromChain(Callbacks... callbacks) {
     auto callback_tuple = std::make_tuple(std::move(callbacks)...);
-    return [callbacks = std::move(callback_tuple)](
-               AnyView value, TVMFFIDefRegionKind kind) mutable -> Expected<Any> {
-      try {
-        std::optional<Expected<Any>> result;
-        // Fold expression: each TryCallLink returns empty std::optional on no-match
-        // (falsy) or a result on match (truthy); || short-circuits on first match.
-        std::apply(
-            [&](auto&... callback) { (... || (result = TryCallLink(callback, value, kind))); },
-            callbacks);
-        if (result.has_value()) {
-          return *std::move(result);
-        }
-        return Any(value);
-      } catch (const Error& err) {
-        return Unexpected(err);
+    return [callbacks = std::move(callback_tuple)](AnyView value, TVMFFIDefRegionKind kind,
+                                                   auto&& on_match,
+                                                   auto&& on_no_match) mutable -> Expected<Any> {
+      std::optional<Expected<Any>> result;
+      auto run_match = [&](auto&& invoke_callback) {
+        result.emplace(on_match(std::forward<decltype(invoke_callback)>(invoke_callback)));
+      };
+      // Selection is control flow: the first matching link hands its invocation thunk to
+      // run_match, while a node matching no link goes directly to on_no_match.
+      bool matched = std::apply(
+          [&](auto&... callback) { return (... || TryCallLink(callback, value, kind, run_match)); },
+          callbacks);
+      if (matched) {
+        return *std::move(result);
       }
+      return on_no_match();
     };
   }
 
  private:
-  /*!
-   * \brief Invoke \p callback when \p value matches its first argument.
-   * \tparam Callback Callback type whose first argument selects the value type.
-   * \param callback The callback under test.
-   * \param value The value to match and pass to the callback.
-   * \param kind The active def-region kind.
-   * \return The callback result on match, or an empty ``std::optional`` otherwise.
-   */
-  template <typename Callback>
-  TVM_FFI_INLINE static std::optional<Expected<Any>> TryCallLink(Callback& callback, AnyView value,
-                                                                 TVMFFIDefRegionKind kind) {
+  // Hand the matched link's invocation thunk to on_match, or return false on no match. The
+  // target conversion stays in the thunk so post-order can select on the input and invoke on the
+  // node whose children have already been mapped.
+  template <typename Callback, typename OnMatch>
+  TVM_FFI_INLINE static bool TryCallLink(Callback& callback, AnyView value,
+                                         TVMFFIDefRegionKind kind, OnMatch&& on_match) {
     using FuncInfo = FunctionInfo<std::decay_t<Callback>>;
     static_assert(FuncInfo::num_args == 1 || FuncInfo::num_args == 2,
                   "StructuralMap callbacks must take one argument (value) or two arguments "
@@ -799,15 +880,27 @@ struct StructuralMapCallbackChain {
     using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
     using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
     if constexpr (std::is_same_v<TSub, AnyView>) {
-      return InvokeCallbackLink(callback, value, kind);
+      on_match([&](AnyView target) -> Expected<Any> {
+        return InvokeCallbackLink(callback, target, kind);
+      });
+      return true;
     } else if constexpr (std::is_same_v<TSub, Any>) {
-      return InvokeCallbackLink(callback, Any(value), kind);
-    } else {
-      if (auto opt = value.template as<TSub>()) {
-        return InvokeCallbackLink(callback, *std::move(opt), kind);
-      }
+      on_match([&](AnyView target) -> Expected<Any> {
+        return InvokeCallbackLink(callback, Any(target), kind);
+      });
+      return true;
+    } else if (auto opt = value.template as<TSub>()) {
+      on_match([&](AnyView target) -> Expected<Any> {
+        std::optional<TSub> converted = target.template as<TSub>();
+        if (!converted.has_value()) {
+          // A custom post-order hook may change the node type after the input selected this link.
+          return Any(target);
+        }
+        return InvokeCallbackLink(callback, *std::move(converted), kind);
+      });
+      return true;
     }
-    return std::nullopt;
+    return false;
   }
 
   /*!
@@ -826,10 +919,14 @@ struct StructuralMapCallbackChain {
     static_assert(std::is_convertible_v<typename FuncInfo::RetType, Expected<Any>>,
                   "StructuralMap callbacks must return a replacement value, Error, Unexpected, "
                   "or Expected<U> implicitly convertible to Expected<Any>");
-    if constexpr (FuncInfo::num_args == 1) {
-      return callback(std::forward<Value>(value));
-    } else {
-      return callback(std::forward<Value>(value), kind);
+    try {
+      if constexpr (FuncInfo::num_args == 1) {
+        return callback(std::forward<Value>(value));
+      } else {
+        return callback(std::forward<Value>(value), kind);
+      }
+    } catch (const Error& err) {
+      return Unexpected(err);
     }
   }
 };

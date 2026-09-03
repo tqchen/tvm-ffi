@@ -38,6 +38,8 @@ using namespace tvm::ffi::testing;
 using AnyArray = Array<Any>;
 using StringMap = Map<String, Any>;
 
+TVM_FFI_STATIC_INIT_BLOCK() { TMutatePairObj::RegisterReflection(); }
+
 Expected<Any> Increment(int64_t value) { return Any(value + 1); }
 
 template <WalkOrder order>
@@ -86,6 +88,54 @@ void CheckNestedArrayMapOrder(const std::vector<std::string>& expected_trace) {
 TEST(StructuralMap, MapsNestedArrayAndMapInConfiguredOrder) {
   CheckNestedArrayMapOrder<WalkOrder::kPreOrder>({"outer-array", "map", "inner-array", "int"});
   CheckNestedArrayMapOrder<WalkOrder::kPostOrder>({"int", "inner-array", "map", "outer-array"});
+}
+
+TEST(StructuralMap, RegisteredMutateHookUsesAssignOrReturn) {
+  TVar lhs("lhs");
+  TVar rhs("rhs");
+  TMutatePair root(lhs, rhs);
+  TMutatePairObj::StructuralMutateCallCount() = 0;
+
+  TMutatePair mapped =
+      StructuralMap<WalkOrder::kPostOrder>(root, [](const TVarObj* var) -> Expected<Any> {
+        return Any(TVar(var->name + "-mapped"));
+      }).cast<TMutatePair>();
+
+  EXPECT_EQ(TMutatePairObj::StructuralMutateCallCount(), 1);
+  Optional<TVar> mapped_lhs = mapped->lhs.as<TVar>();
+  Optional<TVar> mapped_rhs = mapped->rhs.as<TVar>();
+  ASSERT_TRUE(mapped_lhs.has_value());
+  ASSERT_TRUE(mapped_rhs.has_value());
+  EXPECT_EQ(mapped_lhs.value()->name, "lhs-mapped");
+  EXPECT_EQ(mapped_rhs.value()->name, "rhs-mapped");
+
+  Expected<Any> failed =
+      StructuralMapExpected<WalkOrder::kPostOrder>(root, [](const TVarObj* var) -> Expected<Any> {
+        if (var->name == "lhs") {
+          return Unexpected(Error("ValueError", "registered hook child failed", ""));
+        }
+        return Any(TVar(var->name + "-mapped"));
+      });
+  ASSERT_TRUE(failed.is_err());
+  Optional<VisitErrorContext> context = VisitErrorContext::TryGetFromError(failed.error());
+  ASSERT_TRUE(context.has_value());
+  const List<ObjectRef>& reverse_pattern = context.value()->reverse_visit_pattern;
+  ASSERT_EQ(reverse_pattern.size(), 2U);
+  EXPECT_TRUE(reverse_pattern[0].same_as(lhs));
+  EXPECT_TRUE(reverse_pattern[1].same_as(root));
+
+  TMutatePair nullable(ObjectRef(nullptr), rhs);
+  TMutatePair nullable_mapped =
+      StructuralMap<WalkOrder::kPostOrder>(nullable, [](const String& value) -> Expected<Any> {
+        return Any(value);
+      }).cast<TMutatePair>();
+  EXPECT_FALSE(nullable_mapped->lhs.defined());
+  EXPECT_TRUE(nullable_mapped->rhs.same_as(rhs));
+
+  Expected<Any> wrong_type = StructuralMapExpected<WalkOrder::kPostOrder>(
+      root, [](const TVarObj*) -> Expected<Any> { return Any(int64_t{1}); });
+  ASSERT_TRUE(wrong_type.is_err());
+  EXPECT_EQ(wrong_type.error().kind(), "TypeError");
 }
 
 TEST(StructuralMap, PreservesSharedArrayAndMapInputs) {

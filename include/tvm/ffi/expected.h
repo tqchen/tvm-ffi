@@ -348,6 +348,29 @@ class Expected<void> {
 
 namespace details {
 
+// Helper for TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN.
+class AssignOrReturnHelper {
+ public:
+  TVM_FFI_INLINE explicit AssignOrReturnHelper(Any&& data) : data_(std::move(data)) {}
+
+  template <typename T>
+  TVM_FFI_INLINE Expected<T> TryMove() && {
+    if constexpr (!std::is_same_v<T, Any>) {
+      const TVMFFIAny* data = AnyUnsafe::TVMFFIAnyPtrFromAny(data_);
+      if (TVM_FFI_PREDICT_FALSE(!TypeTraits<T>::CheckAnyStrict(data))) {
+        return Unexpected(Error("TypeError",
+                                "Cannot treat type `" + TypeTraits<T>::GetMismatchTypeInfo(data) +
+                                    "` as type `" + TypeTraits<T>::TypeStr() + "`",
+                                ""));
+      }
+    }
+    return AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
+  }
+
+ private:
+  Any data_;
+};
+
 /*!
  * \brief Unsafe raw-storage helpers for Expected.
  *
@@ -380,10 +403,25 @@ struct ExpectedUnsafe {
   }
 
   /*!
-   * \brief Return the underlying Any storage.
+   * \brief Return the underlying Any storage as an xvalue; by-value initialization moves from it.
    * \tparam T The Expected success type.
-   * \param result The Expected value to inspect.
-   * \return Const reference to the raw Any storage.
+   * \param result The Expected value whose storage will be exposed as an xvalue.
+   * \return An xvalue reference to the underlying Any storage.
+   *
+   * \note The const overload returns ``const Any&``, which remains const under ``std::move`` and
+   *       therefore selects the copy constructor. The assign-or-return macro selects this overload
+   *       from a non-const result, so its outer ``std::move`` only makes the move intent explicit.
+   */
+  template <typename T>
+  TVM_FFI_INLINE static Any&& GetData(Expected<T>& result) noexcept {
+    return std::move(result.data_);
+  }
+
+  /*!
+   * \brief Return a const reference to the underlying Any storage.
+   * \tparam T The Expected success type.
+   * \param result The Expected value whose storage will be viewed.
+   * \return A const reference to the underlying Any storage.
    */
   template <typename T>
   TVM_FFI_INLINE static const Any& GetData(const Expected<T>& result) noexcept {
