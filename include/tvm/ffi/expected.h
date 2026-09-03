@@ -356,7 +356,12 @@ class AssignOrReturnHelper {
   template <typename T>
   TVM_FFI_INLINE operator T() && {  // NOLINT(google-explicit-constructor)
     if constexpr (!std::is_same_v<T, Any>) {
-      TVM_FFI_DCHECK(data_.as<T>().has_value());
+      const TVMFFIAny* data = AnyUnsafe::TVMFFIAnyPtrFromAny(data_);
+      if (TVM_FFI_PREDICT_FALSE(!TypeTraits<T>::CheckAnyStrict(data))) {
+        TVM_FFI_THROW(TypeError) << "Cannot treat type `"
+                                 << TypeTraits<T>::GetMismatchTypeInfo(data) << "` as type `"
+                                 << TypeTraits<T>::TypeStr() << "`";
+      }
     }
     return AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
   }

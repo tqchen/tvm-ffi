@@ -538,7 +538,8 @@ namespace details {
   do {                                                                                             \
     auto&& tvm_ffi_res_ = (Result);                                                                \
     if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.type_index() == ::tvm::ffi::TypeIndex::kTVMFFIError)) { \
-      ::tvm::ffi::AnyView tvm_ffi_mutate_node_ = (Node);                                           \
+      auto&& tvm_ffi_mutate_node_owner_ = (Node);                                                  \
+      ::tvm::ffi::AnyView tvm_ffi_mutate_node_ = tvm_ffi_mutate_node_owner_;                       \
       if (tvm_ffi_mutate_node_.type_index() >= ::tvm::ffi::TypeIndex::kTVMFFIStaticObjectBegin) {  \
         ::tvm::ffi::Error tvm_ffi_mutate_err_ = tvm_ffi_res_.error();                              \
         ::tvm::ffi::details::UpdateVisitErrorContext(                                              \
@@ -548,7 +549,9 @@ namespace details {
     }                                                                                              \
   } while (0)
 
-// `auto` on the left deduces the helper rather than converting.
+// Lhs must be a declaration with a concrete type; `auto` deduces the helper and assigning to an
+// existing variable can be ambiguous. The expansion declares into the enclosing scope, so use it
+// only within a braced block, never as an unbraced control-flow body.
 #define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Lhs, ResultExpr, Node)                                   \
   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(TVM_FFI_STR_CONCAT(tvm_ffi_mutate_result_, __COUNTER__), \
                                           Lhs, ResultExpr, Node)

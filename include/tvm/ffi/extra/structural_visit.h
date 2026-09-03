@@ -457,7 +457,8 @@ namespace details {
             ::tvm::ffi::details::StructuralVisitNeedEarlyReturn(tvm_ffi_res_))) {                  \
       if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.type_index() ==                                       \
                                 ::tvm::ffi::TypeIndex::kTVMFFIError)) {                            \
-        ::tvm::ffi::AnyView tvm_ffi_visit_node_ = (Node);                                          \
+        auto&& tvm_ffi_visit_node_owner_ = (Node);                                                 \
+        ::tvm::ffi::AnyView tvm_ffi_visit_node_ = tvm_ffi_visit_node_owner_;                       \
         if (tvm_ffi_visit_node_.type_index() >= ::tvm::ffi::TypeIndex::kTVMFFIStaticObjectBegin) { \
           ::tvm::ffi::Error tvm_ffi_visit_err_ = tvm_ffi_res_.error();                             \
           ::tvm::ffi::details::UpdateVisitErrorContext(                                            \

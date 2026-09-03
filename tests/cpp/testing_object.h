@@ -225,13 +225,17 @@ class TPairObj : public Object {
   static Expected<Any> StructuralMutateExpected(StructuralMutatorObj* mutator,
                                                 AnyView value) noexcept {
     ++StructuralMutateCallCount();
-    const auto* self = value.cast<const TPairObj*>();
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef lhs, mutator->MutateExpected(self->lhs), self);
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef rhs, mutator->MutateExpected(self->rhs), self);
-    if (lhs.same_as(self->lhs) && rhs.same_as(self->rhs)) {
-      return Any(value);
+    try {
+      const auto* self = value.cast<const TPairObj*>();
+      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef lhs, mutator->MutateExpected(self->lhs), self);
+      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef rhs, mutator->MutateExpected(self->rhs), self);
+      if (lhs.same_as(self->lhs) && rhs.same_as(self->rhs)) {
+        return Any(value);
+      }
+      return Any(ObjectRef(make_object<TPairObj>(std::move(lhs), std::move(rhs))));
+    } catch (const Error& err) {
+      return Unexpected(err);
     }
-    return Any(ObjectRef(make_object<TPairObj>(std::move(lhs), std::move(rhs))));
   }
 
   static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {

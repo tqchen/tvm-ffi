@@ -114,8 +114,23 @@ TEST(StructuralMap, RegisteredMutateHookUsesAssignOrReturn) {
   Optional<VisitErrorContext> context = VisitErrorContext::TryGetFromError(failed.error());
   ASSERT_TRUE(context.has_value());
   const List<ObjectRef>& reverse_pattern = context.value()->reverse_visit_pattern;
-  ASSERT_FALSE(reverse_pattern.empty());
-  EXPECT_TRUE(reverse_pattern[reverse_pattern.size() - 1].same_as(root));
+  ASSERT_EQ(reverse_pattern.size(), 3U);
+  EXPECT_TRUE(reverse_pattern[0].same_as(lhs));
+  EXPECT_TRUE(reverse_pattern[1].same_as(root));
+  EXPECT_TRUE(reverse_pattern[2].same_as(root));
+
+  TPair nullable(ObjectRef(nullptr), rhs);
+  TPair nullable_mapped =
+      StructuralMap<WalkOrder::kPostOrder>(nullable, [](const String& value) -> Expected<Any> {
+        return Any(value);
+      }).cast<TPair>();
+  EXPECT_FALSE(nullable_mapped->lhs.defined());
+  EXPECT_TRUE(nullable_mapped->rhs.same_as(rhs));
+
+  Expected<Any> wrong_type = StructuralMapExpected<WalkOrder::kPostOrder>(
+      root, [](const TVarObj*) -> Expected<Any> { return Any(int64_t{1}); });
+  ASSERT_TRUE(wrong_type.is_err());
+  EXPECT_EQ(wrong_type.error().kind(), "TypeError");
 }
 
 TEST(StructuralMap, PreservesSharedArrayAndMapInputs) {
