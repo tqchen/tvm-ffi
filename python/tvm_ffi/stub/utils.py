@@ -85,6 +85,8 @@ class Options:
     dry_run: bool = False
     target: str = "python"
     """Code generator target to use."""
+    coverage_out: str | None = None
+    """Path of the native-layout coverage report (JSON) to write, if requested."""
 
 
 @dataclasses.dataclass(init=False)
@@ -248,8 +250,9 @@ class ObjectInfo:
                         )
                     )
 
+        # `fields` is None while a `py_class` registration is still pending.
         return ObjectInfo(
-            fields=[NamedTypeSchema.from_type_field(field) for field in type_info.fields],
+            fields=[NamedTypeSchema.from_type_field(field) for field in type_info.fields or []],
             methods=[
                 FuncInfo(
                     schema=NamedTypeSchema(
