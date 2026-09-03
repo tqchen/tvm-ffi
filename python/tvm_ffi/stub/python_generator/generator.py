@@ -44,6 +44,7 @@ class PythonGenerator:
     name = "python"
     syntax = C.PYTHON_SYNTAX
     source_exts = frozenset({".py", ".pyi"})
+    directive_kinds: frozenset[str] = frozenset({"import-object"})
 
     def default_ty_map(self) -> dict[str, str]:
         """Return the default FFI-origin -> Python-type name map."""
@@ -55,13 +56,14 @@ class PythonGenerator:
         """Create an empty import collector."""
         return PythonImports()
 
-    def add_imported_object(
-        self, imports: PythonImports, name: str, type_checking_only: str, alias: str
-    ) -> None:
-        """Record an ``import-object`` directive into the collector."""
+    def add_directive(self, imports: PythonImports, name: str, payload: str, lineno: int) -> None:
+        """Record an ``import-object`` directive (``<full_name>;<type_checking_only>;<alias>``)."""
+        assert name == "import-object", name
+        parts = [part.strip() for part in payload.split(";")]
+        full_name, type_checking_only, alias = parts + [""] * (3 - len(parts))
         tco = type_checking_only.lower() == "true"
-        imports.items.append(ImportItem(name, type_checking_only=tco, alias=alias or None))
-        if alias == "_FFI_LOAD_LIB" or name.endswith("libinfo.load_lib_module"):
+        imports.items.append(ImportItem(full_name, type_checking_only=tco, alias=alias or None))
+        if alias == "_FFI_LOAD_LIB" or full_name.endswith("libinfo.load_lib_module"):
             imports.has_lib_load = True
 
     def canonical_type_name(self, type_key: str) -> str:

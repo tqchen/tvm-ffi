@@ -54,18 +54,22 @@ class MarkerSyntax:
 
     @property
     def ty_map(self) -> str:
-        """One-line type-map directive: ``<comment> tvm-ffi-stubgen(ty-map):``."""
-        return f"{self.prefix}ty-map):"
+        """The ``ty-map`` directive marker: ``<comment> tvm-ffi-stubgen(ty-map):``."""
+        return self.directive("ty-map")
 
     @property
     def import_object(self) -> str:
-        """One-line import-object directive: ``<comment> tvm-ffi-stubgen(import-object):``."""
-        return f"{self.prefix}import-object):"
+        """The ``import-object`` directive marker: ``<comment> tvm-ffi-stubgen(import-object):``."""
+        return self.directive("import-object")
 
     @property
     def skip_file(self) -> str:
         """Whole-file opt-out directive: ``<comment> tvm-ffi-stubgen(skip-file)``."""
         return f"{self.prefix}skip-file)"
+
+    def directive(self, name: str) -> str:
+        """One-line directive marker: ``<comment> tvm-ffi-stubgen(<name>):``."""
+        return f"{self.prefix}{name}):"
 
 
 PYTHON_SYNTAX = MarkerSyntax(comment="#")
@@ -80,12 +84,16 @@ SYNTAX_BY_EXT: dict[str, MarkerSyntax] = {
     ".rs": RUST_SYNTAX,
 }
 
+#: One-line directive names consumed by the language-neutral pipeline. Generators
+#: must not declare these names; every other name must be declared by the active
+#: generator (``Generator.directive_kinds``).
+PIPELINE_DIRECTIVE_KINDS: frozenset[str] = frozenset({"ty-map"})
+
 STUB_BLOCK_KINDS: TypeAlias = Literal[
     "global",
     "object",
-    "ty-map",
     "import-section",
-    "import-object",
+    "directive",
     "export",
     "__all__",
     None,
