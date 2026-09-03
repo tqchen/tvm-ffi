@@ -88,6 +88,36 @@ TEST(StructuralMap, MapsNestedArrayAndMapInConfiguredOrder) {
   CheckNestedArrayMapOrder<WalkOrder::kPostOrder>({"int", "inner-array", "map", "outer-array"});
 }
 
+TEST(StructuralMap, RegisteredMutateHookUsesAssignOrReturn) {
+  TVar lhs("lhs");
+  TVar rhs("rhs");
+  TPair root(lhs, rhs);
+  TPairObj::StructuralMutateCallCount() = 0;
+
+  TPair mapped =
+      StructuralMap<WalkOrder::kPostOrder>(root, [](const TVarObj* var) -> Expected<Any> {
+        return Any(TVar(var->name + "-mapped"));
+      }).cast<TPair>();
+
+  EXPECT_EQ(TPairObj::StructuralMutateCallCount(), 1);
+  EXPECT_EQ(mapped->lhs.as<TVar>().value()->name, "lhs-mapped");
+  EXPECT_EQ(mapped->rhs.as<TVar>().value()->name, "rhs-mapped");
+
+  Expected<Any> failed =
+      StructuralMapExpected<WalkOrder::kPostOrder>(root, [](const TVarObj* var) -> Expected<Any> {
+        if (var->name == "lhs") {
+          return Unexpected(Error("ValueError", "registered hook child failed", ""));
+        }
+        return Any(TVar(var->name + "-mapped"));
+      });
+  ASSERT_TRUE(failed.is_err());
+  Optional<VisitErrorContext> context = VisitErrorContext::TryGetFromError(failed.error());
+  ASSERT_TRUE(context.has_value());
+  const List<ObjectRef>& reverse_pattern = context.value()->reverse_visit_pattern;
+  ASSERT_FALSE(reverse_pattern.empty());
+  EXPECT_TRUE(reverse_pattern[reverse_pattern.size() - 1].same_as(root));
+}
+
 TEST(StructuralMap, PreservesSharedArrayAndMapInputs) {
   // A shared Array is copied when one of its elements changes.
   {

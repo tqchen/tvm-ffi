@@ -547,6 +547,18 @@ namespace details {
       return ::std::move(tvm_ffi_res_);                                                            \
     }                                                                                              \
   } while (0)
+
+// `auto` on the left deduces the helper rather than converting.
+#define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Lhs, ResultExpr, Node)                                   \
+  TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(TVM_FFI_STR_CONCAT(tvm_ffi_mutate_result_, __COUNTER__), \
+                                          Lhs, ResultExpr, Node)
+
+#define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Lhs, ResultExpr, Node) \
+  auto Result = (ResultExpr);                                                  \
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result, Node);                           \
+  Lhs = ::tvm::ffi::details::AssignOrReturnHelper {                            \
+    ::std::move(::tvm::ffi::details::ExpectedUnsafe::GetData(Result))          \
+  }
 /// \endcond
 
 /*!

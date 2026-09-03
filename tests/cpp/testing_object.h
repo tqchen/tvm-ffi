@@ -25,6 +25,7 @@
 #include <tvm/ffi/container/map.h>
 #include <tvm/ffi/device.h>
 #include <tvm/ffi/dtype.h>
+#include <tvm/ffi/extra/structural_mutate.h>
 #include <tvm/ffi/extra/structural_visit.h>
 #include <tvm/ffi/memory.h>
 #include <tvm/ffi/object.h>
@@ -216,9 +217,34 @@ class TPairObj : public Object {
   TPairObj(ObjectRef lhs, ObjectRef rhs) : lhs(std::move(lhs)), rhs(std::move(rhs)) {}
   explicit TPairObj(UnsafeInit) {}
 
+  static int& StructuralMutateCallCount() {
+    static int count = 0;
+    return count;
+  }
+
+  static Expected<Any> StructuralMutateExpected(StructuralMutatorObj* mutator,
+                                                AnyView value) noexcept {
+    ++StructuralMutateCallCount();
+    const auto* self = value.cast<const TPairObj*>();
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef lhs, mutator->MutateExpected(self->lhs), self);
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef rhs, mutator->MutateExpected(self->rhs), self);
+    if (lhs.same_as(self->lhs) && rhs.same_as(self->rhs)) {
+      return Any(value);
+    }
+    return Any(ObjectRef(make_object<TPairObj>(std::move(lhs), std::move(rhs))));
+  }
+
+  static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(StructuralMutateExpected(mutator, value));
+  }
+
   static void RegisterReflection() {
     namespace refl = tvm::ffi::reflection;
     refl::ObjectDef<TPairObj>().def_ro("lhs", &TPairObj::lhs).def_ro("rhs", &TPairObj::rhs);
+    refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMutate);
+    refl::TypeAttrDef<TPairObj>().attr(
+        refl::type_attr::kStructuralMutate,
+        reinterpret_cast<void*>(static_cast<FStructuralMutate>(&TPairObj::StructuralMutate)));
   }
 
   static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindTreeNode;
@@ -361,7 +387,7 @@ class TFuncObj : public Object {
     TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(
         visitor->WithDefRegionKind(kTVMFFIDefRegionKindRecursive,
                                    [&]() { return visitor->VisitExpected(self->params); }),
-        value);
+        self);
 
     return details::ExpectedUnsafe::MoveToTVMFFIAny(visitor->VisitExpected(self->body));
   }

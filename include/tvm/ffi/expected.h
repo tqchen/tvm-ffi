@@ -348,12 +348,7 @@ class Expected<void> {
 
 namespace details {
 
-/*!
- * \brief Conversion helper for assign-or-return macros.
- *
- * \note ``auto`` on the left of the macro deduces this helper instead of triggering its
- *       conversion. The destination must have a concrete type.
- */
+// Helper for TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN.
 class AssignOrReturnHelper {
  public:
   TVM_FFI_INLINE explicit AssignOrReturnHelper(Any&& data) : data_(std::move(data)) {}
