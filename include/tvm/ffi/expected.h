@@ -402,22 +402,17 @@ struct ExpectedUnsafe {
   }
 
   /*!
-   * \brief Return the underlying Any storage as an rvalue reference.
+   * \brief Return the underlying Any storage as an xvalue; by-value initialization moves from it.
    *
-   * \note Without this overload, ``std::move(GetData(x))`` yields ``const Any&&`` and binds the
-   *       copy constructor.
+   * \note The const overload returns ``const Any&``, which remains const under ``std::move`` and
+   *       therefore selects the copy constructor.
    */
   template <typename T>
   TVM_FFI_INLINE static Any&& GetData(Expected<T>& result) noexcept {
     return std::move(result.data_);
   }
 
-  /*!
-   * \brief Return the underlying Any storage.
-   * \tparam T The Expected success type.
-   * \param result The Expected value to inspect.
-   * \return Const reference to the raw Any storage.
-   */
+  // Return a const reference to the underlying Any storage.
   template <typename T>
   TVM_FFI_INLINE static const Any& GetData(const Expected<T>& result) noexcept {
     return result.data_;

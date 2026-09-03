@@ -550,8 +550,10 @@ namespace details {
   } while (0)
 
 // Lhs must be a declaration with a concrete type; `auto` deduces the helper and assigning to an
-// existing variable can be ambiguous. The expansion declares into the enclosing scope, so use it
-// only within a braced block, never as an unbraced control-flow body.
+// existing variable can be ambiguous. Use a type alias when the declaration type has a top-level
+// comma. A non-Any Lhs strictly checks its type and may throw TypeError, so a noexcept hook must
+// catch Error. The expansion declares into the enclosing scope, so use it only within a braced
+// block, never as an unbraced control-flow body.
 #define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Lhs, ResultExpr, Node)                                   \
   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(TVM_FFI_STR_CONCAT(tvm_ffi_mutate_result_, __COUNTER__), \
                                           Lhs, ResultExpr, Node)

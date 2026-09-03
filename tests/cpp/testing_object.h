@@ -393,7 +393,9 @@ class TFuncObj : public Object {
                                    [&]() { return visitor->VisitExpected(self->params); }),
         self);
 
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(visitor->VisitExpected(self->body));
+    auto body_result = visitor->VisitExpected(self->body);
+    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(body_result, self);
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(body_result));
   }
 
   static void RegisterReflection() {
