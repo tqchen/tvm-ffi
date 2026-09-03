@@ -40,11 +40,14 @@
 
 #include <cstddef>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <string>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 namespace tvm {
 namespace ffi {
@@ -657,11 +660,16 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
     }
     try {
       ObjectRef var_ref = var.cast<ObjectRef>();
-      std::optional<Any> result = var_remap_.Get(var_ref);
-      if (!result.has_value()) {
-        return Any(nullptr);
+      if (var_remap_overflow_ != nullptr) {
+        auto it = var_remap_overflow_->find(var_ref);
+        return it == var_remap_overflow_->end() ? Any(nullptr) : it->second;
       }
-      return *std::move(result);
+      for (const auto& entry : var_remap_) {
+        if (entry.first.same_as(var_ref)) {
+          return entry.second;
+        }
+      }
+      return Any(nullptr);
     } catch (const Error& err) {
       return Unexpected(err);
     }
@@ -681,7 +689,27 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
     try {
       ObjectRef var_ref = var.cast<ObjectRef>();
       Any owned_mapped_value(mapped_value);
-      var_remap_.Set(var_ref, owned_mapped_value);
+      if (var_remap_overflow_ != nullptr) {
+        var_remap_overflow_->insert_or_assign(std::move(var_ref), std::move(owned_mapped_value));
+        return Expected<void>();
+      }
+      for (auto& entry : var_remap_) {
+        if (entry.first.same_as(var_ref)) {
+          entry.second = std::move(owned_mapped_value);
+          return Expected<void>();
+        }
+      }
+      if (var_remap_.size() == kLinearVarRemapLimit) {
+        var_remap_overflow_ = std::make_unique<VarRemapTable>();
+        var_remap_overflow_->reserve(kLinearVarRemapLimit * 2);
+        for (auto& entry : var_remap_) {
+          var_remap_overflow_->emplace(std::move(entry.first), std::move(entry.second));
+        }
+        var_remap_.clear();
+        var_remap_overflow_->emplace(std::move(var_ref), std::move(owned_mapped_value));
+        return Expected<void>();
+      }
+      var_remap_.emplace_back(std::move(var_ref), std::move(owned_mapped_value));
       return Expected<void>();
     } catch (const Error& err) {
       return Unexpected(err);
@@ -825,8 +853,11 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
   /*! \brief Composed callback dispatcher owned by this mutator. */
   Dispatch dispatch_;
 
-  /*! \brief Identity-substitution table. */
-  Map<ObjectRef, Any> var_remap_;
+  /*! \brief Identity-substitution table, linear for tiny traversals and hashed after growth. */
+  static constexpr size_t kLinearVarRemapLimit = 8;
+  using VarRemapTable = std::unordered_map<ObjectRef, Any, ObjectPtrHash, ObjectPtrEqual>;
+  std::vector<std::pair<ObjectRef, Any>> var_remap_;
+  std::unique_ptr<VarRemapTable> var_remap_overflow_;
 };
 
 // Build a callback dispatcher from a typed callback chain. The dispatcher answers "which link

@@ -291,6 +291,25 @@ TEST(StructuralMap, ReusesFinalCallbackResultForRepeatedVar) {
   CheckRepeatedVarRemap<WalkOrder::kPostOrder>();
 }
 
+TEST(StructuralMap, ReusesManyVarResultsAfterRemapTableGrowth) {
+  AnyArray values;
+  for (int i = 0; i < 16; ++i) values.push_back(TVar("v" + std::to_string(i)));
+  AnyArray root = values;
+  for (const Any& value : values) root.push_back(value);
+  int callback_count = 0;
+
+  AnyArray mapped =
+      StructuralMap<WalkOrder::kPostOrder>(root, [&](const TVarObj* value) -> Expected<Any> {
+        ++callback_count;
+        return Any(TVar(value->name + "-mapped"));
+      }).cast<AnyArray>();
+
+  EXPECT_EQ(callback_count, 16);
+  for (int i = 0; i < 16; ++i) {
+    EXPECT_TRUE(mapped[i].same_as(mapped[i + 16]));
+  }
+}
+
 AnyArray MakeStringAndBytesLeaves() {
   return AnyArray{int64_t{1}, String("1234567"), String("12345678"), Bytes("1234567", 7),
                   Bytes("12345678", 8)};
