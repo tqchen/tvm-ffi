@@ -657,15 +657,17 @@ class StructuralMapIdentityRemap {
 
 /// \cond Doxygen_Suppress
 // Return from the current mutation function if Result is an Error.
-// Append Node to the mutate error context before returning.
-#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(Result, Node)                       \
+// Append Node to the mutate error context before returning. Node is required: dropping it
+// silently degrades every error message produced below this frame.
+#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result, Node)                                          \
   do {                                                                                             \
     auto&& tvm_ffi_res_ = (Result);                                                                \
     if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.type_index() == ::tvm::ffi::TypeIndex::kTVMFFIError)) { \
-      if ((Node).type_index() >= ::tvm::ffi::TypeIndex::kTVMFFIStaticObjectBegin) {                \
+      ::tvm::ffi::AnyView tvm_ffi_mutate_node_ = (Node);                                           \
+      if (tvm_ffi_mutate_node_.type_index() >= ::tvm::ffi::TypeIndex::kTVMFFIStaticObjectBegin) {  \
         ::tvm::ffi::Error tvm_ffi_mutate_err_ = tvm_ffi_res_.error();                              \
-        ::tvm::ffi::details::UpdateVisitErrorContext(tvm_ffi_mutate_err_,                          \
-                                                     (Node).cast<::tvm::ffi::ObjectRef>());        \
+        ::tvm::ffi::details::UpdateVisitErrorContext(                                              \
+            tvm_ffi_mutate_err_, tvm_ffi_mutate_node_.cast<::tvm::ffi::ObjectRef>());              \
       }                                                                                            \
       return ::std::move(tvm_ffi_res_);                                                            \
     }                                                                                              \
@@ -813,11 +815,11 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
         }
         if (!callback_result.has_value()) {
           Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
-          TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
+          TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, value);
           return result;
         }
         // A pre-order result can be mutated in place if unchanged or uniquely owned.
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(*callback_result, value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(*callback_result, value);
         const Any& mapped_value = ExpectedUnsafe::GetData(*callback_result);
         const TVMFFIAny* mapped_data = AnyUnsafe::TVMFFIAnyPtrFromAny(mapped_value);
         const TVMFFIAny input_data = value.CopyToTVMFFIAny();
@@ -829,7 +831,7 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
           Expected<Any> result = can_mutate_mapped_value_inplace
                                      ? DefaultMaybeInplaceMutateExpected(mapped_value)
                                      : DefaultMutateExpected(mapped_value);
-          TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, mapped_value);
+          TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, mapped_value);
           return result;
         }
         // The unchanged callback result owns the input object.  Release that
@@ -838,11 +840,11 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
         // mutation for every non-matching node.
         callback_result.reset();
         Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, value);
         return result;
       } else {
         Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, value);
 
         const Any& mapped_value = ExpectedUnsafe::GetData(result);
         std::optional<Expected<Any>> callback_result;
@@ -852,7 +854,7 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
           callback_result = dispatch_(mapped_value, def_region_kind());
         }
         if (TVM_FFI_PREDICT_TRUE(!callback_result.has_value())) return result;
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(*callback_result, mapped_value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(*callback_result, mapped_value);
         return *std::move(callback_result);
       }
     });
@@ -875,14 +877,14 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
         if (!callback_result.has_value()) {
           return DefaultMutateExpected(value);
         }
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(*callback_result, value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(*callback_result, value);
         const Any& mapped_value = ExpectedUnsafe::GetData(*callback_result);
         Expected<Any> result = DefaultMutateExpected(mapped_value);
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, mapped_value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, mapped_value);
         return result;
       } else {
         Expected<Any> result = DefaultMutateExpected(value);
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, value);
 
         const Any& mapped_value = ExpectedUnsafe::GetData(result);
         std::optional<Expected<Any>> callback_result;
@@ -892,7 +894,7 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
           callback_result = dispatch_(mapped_value, def_region_kind());
         }
         if (TVM_FFI_PREDICT_TRUE(!callback_result.has_value())) return result;
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(*callback_result, mapped_value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(*callback_result, mapped_value);
         return *std::move(callback_result);
       }
     });
