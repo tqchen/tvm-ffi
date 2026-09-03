@@ -532,20 +532,60 @@ namespace details {
 
 /// \cond Doxygen_Suppress
 // Return from the current mutation function if Result is an Error.
-// Append Node to the mutate error context before returning.
-#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(Result, Node)                       \
+// Append Node to the mutate error context before returning. Node is required: dropping it
+// silently degrades every error message produced below this frame.
+// A raw pointer Node must be non-null; pass nullable nodes as ObjectRef or Any so None is skipped.
+#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result, Node)                                          \
   do {                                                                                             \
     auto&& tvm_ffi_res_ = (Result);                                                                \
     if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.type_index() == ::tvm::ffi::TypeIndex::kTVMFFIError)) { \
-      if ((Node).type_index() >= ::tvm::ffi::TypeIndex::kTVMFFIStaticObjectBegin) {                \
+      auto&& tvm_ffi_mutate_node_owner_ = (Node);                                                  \
+      ::tvm::ffi::AnyView tvm_ffi_mutate_node_ = tvm_ffi_mutate_node_owner_;                       \
+      if (tvm_ffi_mutate_node_.type_index() >= ::tvm::ffi::TypeIndex::kTVMFFIStaticObjectBegin) {  \
         ::tvm::ffi::Error tvm_ffi_mutate_err_ = tvm_ffi_res_.error();                              \
-        ::tvm::ffi::details::UpdateVisitErrorContext(tvm_ffi_mutate_err_,                          \
-                                                     (Node).cast<::tvm::ffi::ObjectRef>());        \
+        ::tvm::ffi::details::UpdateVisitErrorContext(                                              \
+            tvm_ffi_mutate_err_, tvm_ffi_mutate_node_.cast<::tvm::ffi::ObjectRef>());              \
       }                                                                                            \
       return ::std::move(tvm_ffi_res_);                                                            \
     }                                                                                              \
   } while (0)
+
+#define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Converted, Type, Name, ResultExpr, Node) \
+  auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */                           \
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result, Node);                                             \
+  auto Converted = /* NOLINT(bugprone-macro-parentheses) */                                      \
+      ::tvm::ffi::details::AssignOrReturnHelper(                                                 \
+          ::std::move(::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))                     \
+          .template TryMove<Type>();                                                             \
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Converted, Node);                                          \
+  Type Name = ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                       \
+      ::std::move(::tvm::ffi::details::ExpectedUnsafe::GetData(Converted)))
 /// \endcond
+
+/*!
+ * \brief Unwrap a successful mutation result into a newly declared value or return its error.
+ *
+ * ``Type`` must be concrete; use a type alias when it contains a top-level comma. A type mismatch
+ * returns ``Unexpected(TypeError)`` through the surrounding ``Expected`` function without
+ * throwing. This macro declares ``Name`` into the enclosing scope and must be used in a braced
+ * block, never as an unbraced control-flow body. A raw pointer node must be non-null; pass nullable
+ * nodes as ``ObjectRef`` or ``Any`` so ``None`` is skipped when constructing error context.
+ *
+ * Example:
+ * \code{.cpp}
+ * TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
+ *     ObjectRef, child, mutator->MutateExpected(self->child), self);
+ * \endcode
+ *
+ * \param Type The concrete type of the successful value.
+ * \param Name The name of the value declared in the enclosing scope.
+ * \param ResultExpr An expression producing the ``Expected`` value to unwrap.
+ * \param Node The current mutation node appended to the error context on failure.
+ */
+#define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Type, Name, ResultExpr, Node) \
+  TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(                              \
+      TVM_FFI_STR_CONCAT(tvm_ffi_mutate_result_, __COUNTER__),          \
+      TVM_FFI_STR_CONCAT(tvm_ffi_mutate_converted_, __COUNTER__), Type, Name, ResultExpr, Node)
 
 /*!
  * \brief Structural mutator that invokes typed callbacks during recursive mapping.
@@ -682,7 +722,7 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
     return MutateWithIdentityRemapExpected(value, [&]() -> Expected<Any> {
       if constexpr (order == WalkOrder::kPreOrder) {
         Expected<Any> callback_result = dispatch_(value, def_region_kind());
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(callback_result, value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(callback_result, value);
         // A pre-order result can be mutated in place if unchanged or uniquely owned.
         const Any& mapped_value = ExpectedUnsafe::GetData(callback_result);
         const TVMFFIAny* mapped_data = AnyUnsafe::TVMFFIAnyPtrFromAny(mapped_value);
@@ -695,19 +735,19 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
           Expected<Any> result = can_mutate_mapped_value_inplace
                                      ? DefaultMaybeInplaceMutateExpected(mapped_value)
                                      : DefaultMutateExpected(mapped_value);
-          TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, mapped_value);
+          TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, mapped_value);
           return result;
         }
         Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, value);
         return result;
       } else {
         Expected<Any> result = DefaultMaybeInplaceMutateExpected(value);
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, value);
 
         const Any& mapped_value = ExpectedUnsafe::GetData(result);
         Expected<Any> callback_result = dispatch_(mapped_value, def_region_kind());
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(callback_result, mapped_value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(callback_result, mapped_value);
         return callback_result;
       }
     });
@@ -722,19 +762,19 @@ class StructuralMapMutatorObj : public StructuralMutatorObj {
     return MutateWithIdentityRemapExpected(value, [&]() -> Expected<Any> {
       if constexpr (order == WalkOrder::kPreOrder) {
         Expected<Any> callback_result = dispatch_(value, def_region_kind());
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(callback_result, value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(callback_result, value);
 
         const Any& mapped_value = ExpectedUnsafe::GetData(callback_result);
         Expected<Any> result = DefaultMutateExpected(mapped_value);
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, mapped_value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, mapped_value);
         return result;
       } else {
         Expected<Any> result = DefaultMutateExpected(value);
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(result, value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result, value);
 
         const Any& mapped_value = ExpectedUnsafe::GetData(result);
         Expected<Any> callback_result = dispatch_(mapped_value, def_region_kind());
-        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN_WITH_ERROR_CONTEXT(callback_result, mapped_value);
+        TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(callback_result, mapped_value);
         return callback_result;
       }
     });

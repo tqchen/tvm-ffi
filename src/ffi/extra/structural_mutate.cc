@@ -92,23 +92,19 @@ Expected<Any> StructuralMapExpected(
  * \tparam SeqObj The underlying sequence object type.
  * \param mutator The active structural mutator.
  * \param value The borrowed sequence container.
- * \param source The sequence object stored in \p value.
+ * \param self The sequence object stored in \p value.
  * \return The mutated sequence, or an Error.
  */
 template <typename SeqObj>
 Expected<Any> MutateSeqContainerExpected(StructuralMutatorObj* mutator, AnyView value,
-                                         const SeqObj* source) noexcept {
+                                         const SeqObj* self) noexcept {
   try {
-    int64_t size = static_cast<int64_t>(source->size());
+    int64_t size = static_cast<int64_t>(self->size());
     ObjectPtr<SeqObj> output = nullptr;
 
     for (int64_t i = 0; i < size; ++i) {
-      const Any& item = source->at(i);
-      Expected<Any> mapped_item = mutator->MutateExpected(item);
-      if (TVM_FFI_PREDICT_FALSE(mapped_item.is_err())) {
-        return Unexpected(std::move(mapped_item).error());
-      }
-      const Any& mapped_value = details::ExpectedUnsafe::GetData(mapped_item);
+      const Any& item = self->at(i);
+      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value, mutator->MutateExpected(item), self);
 
       if (output == nullptr) {
         if (item.same_as(mapped_value)) {
@@ -116,10 +112,10 @@ Expected<Any> MutateSeqContainerExpected(StructuralMutatorObj* mutator, AnyView 
         }
         output = SeqObj::CreateRepeated(size, Any());
         for (int64_t j = 0; j < i; ++j) {
-          output->SetItem(j, source->at(j));
+          output->SetItem(j, self->at(j));
         }
       }
-      output->SetItem(i, mapped_value);
+      output->SetItem(i, std::move(mapped_value));
     }
 
     if (output == nullptr) {
@@ -137,23 +133,20 @@ Expected<Any> MutateSeqContainerExpected(StructuralMutatorObj* mutator, AnyView 
  * \tparam SeqObj The underlying sequence object type.
  * \param mutator The active structural mutator.
  * \param value The borrowed sequence container, which must be safe to mutate in place.
- * \param target The sequence object stored in \p value.
+ * \param self The sequence object stored in \p value.
  * \return The mutated sequence, or an Error.
  */
 template <typename SeqObj>
 Expected<Any> MaybeInplaceMutateSeqContainerExpected(StructuralMutatorObj* mutator, AnyView value,
-                                                     SeqObj* target) noexcept {
+                                                     SeqObj* self) noexcept {
   try {
-    for (int64_t i = 0; i < static_cast<int64_t>(target->size()); ++i) {
-      const Any& item = target->at(i);
-      Expected<Any> mapped_item = mutator->MaybeInplaceMutateIfUniqueExpected(item);
-      if (TVM_FFI_PREDICT_FALSE(mapped_item.is_err())) {
-        return Unexpected(std::move(mapped_item).error());
-      }
-      const Any& mapped_value = details::ExpectedUnsafe::GetData(mapped_item);
+    for (int64_t i = 0; i < static_cast<int64_t>(self->size()); ++i) {
+      const Any& item = self->at(i);
+      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value,
+                                        mutator->MaybeInplaceMutateIfUniqueExpected(item), self);
 
       if (!item.same_as(mapped_value)) {
-        target->SetItem(i, mapped_value);
+        self->SetItem(i, std::move(mapped_value));
       }
     }
     return Any(value);
@@ -168,38 +161,33 @@ Expected<Any> MaybeInplaceMutateSeqContainerExpected(StructuralMutatorObj* mutat
  * \tparam MapObjType The underlying map object type.
  * \param mutator The active structural mutator.
  * \param value The borrowed map container.
- * \param source The map object stored in \p value.
+ * \param self The map object stored in \p value.
  * \return The mutated map, or an Error.
  */
 template <typename MapObjType>
 Expected<Any> MutateMapValuesExpected(StructuralMutatorObj* mutator, AnyView value,
-                                      const MapObjType* source) noexcept {
+                                      const MapObjType* self) noexcept {
   try {
     ObjectPtr<Object> output = nullptr;
     MapBaseObj::iterator output_it;
     size_t index = 0;
 
-    for (auto source_it = source->begin(); source_it != source->end(); ++source_it, ++index) {
+    for (auto source_it = self->begin(); source_it != self->end(); ++source_it, ++index) {
       const Any& old_value = source_it->second;
-      Expected<Any> mapped_value = mutator->MutateExpected(old_value);
-      if (TVM_FFI_PREDICT_FALSE(mapped_value.is_err())) {
-        return Unexpected(std::move(mapped_value).error());
-      }
-
-      const Any& new_value = details::ExpectedUnsafe::GetData(mapped_value);
+      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value, mutator->MutateExpected(old_value), self);
       bool changed = !old_value.same_as(new_value);
       if (output == nullptr) {
         if (!changed) {
           continue;
         }
-        output = MapObjType::ShallowCopy(source);
+        output = MapObjType::ShallowCopy(self);
         output_it = static_cast<MapBaseObj*>(output.get())->begin();
         for (size_t i = 0; i < index; ++i) {
           ++output_it;
         }
       }
       if (changed) {
-        output_it->second = new_value;
+        output_it->second = std::move(new_value);
       }
       ++output_it;
     }
@@ -219,23 +207,20 @@ Expected<Any> MutateMapValuesExpected(StructuralMutatorObj* mutator, AnyView val
  * \tparam MapObjType The underlying map object type.
  * \param mutator The active structural mutator.
  * \param value The borrowed map container, which must be safe to mutate in place.
- * \param target The map object stored in \p value.
+ * \param self The map object stored in \p value.
  * \return The mutated map, or an Error.
  */
 template <typename MapObjType>
 Expected<Any> MaybeInplaceMutateMapValuesExpected(StructuralMutatorObj* mutator, AnyView value,
-                                                  MapObjType* target) noexcept {
+                                                  MapObjType* self) noexcept {
   try {
-    for (auto it = target->begin(); it != target->end(); ++it) {
+    for (auto it = self->begin(); it != self->end(); ++it) {
       const Any& old_value = it->second;
-      Expected<Any> mapped_value = mutator->MaybeInplaceMutateIfUniqueExpected(old_value);
-      if (TVM_FFI_PREDICT_FALSE(mapped_value.is_err())) {
-        return Unexpected(std::move(mapped_value).error());
-      }
-      const Any& new_value = details::ExpectedUnsafe::GetData(mapped_value);
+      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
+          Any, new_value, mutator->MaybeInplaceMutateIfUniqueExpected(old_value), self);
 
       if (!old_value.same_as(new_value)) {
-        it->second = new_value;
+        it->second = std::move(new_value);
       }
     }
     return Any(value);
