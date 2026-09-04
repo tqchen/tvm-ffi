@@ -51,6 +51,7 @@ class AnyView {
   TVMFFIAny data_;
   // Any can see AnyView
   friend class Any;
+  friend struct details::AnyUnsafe;
 
  public:
   // NOTE: the following functions use style
@@ -629,8 +630,14 @@ struct AnyUnsafe : public ObjectUnsafe {
     }
   }
 
-  TVM_FFI_INLINE static Object* ObjectPtrFromAnyAfterCheck(const Any& ref) {
-    return reinterpret_cast<Object*>(ref.data_.v_obj);
+  template <typename TObject = Object>
+  TVM_FFI_INLINE static TObject* RawObjectPtrFromAnyAfterCheck(const Any& ref) {
+    return ObjectUnsafe::RawObjectPtrFromUnowned<TObject>(ref.data_.v_obj);
+  }
+
+  template <typename TObject = Object>
+  TVM_FFI_INLINE static TObject* RawObjectPtrFromAnyViewAfterCheck(const AnyView& ref) {
+    return ObjectUnsafe::RawObjectPtrFromUnowned<TObject>(ref.data_.v_obj);
   }
 
   TVM_FFI_INLINE static const TVMFFIAny* TVMFFIAnyPtrFromAny(const Any& ref) {

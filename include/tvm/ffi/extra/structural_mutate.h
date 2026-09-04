@@ -57,6 +57,11 @@ class StructuralMutatorObj;
  * \param mutator The active structural mutator.
  * \param value The borrowed value to mutate.
  * \return Raw ``TVMFFIAny`` containing the mutated value or an Error.
+ *
+ * \note The hook is exception-free like \ref FStructuralVisit. Representable failures must be
+ *       returned as an Error. Hook implementations should use non-throwing accessors when the
+ *       engine's type dispatch has already established the type; allocation failure and violated
+ *       container invariants remain fatal.
  */
 using FStructuralMutate = TVMFFIAny (*)(StructuralMutatorObj* mutator, AnyView value) noexcept;
 

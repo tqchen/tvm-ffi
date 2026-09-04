@@ -171,7 +171,7 @@ class Variant {
     static_assert(all_object_v,
                   "All types used in Variant<...> must be derived from ObjectRef "
                   "to enable ObjectPtrHash/ObjectPtrEqual");
-    return details::AnyUnsafe::ObjectPtrFromAnyAfterCheck(this->data_);
+    return details::AnyUnsafe::RawObjectPtrFromAnyAfterCheck(this->data_);
   }
   TVM_FFI_INLINE AnyView ToAnyView() const { return data_.operator AnyView(); }
   TVM_FFI_INLINE Any MoveToAny() && { return std::move(data_); }
