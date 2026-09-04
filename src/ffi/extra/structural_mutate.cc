@@ -101,33 +101,28 @@ Expected<Any> StructuralMapExpected(
 template <typename SeqObj>
 Expected<Any> MutateSeqContainerExpected(StructuralMutatorObj* mutator, AnyView value,
                                          const SeqObj* self) noexcept {
-  try {
-    int64_t size = static_cast<int64_t>(self->size());
-    ObjectPtr<SeqObj> output = nullptr;
+  int64_t size = static_cast<int64_t>(self->size());
+  const Any* items = self->begin();
+  ObjectPtr<SeqObj> output = nullptr;
 
-    for (int64_t i = 0; i < size; ++i) {
-      const Any& item = self->at(i);
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value, mutator->MutateExpected(item), self);
-
-      if (output == nullptr) {
-        if (item.same_as(mapped_value)) {
-          continue;
-        }
-        output = SeqObj::CreateRepeated(size, Any());
-        for (int64_t j = 0; j < i; ++j) {
-          output->SetItem(j, self->at(j));
-        }
-      }
-      output->SetItem(i, std::move(mapped_value));
-    }
+  for (int64_t i = 0; i < size; ++i) {
+    const Any& item = items[i];
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value, mutator->MutateExpected(item), self);
 
     if (output == nullptr) {
-      return Any(value);
+      if (item.same_as(mapped_value)) {
+        continue;
+      }
+      output = SeqObj::CreateRepeated(size, Any());
+      output->InitRange(0, items, items + i);
     }
-    return Any(ObjectRef(std::move(output)));
-  } catch (const Error& err) {
-    return Unexpected(err);
+    output->SetItemAfterCheck(i, std::move(mapped_value));
   }
+
+  if (output == nullptr) {
+    return Any(value);
+  }
+  return Any(ObjectRef(std::move(output)));
 }
 
 /*!
@@ -142,20 +137,16 @@ Expected<Any> MutateSeqContainerExpected(StructuralMutatorObj* mutator, AnyView 
 template <typename SeqObj>
 Expected<Any> MaybeInplaceMutateSeqContainerExpected(StructuralMutatorObj* mutator, AnyView value,
                                                      SeqObj* self) noexcept {
-  try {
-    for (int64_t i = 0; i < static_cast<int64_t>(self->size()); ++i) {
-      const Any& item = self->at(i);
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value,
-                                        mutator->MaybeInplaceMutateIfUniqueExpected(item), self);
+  for (int64_t i = 0; i < static_cast<int64_t>(self->size()); ++i) {
+    const Any& item = self->begin()[i];
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value,
+                                      mutator->MaybeInplaceMutateIfUniqueExpected(item), self);
 
-      if (!item.same_as(mapped_value)) {
-        self->SetItem(i, std::move(mapped_value));
-      }
+    if (!item.same_as(mapped_value)) {
+      self->SetItemAfterCheck(i, std::move(mapped_value));
     }
-    return Any(value);
-  } catch (const Error& err) {
-    return Unexpected(err);
   }
+  return Any(value);
 }
 
 /*!
@@ -170,38 +161,34 @@ Expected<Any> MaybeInplaceMutateSeqContainerExpected(StructuralMutatorObj* mutat
 template <typename MapObjType>
 Expected<Any> MutateMapValuesExpected(StructuralMutatorObj* mutator, AnyView value,
                                       const MapObjType* self) noexcept {
-  try {
-    ObjectPtr<Object> output = nullptr;
-    MapBaseObj::iterator output_it;
-    size_t index = 0;
+  ObjectPtr<Object> output = nullptr;
+  MapBaseObj::iterator output_it;
+  size_t index = 0;
 
-    for (auto source_it = self->begin(); source_it != self->end(); ++source_it, ++index) {
-      const Any& old_value = source_it->second;
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value, mutator->MutateExpected(old_value), self);
-      bool changed = !old_value.same_as(new_value);
-      if (output == nullptr) {
-        if (!changed) {
-          continue;
-        }
-        output = MapObjType::ShallowCopy(self);
-        output_it = static_cast<MapBaseObj*>(output.get())->begin();
-        for (size_t i = 0; i < index; ++i) {
-          ++output_it;
-        }
-      }
-      if (changed) {
-        output_it->second = std::move(new_value);
-      }
-      ++output_it;
-    }
-
+  for (auto source_it = self->begin(); source_it != self->end(); ++source_it, ++index) {
+    const Any& old_value = source_it->second;
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value, mutator->MutateExpected(old_value), self);
+    bool changed = !old_value.same_as(new_value);
     if (output == nullptr) {
-      return Any(value);
+      if (!changed) {
+        continue;
+      }
+      output = MapObjType::ShallowCopy(self);
+      output_it = static_cast<MapBaseObj*>(output.get())->begin();
+      for (size_t i = 0; i < index; ++i) {
+        ++output_it;
+      }
     }
-    return Any(ObjectRef(std::move(output)));
-  } catch (const Error& err) {
-    return Unexpected(err);
+    if (changed) {
+      output_it->second = std::move(new_value);
+    }
+    ++output_it;
   }
+
+  if (output == nullptr) {
+    return Any(value);
+  }
+  return Any(ObjectRef(std::move(output)));
 }
 
 /*!
@@ -216,20 +203,16 @@ Expected<Any> MutateMapValuesExpected(StructuralMutatorObj* mutator, AnyView val
 template <typename MapObjType>
 Expected<Any> MaybeInplaceMutateMapValuesExpected(StructuralMutatorObj* mutator, AnyView value,
                                                   MapObjType* self) noexcept {
-  try {
-    for (auto it = self->begin(); it != self->end(); ++it) {
-      const Any& old_value = it->second;
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
-          Any, new_value, mutator->MaybeInplaceMutateIfUniqueExpected(old_value), self);
+  for (auto it = self->begin(); it != self->end(); ++it) {
+    const Any& old_value = it->second;
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value,
+                                      mutator->MaybeInplaceMutateIfUniqueExpected(old_value), self);
 
-      if (!old_value.same_as(new_value)) {
-        it->second = std::move(new_value);
-      }
+    if (!old_value.same_as(new_value)) {
+      it->second = std::move(new_value);
     }
-    return Any(value);
-  } catch (const Error& err) {
-    return Unexpected(err);
   }
+  return Any(value);
 }
 
 /*! \brief Identity structural mutation hook for immutable String and Bytes leaves. */
@@ -240,53 +223,53 @@ TVMFFIAny MutateImmutableLeaf(StructuralMutatorObj*, AnyView value) noexcept {
 
 /*! \brief Structural mutation hook for ArrayObj. */
 TVMFFIAny MutateArray(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MutateSeqContainerExpected(mutator, value, value.cast<const ArrayObj*>());
+  Expected<Any> result = MutateSeqContainerExpected(mutator, value, value.as<ArrayObj>());
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for ArrayObj. */
 TVMFFIAny MaybeInplaceMutateArray(StructuralMutatorObj* mutator, AnyView value) noexcept {
   Expected<Any> result = MaybeInplaceMutateSeqContainerExpected(
-      mutator, value, const_cast<ArrayObj*>(value.cast<const ArrayObj*>()));
+      mutator, value, const_cast<ArrayObj*>(value.as<ArrayObj>()));
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Structural mutation hook for ListObj. */
 TVMFFIAny MutateList(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MutateSeqContainerExpected(mutator, value, value.cast<const ListObj*>());
+  Expected<Any> result = MutateSeqContainerExpected(mutator, value, value.as<ListObj>());
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for ListObj. */
 TVMFFIAny MaybeInplaceMutateList(StructuralMutatorObj* mutator, AnyView value) noexcept {
   Expected<Any> result = MaybeInplaceMutateSeqContainerExpected(
-      mutator, value, const_cast<ListObj*>(value.cast<const ListObj*>()));
+      mutator, value, const_cast<ListObj*>(value.as<ListObj>()));
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Structural mutation hook for MapObj. */
 TVMFFIAny MutateMap(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MutateMapValuesExpected(mutator, value, value.cast<const MapObj*>());
+  Expected<Any> result = MutateMapValuesExpected(mutator, value, value.as<MapObj>());
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for MapObj. */
 TVMFFIAny MaybeInplaceMutateMap(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MaybeInplaceMutateMapValuesExpected(
-      mutator, value, const_cast<MapObj*>(value.cast<const MapObj*>()));
+  Expected<Any> result =
+      MaybeInplaceMutateMapValuesExpected(mutator, value, const_cast<MapObj*>(value.as<MapObj>()));
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Structural mutation hook for DictObj. */
 TVMFFIAny MutateDict(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MutateMapValuesExpected(mutator, value, value.cast<const DictObj*>());
+  Expected<Any> result = MutateMapValuesExpected(mutator, value, value.as<DictObj>());
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for DictObj. */
 TVMFFIAny MaybeInplaceMutateDict(StructuralMutatorObj* mutator, AnyView value) noexcept {
   Expected<Any> result = MaybeInplaceMutateMapValuesExpected(
-      mutator, value, const_cast<DictObj*>(value.cast<const DictObj*>()));
+      mutator, value, const_cast<DictObj*>(value.as<DictObj>()));
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 }  // namespace details
