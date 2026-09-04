@@ -136,7 +136,9 @@ class SeqBaseObj : public Object, protected TVMFFISeqCell {
    * \param i The index.
    * \param item The value to be set.
    */
-  void SetItemAfterCheck(int64_t i, Any item) { static_cast<Any*>(data)[i] = std::move(item); }
+  TVM_FFI_INLINE void SetItemAfterCheck(int64_t i, Any item) {
+    static_cast<Any*>(data)[i] = std::move(item);
+  }
 
   /*!
    * \brief Inplace-initialize the elements starting at idx from [first, last).
