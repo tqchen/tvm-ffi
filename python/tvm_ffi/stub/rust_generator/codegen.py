@@ -14,45 +14,27 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Rust code generation for ``tvm-ffi-stubgen``: the opaque binding form.
+"""Rust code generation for ``tvm-ffi-stubgen``.
 
-Every reflected object renders as a ``#[repr(C)]`` struct embedding only its
-parent, a reference wrapper, ``Deref``, the upcasts along the ancestor chain,
-and one accessor per reflected field that reads through the C ABI getter. The
-object's bytes are never reproduced. For ``tirx.IterVar`` deriving from
-``ir.PrimExprConvertible``::
+Every reflected object gets a ``#[repr(C)]`` object struct, a reference wrapper,
+``Deref``, and the upcasts along its ancestor chain. The struct's contents follow
+the verdict of :mod:`tvm_ffi.stub.layout`:
 
-    #[repr(C)]
-    #[derive(tvm_ffi::derive::Object)]
-    #[type_key = "tirx.IterVar"]
-    #[type_final]
-    pub struct IterVarObj {
-        base: PrimExprConvertibleObj,
-    }
+- *complete*: the struct mirrors every physical field at its real offset and
+  width, pinned by a ``const`` size/alignment assertion. ``<Leaf>Obj::new``
+  (crate-private) and the wrapper's ``new`` take every field root to leaf;
+  ``custom-new`` leaves the wrapper's ``new`` to hand-written code and names
+  the generated one ``from_complete_fields``.
+- *opaque*: the struct embeds only its parent, and each field is read through
+  the C ABI getter. Nothing allocates it.
 
-    #[repr(C)]
-    #[derive(tvm_ffi::derive::ObjectRef, Clone)]
-    pub struct IterVar {
-        data: ObjectArc<IterVarObj>,
-    }
-
-    impl Deref for IterVar { ... }              // IterVar -> IterVarObj
-    impl Deref for IterVarObj { ... }           // IterVarObj -> PrimExprConvertibleObj
-
-    impl IterVarObj {
-        pub fn dom(&self) -> Result<Option<Range>> {
-            FieldGetter::new(Self::type_index(), "dom")?.get(self)
-        }
-        ...
-    }
-
-    tvm_ffi::impl_object_upcast!(IterVar => PrimExprConvertible);
-
-Construction and behaviour go through the registered global functions,
-hand-written outside the markers. A builtin parent (``ffi.IntEnum``, say) has
-no ``<Leaf>Obj`` in the crate: the import section defines a header-only
-stand-in per builtin ancestor, so ``derive(Object)`` computes the registry's
-``TYPE_DEPTH``.
+A field without a Rust mirror (``Optional<Any>``, ``Union``, ``void*``, ...)
+makes the type opaque and is read as ``Any``; an ``opaque`` directive vetoes a
+reproducible layout; a scalar width named by a directive is checked against the
+reflected field size. A builtin parent (``ffi.IntEnum``, say) has no
+``<Leaf>Obj`` in the crate: the import section defines a header-only stand-in
+per builtin ancestor so ``derive(Object)`` computes the registry's
+``TYPE_DEPTH``, and everything under such a parent stays opaque (``no-mirror``).
 """
 
 from __future__ import annotations
@@ -61,6 +43,8 @@ import dataclasses
 from typing import TYPE_CHECKING
 
 from .. import consts as C
+from ..layout import Verdict, classify
+from ..lib_state import object_info_from_type_key
 from . import consts as C_RUST
 from .utils import RustImports, builtin_mirror_name, render_rust_type, rust_ident
 
@@ -70,6 +54,24 @@ if TYPE_CHECKING:
     from ..file_utils import CodeBlock
     from ..utils import InitConfig, NamedTypeSchema, ObjectInfo, Options
     from .directives import EnumSpec
+
+
+def _call_lines(open_: str, items: list[str], close: str) -> list[str]:
+    """``open_ + items + close`` on one line, or one item per line when it would overflow."""
+    line = f"{open_}{', '.join(items)}{close}"
+    if len(line) <= C_RUST.RUST_MAX_WIDTH:
+        return [line]
+    indent = open_[: len(open_) - len(open_.lstrip())]
+    return [open_, *[f"{indent}    {item}," for item in items], f"{indent}{close}"]
+
+
+def _check_width(target: str, field: NamedTypeSchema, rust_type: str, width: int) -> None:
+    """Reject a directive whose scalar type does not match the reflected field size."""
+    if field.size is not None and field.size != width:
+        raise ValueError(
+            f"Directive on `{target}` maps a {field.size}-byte field to `{rust_type}` "
+            f"({width} bytes)"
+        )
 
 
 @dataclasses.dataclass
@@ -100,14 +102,17 @@ class _ObjectRenderer:
 
     # --- name resolution ---------------------------------------------------
 
-    def _ty_render(self, origin: str) -> str | None:
+    def _resolve(self, origin: str, imports: RustImports) -> str | None:
         """Resolve a leaf origin to its in-scope Rust name (recording its ``use``), or ``None``."""
         mapped = self.ty_map.get(origin)
         if mapped is None:
             if "." not in origin or origin.startswith("ctypes."):
                 return None
             mapped = self._generated_type_path(origin)
-        return self.imports.record(mapped)
+        return imports.record(mapped)
+
+    def _ty_render(self, origin: str) -> str | None:
+        return self._resolve(origin, self.imports)
 
     def _generated_type_path(self, type_key: str) -> str:
         """Spell a generated type key from this file.
@@ -142,6 +147,95 @@ class _ObjectRenderer:
             chain.append(parent)
         assert not any(self._generated(key) for key in chain), (self.type_key, chain)
         return self.imports.record_builtin_base(chain), False
+
+    # --- classification ----------------------------------------------------
+
+    def classify(self) -> Verdict:
+        """Classify this object with its ancestors, under the file's directives."""
+        infos = {key: object_info_from_type_key(key) for key in self.info.ancestors}
+        infos[self.type_key] = self.info
+        owner_of = {id(f): key for key, owner in infos.items() for f in owner.fields}
+        scratch = RustImports()
+
+        def renderable(field: NamedTypeSchema) -> bool:
+            return self._field_mirror(owner_of[id(field)], field, scratch) is not None
+
+        # Builtin ancestors are header-only stand-ins (`_base_type`): none below is complete.
+        unmirrored = {
+            key
+            for key in self.info.ancestors
+            if key != C_RUST.RUST_ROOT_TYPE_KEY and not self._generated(key)
+        }
+        verdicts = classify(
+            infos,
+            forced_opaque=self.imports.directives.opaque,
+            unmirrored=unmirrored,
+            field_renderable=renderable,
+        )
+        return verdicts[self.type_key]
+
+    # --- field types -------------------------------------------------------
+
+    def _field_mirror(self, owner: str, field: NamedTypeSchema, imports: RustImports) -> str | None:
+        """Render the ``#[repr(C)]`` mirror type of ``field``, or ``None``.
+
+        Directives win; then scalars by reflected width, ``Optional`` by C++ layout, else schema.
+        """
+        directives = self.imports.directives
+        target = f"{owner}.{field.name}"
+        enum = directives.enums.get(target)
+        if enum is not None:
+            _check_width(target, field, enum.repr, C_RUST.RUST_SCALAR_WIDTHS[enum.repr])
+            return enum.name
+        override = directives.field_types.get(target)
+        if override is not None:
+            width = C_RUST.RUST_SCALAR_WIDTHS.get(override)
+            if width is not None:
+                _check_width(target, field, override, width)
+            mirror: str | None = imports.record(override) if "::" in override else override
+        elif field.origin == "Optional":
+            mirror = self._optional_mirror(field, imports)
+        else:
+            narrowed = C_RUST.RUST_SCALAR_BY_SIZE.get((field.origin, field.size))
+            mirror = narrowed or render_rust_type(field, lambda o: self._resolve(o, imports))
+        if mirror is None:
+            return None
+        if target in directives.nullable and not mirror.startswith("Option<"):
+            if field.size not in (None, C_RUST.RUST_POINTER_SIZE):
+                raise ValueError(
+                    f"`nullable` directive on `{target}`: the field is {field.size} bytes, "
+                    "not a pointer-sized object reference"
+                )
+            mirror = f"Option<{mirror}>"
+        return mirror
+
+    def _optional_mirror(self, field: NamedTypeSchema, imports: RustImports) -> str | None:
+        """Mirror an ``Optional<T>`` field in place.
+
+        An object payload is a nullable pointer (``Option<T>``); any other payload
+        is a 16-byte ``TVMFFIAny`` cell (``tvm_ffi::Optional<T>``). ``Optional<Any>``
+        and a size mismatch have no mirror.
+        """
+        (payload,) = field.args  # TypeSchema's post_init enforces exactly one argument.
+        if payload.origin == "Any":
+            return None
+        inner = render_rust_type(payload, lambda o: self._resolve(o, imports))
+        if inner is None:
+            return None
+        any_backed = (
+            payload.origin in C_RUST.RUST_ANY_BACKED_OPTIONAL_PAYLOADS
+            or payload.origin == "Optional"
+        )
+        expected = (
+            C_RUST.RUST_OPTIONAL_FIELD_SIZE
+            if any_backed
+            else C_RUST.RUST_OBJECT_OPTIONAL_FIELD_SIZE
+        )
+        if field.size not in (None, expected):
+            return None
+        if any_backed:
+            return f"{imports.record(C_RUST.RUST_OPTIONAL_PATH)}<{inner}>"
+        return f"Option<{inner}>"
 
     # --- pieces ------------------------------------------------------------
 
@@ -183,6 +277,7 @@ class _ObjectRenderer:
         """Render the open integer newtype an ``enum`` directive declares."""
         error = self.imports.record("tvm_ffi::Error")
         value_error = self.imports.record("tvm_ffi::VALUE_ERROR")
+        result = self.imports.record("tvm_ffi::Result")
         return [
             "#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]",
             "#[repr(transparent)]",
@@ -201,7 +296,7 @@ class _ObjectRenderer:
             "",
             f"impl TryFrom<i64> for {spec.name} {{",
             f"    type Error = {error};",
-            "    fn try_from(value: i64) -> Result<Self> {",
+            f"    fn try_from(value: i64) -> {result}<Self> {{",
             f"        {spec.repr}::try_from(value).map(Self).map_err(|_| {{",
             f'            {error}::new({value_error}, &format!("{spec.name} value {{value}} does not fit '
             f'{spec.repr}"), "")',
@@ -221,25 +316,151 @@ class _ObjectRenderer:
         ]
 
     def _upcast_lines(self) -> list[str]:
-        """``impl_object_upcast!`` from the wrapper to every ancestor's wrapper."""
+        """``impl_object_upcast!`` to every ancestor's wrapper, then the ``upcast`` directives."""
         targets = [
             self.imports.record(self._generated_type_path(key))
             for key in self.info.ancestors
             if self._generated(key)
         ]
+        for view in self.imports.directives.upcasts.get(self.type_key, []):
+            targets.append(self.imports.record(view) if "::" in view else view)
         if not targets:
             return []
         pairs = ", ".join(f"{self.leaf} => {target}" for target in targets)
         return [f"tvm_ffi::impl_object_upcast!({pairs});"]
 
+    def _struct_lines(self, verdict: Verdict, base: str) -> list[str]:
+        """Render the object struct: every field when complete, the parent alone when opaque."""
+        header = [
+            "#[repr(C)]",
+            "#[derive(tvm_ffi::derive::Object)]",
+            f'#[type_key = "{self.type_key}"]',
+            *(["#[type_final]"] if self.info.is_final else []),
+            f"pub struct {self.obj_struct} {{",
+            f"    base: {base},",  # a reflected `base` field becomes `base_` (`rust_ident`)
+        ]
+        if not verdict.is_complete:
+            return [
+                f"/// Opaque: {verdict.detail}. Fields are read through the C ABI getters.",
+                *header,
+                "}",
+            ]
+        members = []
+        for field in sorted(self.info.fields, key=lambda f: f.offset or 0):
+            mirror = self._field_mirror(self.type_key, field, self.imports)
+            assert mirror is not None  # the verdict already ran the renderability check
+            members.append(f"    pub {rust_ident(field.name)}: {mirror},")
+        return [
+            f"/// Complete: {verdict.detail}.",
+            *header,
+            *members,
+            "}",
+            "",
+            "const _: () = {",
+            f"    assert!(::core::mem::size_of::<{self.obj_struct}>() == {verdict.total_size});",
+            f"    assert!(::core::mem::align_of::<{self.obj_struct}>() == {verdict.alignment});",
+            "};",
+        ]
+
+    # --- allocators --------------------------------------------------------
+
+    def _allocator_params(self, key: str, info: ObjectInfo) -> list[tuple[str, str]]:
+        """``(field, type)`` of every physical field root to leaf, as ``<key>Obj::new`` takes."""
+        parent = info.parent_type_key
+        inherited: list[tuple[str, str]] = []
+        if parent is not None and self._generated(parent):
+            inherited = self._allocator_params(parent, object_info_from_type_key(parent))
+        return self._level_params(key, info, inherited)
+
+    def _level_params(
+        self, key: str, info: ObjectInfo, inherited: list[tuple[str, str]]
+    ) -> list[tuple[str, str]]:
+        """Extend the parent's parameters with ``key``'s own fields by offset.
+
+        A ``field`` directive on an inherited field narrows that parameter; the
+        body hands it to the parent with ``.into()``.
+        """
+        params = [(name, self._narrowed(key, name, rust_type)) for name, rust_type in inherited]
+        for field in sorted(info.fields, key=lambda f: f.offset or 0):
+            mirror = self._field_mirror(key, field, self.imports)
+            assert mirror is not None  # complete: every field along the chain has a mirror
+            params.append((field.name, mirror))
+        return params
+
+    def _narrowed(self, key: str, field_name: str, rust_type: str) -> str:
+        override = self.imports.directives.field_types.get(f"{key}.{field_name}")
+        if override is None:
+            return rust_type
+        return self.imports.record(override) if "::" in override else override
+
+    def _fn_lines(
+        self, head: str, params: list[tuple[str, str]], call: tuple[str, list[str]], result: str
+    ) -> list[str]:
+        """Render ``<head>(<params>) -> Self { let <call>; <result> }`` inside an ``impl`` block."""
+        plist = [f"{rust_ident(name)}: {rust_type}" for name, rust_type in params]
+        binding, args = call
+        return [
+            *_call_lines(f"    {head}(", plist, ") -> Self {"),
+            *_call_lines(f"        let {binding}(", args, ");"),
+            f"        {result}",
+            "    }",
+        ]
+
+    def _allocator_sections(self, base: str, has_parent: bool) -> list[list[str]]:
+        """``<Leaf>Obj::new`` and the wrapper's ``new``.
+
+        ``custom-new`` names the wrapper's allocator ``from_complete_fields`` instead.
+        """
+        inherited: list[tuple[str, str]] = []
+        if has_parent:
+            parent = self.info.parent_type_key
+            assert parent is not None
+            inherited = self._allocator_params(parent, object_info_from_type_key(parent))
+        params = self._level_params(self.type_key, self.info, inherited)
+        to_parent = [
+            f"{rust_ident(name)}.into()" if rust_type != parent_type else rust_ident(name)
+            for (name, rust_type), (_, parent_type) in zip(params, inherited)
+        ]
+        own = [rust_ident(f.name) for f in sorted(self.info.fields, key=lambda f: f.offset or 0)]
+        forward = [rust_ident(name) for name, _ in params]
+        sections = [
+            [
+                f"impl {self.obj_struct} {{",
+                *self._fn_lines(
+                    "pub(crate) fn new",
+                    params,
+                    (f"base = {base}::new", to_parent),
+                    f"Self {{ {', '.join(['base', *own])} }}",
+                ),
+                "}",
+            ]
+        ]
+        custom = self.type_key in self.imports.directives.custom_new
+        sections.append(
+            [
+                f"impl {self.leaf} {{",
+                "    /// Lossless complete-field allocation.",
+                *self._fn_lines(
+                    "pub fn from_complete_fields" if custom else "pub fn new",
+                    params,
+                    (f"obj = {self.obj_struct}::new", forward),
+                    "Self { data: ObjectArc::new(obj) }",
+                ),
+                "}",
+            ]
+        )
+        return sections
+
     def body(self) -> list[str]:
         """Build the Rust source lines for the object."""
+        verdict = self.classify()
         # Derive macros are spelled by full path: their leaves collide with `Object` / `ObjectRef`.
         self.imports.record("std::ops::Deref")
         self.imports.record("tvm_ffi::ObjectArc")
         base, has_parent = self._base_type()
         fields = self.info.fields
-        if fields:
+        has_accessors = bool(fields) and not verdict.is_complete
+        if has_accessors:
             self.imports.record("tvm_ffi::ObjectCore")  # `Self::type_index()`
             self.imports.record("tvm_ffi::FieldGetter")
             self.imports.record("tvm_ffi::Result")
@@ -251,22 +472,13 @@ class _ObjectRenderer:
             for f in fields
             if f"{self.type_key}.{f.name}" in enums
         ]
-        sections.append(
-            [
-                "#[repr(C)]",
-                "#[derive(tvm_ffi::derive::Object)]",
-                f'#[type_key = "{self.type_key}"]',
-                *(["#[type_final]"] if self.info.is_final else []),
-                f"pub struct {self.obj_struct} {{",
-                f"    base: {base},",
-                "}",
-            ]
-        )
+        sections.append(self._struct_lines(verdict, base))
         sections.append(
             [
                 "#[repr(C)]",
                 "#[derive(tvm_ffi::derive::ObjectRef, Clone)]",
                 f"pub struct {self.leaf} {{",
+                # a reflected `data` field becomes `data_` (`rust_ident`)
                 f"    data: ObjectArc<{self.obj_struct}>,",
                 "}",
             ]
@@ -274,7 +486,7 @@ class _ObjectRenderer:
         sections.append(self._deref_lines(self.leaf, self.obj_struct, "data"))
         if has_parent:
             sections.append(self._deref_lines(self.obj_struct, base, "base"))
-        if fields:
+        if has_accessors:
             accessors: list[str] = []
             for i, field in enumerate(fields):
                 if i:
@@ -287,6 +499,8 @@ class _ObjectRenderer:
                     "}",
                 ]
             )
+        elif verdict.is_complete:
+            sections += self._allocator_sections(base, has_parent)
         upcasts = self._upcast_lines()
         if upcasts:
             sections.append(upcasts)
@@ -306,7 +520,7 @@ def generate_rust_object(
     opt: Options,
     obj_info: ObjectInfo,
 ) -> None:
-    """Emit the opaque Rust binding of ``obj_info`` into an ``object/<key>`` block."""
+    """Emit the Rust binding of ``obj_info`` into an ``object/<key>`` block."""
     assert len(code.lines) >= 2
     assert isinstance(obj_info.type_key, str)
     renderer = _ObjectRenderer(

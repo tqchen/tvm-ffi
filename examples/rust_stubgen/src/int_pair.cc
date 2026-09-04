@@ -29,9 +29,9 @@ namespace rust_stubgen {
 namespace ffi = tvm::ffi;
 
 // [object.begin]
-// A polymorphic object: the vtable in front of the object header means Rust
-// cannot mirror its bytes, so the generated binding reads every field through
-// the reflection getters and construction stays on the C++ side.
+// A plain data object: every byte is accounted for by a reflected field, so the
+// generated binding mirrors the layout; Rust allocates it and reads the fields
+// directly, and the registered function below reads it back.
 class IntPairObj : public ffi::Object {
  public:
   int64_t a;
@@ -39,16 +39,13 @@ class IntPairObj : public ffi::Object {
   int32_t kind;
 
   IntPairObj(int64_t a, int64_t b, int32_t kind) : a(a), b(b), kind(kind) {}
-  virtual ~IntPairObj() = default;
-  virtual int64_t Sum() const { return a + b; }
+  int64_t Sum() const { return a + b; }
 
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("rust_stubgen.IntPair", IntPairObj, ffi::Object);
 };
 
 class IntPair : public ffi::ObjectRef {
  public:
-  IntPair(int64_t a, int64_t b, int32_t kind) { data_ = ffi::make_object<IntPairObj>(a, b, kind); }
-
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(IntPair, ffi::ObjectRef, IntPairObj);
 };
 
@@ -58,10 +55,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def_ro("a", &IntPairObj::a, "the first operand")
       .def_ro("b", &IntPairObj::b, "the second operand")
       .def_ro("kind", &IntPairObj::kind, "0 = unordered, 1 = ordered");
-  refl::GlobalDef()
-      .def("rust_stubgen.IntPair",
-           [](int64_t a, int64_t b, int32_t kind) { return IntPair(a, b, kind); })
-      .def("rust_stubgen.IntPairSum", [](const IntPair& pair) { return pair->Sum(); });
+  refl::GlobalDef().def("rust_stubgen.IntPairSum", [](const IntPair& pair) { return pair->Sum(); });
 }
 // [object.end]
 

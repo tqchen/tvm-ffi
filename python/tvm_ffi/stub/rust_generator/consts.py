@@ -19,7 +19,9 @@
 from __future__ import annotations
 
 #: One-line directives the Rust backend consumes.
-RUST_DIRECTIVE_KINDS = frozenset({"import-object", "field", "nullable", "enum"})
+RUST_DIRECTIVE_KINDS = frozenset(
+    {"import-object", "field", "nullable", "enum", "opaque", "upcast", "custom-new"}
+)
 
 #: Default FFI-origin -> Rust-type map; ``::`` paths get a ``use``, bare names do not.
 RUST_TY_MAP_DEFAULTS = {
@@ -54,6 +56,44 @@ RUST_TY_MAP_DEFAULTS = {
 #: Origins without a crate mirror; such a field is read as ``tvm_ffi::Any``.
 RUST_UNSUPPORTED_ORIGINS = frozenset({"Dict", "List", "Union", "tuple"})
 
+#: Mirror scalar by ``(origin, reflected size)``: the schema erases widths and signedness.
+RUST_SCALAR_BY_SIZE = {
+    ("int", 1): "i8",
+    ("int", 2): "i16",
+    ("int", 4): "i32",
+    ("int", 8): "i64",
+    ("float", 4): "f32",
+    ("float", 8): "f64",
+}
+
+#: Byte width of the scalars a ``field`` / ``enum`` directive may name; checked against the field.
+RUST_SCALAR_WIDTHS = {
+    "i8": 1,
+    "u8": 1,
+    "bool": 1,
+    "i16": 2,
+    "u16": 2,
+    "i32": 4,
+    "u32": 4,
+    "f32": 4,
+    "i64": 8,
+    "u64": 8,
+    "f64": 8,
+}
+
+#: Size of an object reference field; ``nullable`` may only wrap those.
+RUST_POINTER_SIZE = 8
+
+#: C++ ``Optional<T>`` is a 16-byte ``TVMFFIAny`` cell, or a nullable pointer for object payloads.
+RUST_OPTIONAL_PATH = "tvm_ffi::Optional"
+RUST_OPTIONAL_FIELD_SIZE = 16
+RUST_OBJECT_OPTIONAL_FIELD_SIZE = 8
+
+#: ``Optional`` payloads kept as the 16-byte cell (a nested ``Optional`` too); the size is checked.
+RUST_ANY_BACKED_OPTIONAL_PAYLOADS = frozenset(
+    {"int", "float", "bool", "Device", "dtype", "DataType", "str", "bytes"}
+)
+
 #: ``use``-path rewrites: builtin ``ffi.*`` type keys live at the crate root.
 RUST_MOD_MAP = {
     "ffi": "tvm_ffi",
@@ -71,3 +111,11 @@ RUST_KEYWORDS = frozenset(
     "unsized virtual yield".split()
 )
 RUST_NOT_RAW_IDENTIFIERS = frozenset({"self", "Self", "super", "crate"})
+
+#: Member names the generated structs use themselves: ``base`` is the parent slot of every object
+#: struct, ``data`` the wrapper's ``ObjectArc``. A reflected field with one of these names would
+#: collide (or shadow through ``Deref``), so ``rust_ident`` spells it ``base_`` / ``data_``.
+RUST_RESERVED_MEMBERS = frozenset({"base", "data"})
+
+#: ``rustfmt``'s default ``max_width``; a wider allocator signature wraps one parameter per line.
+RUST_MAX_WIDTH = 100

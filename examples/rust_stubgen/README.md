@@ -22,11 +22,19 @@ into Rust bindings. This example registers one object, `rust_stubgen.IntPair`
 (`src/int_pair.cc`), and lets CMake regenerate `rust/src/generated/` after
 every build.
 
-Every object is bound *opaquely*: Rust gets a `#[repr(C)]` wrapper that embeds
-only the parent, a reference type, `Deref`, the upcasts along the ancestor
-chain, and one accessor per reflected field that reads through the C ABI
-getter. The object's bytes are never reproduced, so the binding is correct for
-any registered type; construction goes through the registered global functions.
+Every object gets a `#[repr(C)]` wrapper, a reference type, `Deref`, and the
+upcasts along its ancestor chain. `IntPair` is plain data, so its reflected
+fields account for every byte and the binding is *complete*: the struct mirrors
+the fields at their real offsets and widths, a `const` assertion pins its size
+and alignment to the reflected facts, and a generated `new` allocates the object
+in Rust. `main.rs` builds one that way, reads `pair.a` directly, and hands it to
+a C++ function that reads it back.
+
+An object whose layout cannot be reproduced (a polymorphic one, say, with a
+vtable in front of the object header) is bound *opaquely* instead: the struct
+embeds only the parent, every field is read through an accessor that calls the
+C ABI getter, and construction stays on the C++ side.
+
 A builtin parent such as `ffi.IntEnum` has no `<Leaf>Obj` in the crate; the
 import section defines a header-only stand-in per builtin ancestor so the
 derived type depth matches the registry.
@@ -56,6 +64,10 @@ open newtype:
 // tvm-ffi-stubgen(enum): rust_stubgen.IntPair.kind -> PairKind(i32) { Unordered=0, Ordered=1 }
 ```
 
-Two more are available: `field` names the Rust type of a field's accessor
-(`// tvm-ffi-stubgen(field): rust_stubgen.IntPair.a -> MyInt`) and `nullable`
-wraps it in `Option` (`// tvm-ffi-stubgen(nullable): rust_stubgen.IntPair.a`).
+Four more directives are available: `field` names the Rust type of a field
+(`// tvm-ffi-stubgen(field): rust_stubgen.IntPair.a -> MyInt`), `nullable`
+wraps it in `Option` (`// tvm-ffi-stubgen(nullable): rust_stubgen.IntPair.a`),
+`upcast` adds a conversion to a hand-written typed view
+(`// tvm-ffi-stubgen(upcast): rust_stubgen.IntPair -> MyView`), and
+`custom-new` names the generated allocator `from_complete_fields` when `new`
+is hand-written (`// tvm-ffi-stubgen(custom-new): rust_stubgen.IntPair`).
