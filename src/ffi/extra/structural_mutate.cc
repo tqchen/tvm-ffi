@@ -223,53 +223,57 @@ TVMFFIAny MutateImmutableLeaf(StructuralMutatorObj*, AnyView value) noexcept {
 
 /*! \brief Structural mutation hook for ArrayObj. */
 TVMFFIAny MutateArray(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MutateSeqContainerExpected(mutator, value, value.as<ArrayObj>());
+  Expected<Any> result = MutateSeqContainerExpected(
+      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const ArrayObj>(value));
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for ArrayObj. */
 TVMFFIAny MaybeInplaceMutateArray(StructuralMutatorObj* mutator, AnyView value) noexcept {
   Expected<Any> result = MaybeInplaceMutateSeqContainerExpected(
-      mutator, value, const_cast<ArrayObj*>(value.as<ArrayObj>()));
+      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<ArrayObj>(value));
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Structural mutation hook for ListObj. */
 TVMFFIAny MutateList(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MutateSeqContainerExpected(mutator, value, value.as<ListObj>());
+  Expected<Any> result = MutateSeqContainerExpected(
+      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const ListObj>(value));
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for ListObj. */
 TVMFFIAny MaybeInplaceMutateList(StructuralMutatorObj* mutator, AnyView value) noexcept {
   Expected<Any> result = MaybeInplaceMutateSeqContainerExpected(
-      mutator, value, const_cast<ListObj*>(value.as<ListObj>()));
+      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<ListObj>(value));
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Structural mutation hook for MapObj. */
 TVMFFIAny MutateMap(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MutateMapValuesExpected(mutator, value, value.as<MapObj>());
+  Expected<Any> result = MutateMapValuesExpected(
+      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const MapObj>(value));
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for MapObj. */
 TVMFFIAny MaybeInplaceMutateMap(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result =
-      MaybeInplaceMutateMapValuesExpected(mutator, value, const_cast<MapObj*>(value.as<MapObj>()));
+  Expected<Any> result = MaybeInplaceMutateMapValuesExpected(
+      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<MapObj>(value));
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Structural mutation hook for DictObj. */
 TVMFFIAny MutateDict(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MutateMapValuesExpected(mutator, value, value.as<DictObj>());
+  Expected<Any> result = MutateMapValuesExpected(
+      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const DictObj>(value));
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for DictObj. */
 TVMFFIAny MaybeInplaceMutateDict(StructuralMutatorObj* mutator, AnyView value) noexcept {
   Expected<Any> result = MaybeInplaceMutateMapValuesExpected(
-      mutator, value, const_cast<DictObj*>(value.as<DictObj>()));
+      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<DictObj>(value));
   return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 }  // namespace details
