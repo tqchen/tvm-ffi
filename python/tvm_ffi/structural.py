@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable, Sequence
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any
@@ -42,6 +43,7 @@ __all__ = [
     "structural_equal",
     "structural_hash",
     "structural_map",
+    "structural_mutate",
     "structural_visit",
     "structural_walk",
 ]
@@ -450,25 +452,6 @@ class StructuralMutator(Object):
     mutation hooks.
     """
 
-    def maybe_inplace_mutate(self, value: Any) -> Any:
-        """Mutate ``value``, permitting an in-place implementation when safe.
-
-        The caller must ensure that an object-backed ``value`` is safe to mutate
-        in place and use :meth:`mutate` for a shared object.
-
-        Parameters
-        ----------
-        value
-            Value to mutate.
-
-        Returns
-        -------
-        result
-            The mutated owning value. It may refer to the same object as ``value``.
-
-        """
-        return _ffi_api.StructuralMutatorMaybeInplaceMutate(self, value)
-
     def mutate(self, value: Any) -> Any:
         """Mutate ``value`` without modifying it in place.
 
@@ -487,6 +470,28 @@ class StructuralMutator(Object):
 
         """
         return _ffi_api.StructuralMutatorMutate(self, value)
+
+    def default_mutate(self, value: Any) -> Any:
+        """Mutate ``value`` using its registered or reflected default behavior.
+
+        This bypasses the active engine callback for ``value`` itself while
+        recursive children re-enter the same mutator. A ``structural_mutate``
+        callback may use it on its matched value to request default descent.
+
+        Parameters
+        ----------
+        value
+            Value whose default mutation should run.
+
+        Returns
+        -------
+        result
+            The mutated owning value.
+
+        """
+        return _ffi_api.StructuralMutatorDefaultMutate(  # ty: ignore[unresolved-attribute]
+            self, value
+        )
 
     def var_remap_get(self, var: Object) -> Any | None:
         """Return the replacement recorded for a variable identity.
@@ -681,6 +686,49 @@ def structural_visit(
     return _ffi_api.StructuralVisit(root, entries)
 
 
+def structural_mutate(
+    root: Any,
+    callbacks: tuple | Sequence | Callable = (),
+) -> Any:
+    """Mutate a value with callbacks that own recursive mutation.
+
+    Each callback receives ``(value, mutator)`` and may optionally receive a
+    third ``allow_inplace`` boolean, which is true only when the callback's
+    value is on a uniquely owned path. The flag lets a callback choose an
+    ownership-aware implementation; recursive descent still uses
+    :meth:`StructuralMutator.mutate` for selected children or
+    :meth:`StructuralMutator.default_mutate` for the matched value's default
+    mutation. Its returned value is final and is not traversed again. Entries
+    use ``structural_map`` matching rules, and an unmatched value follows
+    registered/default mutation.
+
+    Parameters
+    ----------
+    root
+        Root value to mutate. Passing a regular Python reference preserves it
+        through copy-on-write; passing ``root._move()`` transfers ownership and
+        permits in-place mutation along unique paths.
+    callbacks
+        Callback entries tried in order; the first match owns mutation.
+
+    Returns
+    -------
+    result
+        The mutated owning value.
+
+    """
+    callback_entries = _normalize_callbacks(callbacks, api_name="structural_mutate")
+    entries: list[tuple[int, Callable[..., Any], bool]] = [
+        (
+            _callback_type_to_type_index(t, api_name="structural_mutate"),
+            fn,
+            _callback_accepts_allow_inplace(fn),
+        )
+        for t, fn in callback_entries
+    ]
+    return _ffi_api.StructuralMutate(root, entries)  # ty: ignore[unresolved-attribute]
+
+
 def structural_map(
     root: Any,
     callbacks: tuple | Sequence | Callable = (),
@@ -695,7 +743,9 @@ def structural_map(
     Parameters
     ----------
     root
-        Root value to map.
+        Root value to map. Passing a regular Python reference preserves it
+        through copy-on-write; passing ``root._move()`` transfers ownership and
+        permits in-place mutation along unique paths.
 
     callbacks
         Normal callbacks. These callbacks receive one argument, ``value``, and
@@ -801,6 +851,29 @@ def _normalize_callbacks(
             "((type1, type2, ...), callback) entries, or sequences of tuple entries"
         )
     return callback_entries
+
+
+def _callback_accepts_allow_inplace(callback: Callable[..., Any]) -> bool:
+    """Return whether a StructuralMutate callback accepts its optional flag."""
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):
+        # Some extension callables do not expose a signature. Keep their
+        # existing two-argument, copy-safe behavior.
+        return False
+
+    try:
+        signature.bind(None, None, False)
+    except TypeError:
+        try:
+            signature.bind(None, None)
+        except TypeError as err:
+            raise TypeError(
+                "structural_mutate callback must accept (value, mutator) or "
+                "(value, mutator, allow_inplace)"
+            ) from err
+        return False
+    return True
 
 
 def _callback_type_to_type_index(callback_type: type[Any] | Any, *, api_name: str) -> int:

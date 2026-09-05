@@ -47,8 +47,10 @@ namespace details {
  * \param order Integer value of \ref WalkOrder.
  * \return The mapped owning value, or an Error.
  */
+// The owning parameter makes caller ownership visible to the uniqueness check.
 Expected<Any> StructuralMapExpected(
-    AnyView root, const Array<Tuple<int32_t, Function>>& callbacks,
+    Any root,  // NOLINT(performance-unnecessary-value-param)
+    const Array<Tuple<int32_t, Function>>& callbacks,
     const Array<Tuple<int32_t, Function>>& callbacks_with_def_region_kind, int order) noexcept {
   if (order == static_cast<int>(WalkOrder::kPreOrder)) {
     using Mutator = StructuralMapDynEngine<StructuralMapEngineBase, WalkOrder::kPreOrder>;
@@ -59,6 +61,88 @@ Expected<Any> StructuralMapExpected(
     StructuralMutator mutator(make_object<Mutator>(callbacks, callbacks_with_def_region_kind));
     return mutator->MaybeInplaceMutateIfUniqueExpected(root);
   }
+}
+
+/*! \brief Runtime counterpart of the typed callback-owned mutate engine. */
+template <typename Parent>
+class StructuralMutateDynEngine : public Parent {
+ public:
+  explicit StructuralMutateDynEngine(Array<Tuple<int32_t, Function, bool>> callbacks)
+      : Parent(VTable()), callbacks_(std::move(callbacks)) {}
+
+ private:
+  static const StructuralMutatorVTable* VTable() {
+    static const StructuralMutatorVTable vtable{
+        &StructuralMutateDynEngine::DispatchMutate,
+        &StructuralMutateDynEngine::DispatchMaybeInplaceMutate,
+        &StructuralMutateDynEngine::DispatchVarRemapGet,
+        &StructuralMutateDynEngine::DispatchVarRemapSet,
+    };
+    return &vtable;
+  }
+
+  static TVMFFIAny DispatchMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
+    return static_cast<StructuralMutateDynEngine*>(mutator)->MutateImplRaw(value);
+  }
+
+  static TVMFFIAny DispatchMaybeInplaceMutate(StructuralMutatorObj* mutator,
+                                              AnyView value) noexcept {
+    return static_cast<StructuralMutateDynEngine*>(mutator)->MaybeInplaceMutateImplRaw(value);
+  }
+
+  std::optional<Expected<Any>> DispatchCallback(AnyView value, bool allow_inplace) noexcept {
+    for (const auto& entry : callbacks_) {
+      if (!RuntimeTypeIndexMatch(value.type_index(), entry.template get<0>())) continue;
+      if (entry.template get<2>()) {
+        return entry.template get<1>().template CallExpected<Any>(
+            value, GetRef<StructuralMutator>(this), allow_inplace);
+      }
+      return entry.template get<1>().template CallExpected<Any>(value,
+                                                                GetRef<StructuralMutator>(this));
+    }
+    return std::nullopt;
+  }
+
+  TVMFFIAny MutateImplRaw(AnyView value) noexcept {
+    if (std::optional<Expected<Any>> matched = DispatchCallback(value, false)) {
+      Expected<Any> result = *std::move(matched);
+      if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
+        Parent::UpdateVisitErrorContext(result, value);
+      }
+      return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+    }
+    return Parent::DefaultMutateRaw(value);
+  }
+
+  TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
+    if (std::optional<Expected<Any>> matched = DispatchCallback(value, true)) {
+      Expected<Any> result = *std::move(matched);
+      if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
+        Parent::UpdateVisitErrorContext(result, value);
+      }
+      return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+    }
+    return Parent::DefaultMaybeInplaceMutateRaw(value);
+  }
+
+  Array<Tuple<int32_t, Function, bool>> callbacks_;
+};
+
+/*!
+ * \brief Runtime callback-driven structural mutation.
+ * \param root The root value to mutate.
+ * \param callbacks Runtime ``(type_index, callback, accepts_allow_inplace)`` entries. A callback
+ *                  whose marker is true is invoked as ``callback(value, mutator, allow_inplace)``;
+ *                  otherwise it is invoked as ``callback(value, mutator)``.
+ * \return The mutated owning value, or an Error.
+ */
+// The owning parameter makes caller ownership visible to the uniqueness check.
+Expected<Any> StructuralMutateExpected(
+    Any root,  // NOLINT(performance-unnecessary-value-param)
+    const Array<Tuple<int32_t, Function, bool>>& callbacks) noexcept {
+  using Mutator = StructuralMutateDynEngine<StructuralMapEngineBase>;
+  StructuralMutator mutator(make_object<Mutator>(callbacks));
+  return mutator->MaybeInplaceMutateIfUniqueExpected(root);
 }
 
 // ---------------------------------------------------------------------------
@@ -254,9 +338,11 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<StructuralMutatorObj>();  // NOLINT(bugprone-unused-raii)
   refl::GlobalDef()
-      .def_method("ffi.StructuralMutatorMaybeInplaceMutate",
-                  &StructuralMutatorObj::MaybeInplaceMutate)
       .def_method("ffi.StructuralMutatorMutate", &StructuralMutatorObj::Mutate)
+      .def_method("ffi.StructuralMutatorDefaultMutate",
+                  [](const StructuralMutator& mutator, AnyView value) {
+                    return mutator->DefaultMutateExpected(value).value();
+                  })
       .def_method("ffi.StructuralMutatorVarRemapGet",
                   [](const StructuralMutator& mutator, AnyView var) {
                     return mutator->VarRemapGetExpected(var).value();
@@ -272,12 +358,20 @@ TVM_FFI_STATIC_INIT_BLOCK() {
             return mutator->WithDefRegionKind(kind, callback);
           })
       .def("ffi.StructuralMap",
-           [](AnyView root, const Array<Tuple<int32_t, Function>>& callbacks,
+           // The owning parameter makes caller ownership visible to the uniqueness check.
+           [](Any root,  // NOLINT(performance-unnecessary-value-param)
+              const Array<Tuple<int32_t, Function>>& callbacks,
               const Array<Tuple<int32_t, Function>>& callbacks_with_def_region_kind,
               int32_t order) -> Any {
-             return details::StructuralMapExpected(root, callbacks, callbacks_with_def_region_kind,
-                                                   order)
+             return details::StructuralMapExpected(std::move(root), callbacks,
+                                                   callbacks_with_def_region_kind, order)
                  .value();
+           })
+      .def("ffi.StructuralMutate",
+           // The owning parameter makes caller ownership visible to the uniqueness check.
+           [](Any root,  // NOLINT(performance-unnecessary-value-param)
+              const Array<Tuple<int32_t, Function, bool>>& callbacks) -> Any {
+             return details::StructuralMutateExpected(std::move(root), callbacks).value();
            });
   refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMutate);
   refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMaybeInplaceMutate);

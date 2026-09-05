@@ -87,6 +87,7 @@ if TYPE_CHECKING or not _is_config_mode():
         structural_equal,
         structural_hash,
         structural_map,
+        structural_mutate,
         structural_visit,
         structural_walk,
     )
@@ -189,6 +190,7 @@ __all__ = [
     "structural_equal",
     "structural_hash",
     "structural_map",
+    "structural_mutate",
     "structural_visit",
     "structural_walk",
     "system_lib",

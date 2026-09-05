@@ -329,6 +329,90 @@ def test_structural_visit_default_visit_binding() -> None:
     assert nested_trace == ["array", 1, 2]
 
 
+def test_structural_mutate_callback_owned_recursion_and_errors() -> None:
+    trace: list[int | str] = []
+
+    def mutate_array(value: tvm_ffi.Array, mutator: tvm_ffi.StructuralMutator) -> object:
+        assert isinstance(mutator, tvm_ffi.StructuralMutator)
+        trace.append("array")
+        return tvm_ffi.Array([mutator.mutate(value[0]), 10])
+
+    def mutate_int(value: int, mutator: tvm_ffi.StructuralMutator) -> int:
+        assert isinstance(mutator, tvm_ffi.StructuralMutator)
+        trace.append(value)
+        return value + 1
+
+    mapped = tvm_ffi.structural_mutate(
+        tvm_ffi.Array([1, 2]),
+        [(tvm_ffi.Array, mutate_array), (int, mutate_int)],
+    )
+    assert list(mapped) == [2, 10]
+    assert trace == ["array", 1]
+
+    default_trace: list[int] = []
+
+    def default_mutate_array(value: tvm_ffi.Array, mutator: tvm_ffi.StructuralMutator) -> object:
+        return mutator.default_mutate(value)
+
+    def default_mutate_int(value: int, mutator: tvm_ffi.StructuralMutator) -> int:
+        assert isinstance(mutator, tvm_ffi.StructuralMutator)
+        default_trace.append(value)
+        return value + 1
+
+    default_owned = tvm_ffi.structural_mutate(
+        tvm_ffi.Array([1, 2]),
+        [(tvm_ffi.Array, default_mutate_array), (int, default_mutate_int)],
+    )
+    assert list(default_owned) == [2, 3]
+    assert default_trace == [1, 2]
+
+    default_root = tvm_ffi.Array([3, 4])
+    default_mapped = tvm_ffi.structural_mutate(default_root, (int, mutate_int))
+    assert not default_mapped.same_as(default_root)
+    assert list(default_root) == [3, 4]
+    assert list(default_mapped) == [4, 5]
+
+    inplace_trace: list[bool] = []
+
+    def mutate_with_flag(
+        value: int, mutator: tvm_ffi.StructuralMutator, allow_inplace: bool
+    ) -> int:
+        assert isinstance(mutator, tvm_ffi.StructuralMutator)
+        inplace_trace.append(allow_inplace)
+        return value + 1
+
+    flagged_root = tvm_ffi.Array([1])
+    flagged_mapped = tvm_ffi.structural_mutate(flagged_root, (int, mutate_with_flag))
+    assert inplace_trace == [False]
+    assert not flagged_mapped.same_as(flagged_root)
+    assert list(flagged_root) == [1]
+    assert list(flagged_mapped) == [2]
+
+    direct_trace: list[int] = []
+
+    def fail_directly(value: int, mutator: tvm_ffi.StructuralMutator) -> object:
+        assert isinstance(mutator, tvm_ffi.StructuralMutator)
+        direct_trace.append(value)
+        raise ValueError("direct structural mutate failure")
+
+    with pytest.raises(ValueError, match="direct structural mutate failure"):
+        tvm_ffi.structural_mutate(1, (int, fail_directly))
+    assert direct_trace == [1]
+
+    nested_trace: list[int] = []
+
+    def fail_nested(value: int, mutator: tvm_ffi.StructuralMutator) -> int:
+        assert isinstance(mutator, tvm_ffi.StructuralMutator)
+        nested_trace.append(value)
+        if value == 2:
+            raise ValueError("nested structural mutate failure")
+        return value
+
+    with pytest.raises(ValueError, match="nested structural mutate failure"):
+        tvm_ffi.structural_mutate(tvm_ffi.Array([1, 2, 3]), (int, fail_nested))
+    assert nested_trace == [1, 2]
+
+
 def test_structural_walk_nested_containers_and_skips_map_keys() -> None:
     root = tvm_ffi.Array(
         [
@@ -478,7 +562,7 @@ def test_structural_map_nested_array_map_order_and_keys() -> None:
         trace: list[str] = []
 
         def map_array(value: tvm_ffi.Array) -> tvm_ffi.Array:
-            trace.append("outer-array" if value.same_as(root) else "inner-array")
+            trace.append("outer-array" if isinstance(value[0], tvm_ffi.Map) else "inner-array")
             return value
 
         def map_map(value: tvm_ffi.Map) -> tvm_ffi.Map:
@@ -504,9 +588,10 @@ def test_structural_map_nested_array_map_order_and_keys() -> None:
         else:
             mapped = tvm_ffi.structural_map(root, callbacks, order=order)
 
-        assert mapped.__chandle__() == root_handle
-        assert mapped[0].__chandle__() == map_handle
-        assert mapped[0]["value"].__chandle__() == inner_array_handle
+        assert mapped.__chandle__() != root_handle
+        assert mapped[0].__chandle__() != map_handle
+        assert mapped[0]["value"].__chandle__() != inner_array_handle
+        assert list(root[0]["value"]) == [1]
         assert list(mapped[0]["value"]) == [2]
         assert "value" in mapped[0]
         assert "renamed" not in mapped[0]
@@ -522,14 +607,15 @@ def test_structural_map_nested_array_map_order_and_keys() -> None:
 
 
 def test_structural_map_array_ownership() -> None:
-    # A unique outer Array is reused, but its externally shared child is copied.
+    # Python retains the outer Array, so changed paths are copied.
     shared_child = tvm_ffi.Array([1])
     root = tvm_ffi.Array([shared_child])
     root_handle = root.__chandle__()
     mapped = tvm_ffi.structural_map(root, (int, lambda value: value + 1))
 
-    assert mapped.__chandle__() == root_handle
+    assert mapped.__chandle__() != root_handle
     assert not mapped[0].same_as(shared_child)
+    assert list(root[0]) == [1]
     assert list(shared_child) == [1]
     assert list(mapped[0]) == [2]
 
@@ -545,16 +631,36 @@ def test_structural_map_array_ownership() -> None:
     assert list(shared_root[0]) == [1]
     assert list(mapped[0]) == [2]
 
+    # Moving the root transfers its only Python-owned reference to the engine.
+    moved_root = tvm_ffi.Array([1])
+    moved_handle = moved_root.__chandle__()
+    mapped = tvm_ffi.structural_map(moved_root._move(), (int, lambda value: value + 1))
+
+    assert mapped.__chandle__() == moved_handle
+    assert list(mapped) == [2]
+
+    # Moving a wrapper obtained from a container does not transfer the
+    # container's reference, so its retained value remains unchanged.
+    owner = tvm_ffi.Array([tvm_ffi.Array([1])])
+    borrowed = owner[0]
+    borrowed_handle = borrowed.__chandle__()
+    mapped = tvm_ffi.structural_map(borrowed._move(), (int, lambda value: value + 1))
+
+    assert mapped.__chandle__() != borrowed_handle
+    assert list(owner[0]) == [1]
+    assert list(mapped) == [2]
+
 
 def test_structural_map_map_value_ownership() -> None:
-    # A unique Map is reused, but its externally shared value is copied.
+    # Python retains the Map, so changed paths are copied.
     shared_value = tvm_ffi.Array([1])
     root = tvm_ffi.Map({"value": shared_value})
     root_handle = root.__chandle__()
     mapped = tvm_ffi.structural_map(root, (int, lambda value: value + 1))
 
-    assert mapped.__chandle__() == root_handle
+    assert mapped.__chandle__() != root_handle
     assert not mapped["value"].same_as(shared_value)
+    assert list(root["value"]) == [1]
     assert list(shared_value) == [1]
     assert list(mapped["value"]) == [2]
 

@@ -101,6 +101,9 @@ TVM_FFI_INLINE bool IsObjectInstance(int32_t object_type_index);
  * - _type_mutable:
  *      Whether we would like to expose cast to non-constant pointer
  *      ObjectType* from Any/AnyView. By default, we set to false so it is not exposed.
+ * - _type_s_eq_hash_subclass_kind_fixed:
+ *      Whether every subclass must retain this type's structural equality and hash kind.
+ *      By default, this is false so downstream subclasses may select their own kind.
  *
  * The following two fields are necessary for base classes that can be sub-classed.
  *
@@ -232,6 +235,8 @@ class Object {
   static constexpr int32_t _type_depth = 0;
   /*! \brief The structural equality and hash kind of the type */
   static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindUnsupported;
+  /*! \brief Whether subclasses must retain this type's structural equality and hash kind */
+  static constexpr bool _type_s_eq_hash_subclass_kind_fixed = false;
   // The following functions are provided by macro
   // TVM_FFI_DECLARE_OBJECT_INFO and TVM_FFI_DECLARE_OBJECT_INFO_FINAL
   /*!
@@ -1069,6 +1074,10 @@ struct ObjectPtrEqual {
   static constexpr int32_t _type_depth = ParentType::_type_depth + 1;                         \
   TVM_FFI_COLD_CODE static int32_t _GetOrAllocRuntimeTypeIndex() {                            \
     static_assert(!ParentType::_type_final, "ParentType marked as final");                    \
+    static_assert(!ParentType::_type_s_eq_hash_subclass_kind_fixed ||                         \
+                      TypeName::_type_s_eq_hash_kind == ParentType::_type_s_eq_hash_kind,     \
+                  "Subclass must retain the structural equality and hash kind of its fixed "  \
+                  "ancestor");                                                                \
     static_assert(TypeName::_type_child_slots == 0 || ParentType::_type_child_slots == 0 ||   \
                       TypeName::_type_child_slots < ParentType::_type_child_slots,            \
                   "Need to set _type_child_slots when parent specifies it.");                 \
@@ -1092,6 +1101,10 @@ struct ObjectPtrEqual {
   static constexpr int32_t _type_depth = ParentType::_type_depth + 1;                         \
   TVM_FFI_COLD_CODE static int32_t _GetOrAllocRuntimeTypeIndex() {                            \
     static_assert(!ParentType::_type_final, "ParentType marked as final");                    \
+    static_assert(!ParentType::_type_s_eq_hash_subclass_kind_fixed ||                         \
+                      TypeName::_type_s_eq_hash_kind == ParentType::_type_s_eq_hash_kind,     \
+                  "Subclass must retain the structural equality and hash kind of its fixed "  \
+                  "ancestor");                                                                \
     static_assert(TypeName::_type_child_slots == 0 || ParentType::_type_child_slots == 0 ||   \
                       TypeName::_type_child_slots < ParentType::_type_child_slots,            \
                   "Need to set _type_child_slots when parent specifies it.");                 \

@@ -1068,8 +1068,6 @@ A :class:`~tvm_ffi.StructuralMutator` adds ownership and replacement semantics.
 Its main operations are:
 
 - ``mutator.mutate(value)`` maps without intentionally modifying ``value``.
-- ``mutator.maybe_inplace_mutate(value)`` permits a type-specific implementation
-  to reuse a safely mutable value and otherwise falls back to ``mutate``.
 - ``mutator.var_remap_get(var)`` and ``mutator.var_remap_set(var, mapped)``
   access the current identity-substitution environment.
 - ``def_region_kind`` and ``with_def_region_kind`` have the same role as on the
@@ -1081,9 +1079,11 @@ recursively maps each structural field, and installs mapped fields in that copy.
 If no field changes, it returns the original object instead.  A nested change
 therefore copies only the objects along the changed path; unchanged children
 remain shared.
-``maybe_inplace_mutate`` is an explicit optimization path.  A type-specific
-``__s_maybe_inplace_mutate__`` hook owns the safety policy and may reuse its
-input.  Without that hook, the default implementation calls ``mutate``.
+A type-specific ``__s_maybe_inplace_mutate__`` hook is an internal optimization
+path.  The structural-map engine invokes it only for a uniquely owned value and
+otherwise uses ``__s_mutate__``.  Python does not expose this dispatch as a
+direct mutator method; move a root with ``root._move()`` to transfer ownership
+to :func:`~tvm_ffi.structural_map`.
 
 .. note::
 
@@ -1235,12 +1235,11 @@ structural child, and returns an interrupt if one occurs:
 A custom ``__s_mutate__`` hook similarly receives the active mutator.  It should
 recursively call ``mutator.mutate`` and return a new value only when needed.
 An optional ``__s_maybe_inplace_mutate__`` hook may implement an in-place
-optimization.  Callers use ``mutate`` for shared objects and call
-``maybe_inplace_mutate`` only when the input is safe to mutate, so the optional
-hook may rely on that ownership guarantee.  A type defining it must also define
-``__s_mutate__``.  If the optional hook is absent, ``maybe_inplace_mutate`` uses
-the default non-in-place mutation; generic reflected fields are never mutated
-in place automatically.
+optimization.  The structural-map engine dispatches it only when the input is
+safe to mutate, so the optional hook may rely on that ownership guarantee.  A
+type defining it must also define ``__s_mutate__``.  If the optional hook is
+absent, the engine uses the default non-in-place mutation; generic reflected
+fields are never mutated in place automatically.
 
 When an object marked ``structural_eq="var"`` or ``structural_eq="dag"`` registers
 either ``__s_mutate__`` or ``__s_maybe_inplace_mutate__`` hooks, it should:

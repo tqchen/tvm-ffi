@@ -185,6 +185,9 @@ class StructuralMutatorObj : public Object {
    *
    * \param value The borrowed value to mutate.
    * \return The mutated owning value, or an Error if mutation failed.
+   *
+   * \note Call only from a ``__s_maybe_inplace_mutate__`` hook, which is dispatched
+   *       only for a value whose entire path from the root is uniquely owned.
    */
   TVM_FFI_INLINE Expected<Any> MaybeInplaceMutateExpected(AnyView value) noexcept {
     return details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(
@@ -196,6 +199,11 @@ class StructuralMutatorObj : public Object {
    *
    * \param value The borrowed value to mutate.
    * \return The mutated owning value, or an Error if mutation failed.
+   *
+   * \note The caller must already know the entire path from the root is uniquely
+   *       owned, either through an owning moved-in root or while handling a
+   *       ``__s_maybe_inplace_mutate__`` hook. This method checks only \p value
+   *       itself, not its ancestors.
    */
   TVM_FFI_INLINE Expected<Any> MaybeInplaceMutateIfUniqueExpected(AnyView value) noexcept {
     const Object* obj = value.as<Object>();
@@ -348,6 +356,15 @@ class StructuralMutatorObj : public Object {
     return result;
   }
 
+  /*!
+   * \brief Whether a structural equality/hash kind uses identity remapping.
+   * \param kind The structural equality/hash kind to inspect.
+   * \return True for a FreeVar or DAG node.
+   */
+  TVM_FFI_INLINE static constexpr bool IsVarOrDag(TVMFFISEqHashKind kind) noexcept {
+    return kind == kTVMFFISEqHashKindFreeVar || kind == kTVMFFISEqHashKindDAGNode;
+  }
+
   // The cold remainder of DefaultMutateRaw, out of line so that always-inlined caller stays
   // small at every inlining site. `attr` is the attribute the caller already read, so the
   // column is never looked up twice.
@@ -360,8 +377,7 @@ class StructuralMutatorObj : public Object {
     if (type_index < TypeIndex::kTVMFFIStaticObjectBegin) return false;
     const TVMFFITypeInfo* type_info = TVMFFIGetTypeInfo(type_index);
     return type_info->metadata != nullptr &&
-           (type_info->metadata->structural_eq_hash_kind == kTVMFFISEqHashKindFreeVar ||
-            type_info->metadata->structural_eq_hash_kind == kTVMFFISEqHashKindDAGNode);
+           IsVarOrDag(type_info->metadata->structural_eq_hash_kind);
   }
 
   /*! \brief The cold remainder of DefaultMutateRaw: an ffi.Function hook, or no hook at all. */
@@ -943,25 +959,24 @@ class StructuralMapEngine : public Parent {
       if (!matched.has_value()) return false;
     }
 
-    // A final statically non-remappable type discards the remap path at optimization time.
-    // Every other case uses runtime metadata: nullable refs may match None, non-final subclasses
-    // may redeclare the kind, and metadata may be absent.
+    // A statically non-remappable type whose subclasses cannot change kind discards the remap
+    // path at optimization time. Every other case uses runtime metadata: nullable refs may match
+    // None, non-final subclasses may redeclare the kind, and metadata may be absent.
     const bool remappable = [&]() {
       if constexpr (std::is_base_of_v<ObjectRef, TSub>) {
         using TNode = typename TSub::ContainerType;
-        if constexpr (TNode::_type_final &&
-                      TNode::_type_s_eq_hash_kind != kTVMFFISEqHashKindFreeVar &&
-                      TNode::_type_s_eq_hash_kind != kTVMFFISEqHashKindDAGNode) {
-          return false;
-        }
+        constexpr bool kNeverRemappable =
+            (TNode::_type_final || TNode::_type_s_eq_hash_subclass_kind_fixed) &&
+            !Parent::IsVarOrDag(TNode::_type_s_eq_hash_kind);
+        if constexpr (kNeverRemappable) return false;
       }
       if constexpr (std::is_pointer_v<TSub> &&
                     std::is_base_of_v<Object, std::remove_cv_t<std::remove_pointer_t<TSub>>>) {
         using TNode = std::remove_cv_t<std::remove_pointer_t<TSub>>;
-        constexpr bool kFinalNonRemappable =
-            TNode::_type_final && TNode::_type_s_eq_hash_kind != kTVMFFISEqHashKindFreeVar &&
-            TNode::_type_s_eq_hash_kind != kTVMFFISEqHashKindDAGNode;
-        if constexpr (kFinalNonRemappable) return false;
+        constexpr bool kNeverRemappable =
+            (TNode::_type_final || TNode::_type_s_eq_hash_subclass_kind_fixed) &&
+            !Parent::IsVarOrDag(TNode::_type_s_eq_hash_kind);
+        if constexpr (kNeverRemappable) return false;
       }
       return this->IsRemappableIdentity(value.type_index());
     }();
@@ -1326,6 +1341,138 @@ class StructuralMapDynEngine : public Parent {
 };
 
 /*!
+ * \brief Engine of the callback-dispatched \ref tvm::ffi::StructuralMutate.
+ *
+ * A matched callback owns mutation of its value, so the engine returns the
+ * callback result without descending into it. An unmatched value keeps the
+ * Parent's default mutation. ``Parent::MutatorObjType`` pins the exact
+ * callback-facing mutator view across layer composition.
+ *
+ * \tparam Parent Mutator layer extended by the engine.
+ * \tparam Callbacks Callable types whose first parameter selects the value type.
+ */
+template <typename Parent, typename... Callbacks>
+class StructuralMutateEngine : public Parent {
+ public:
+  static_assert(std::is_base_of_v<StructuralMapEngineBase, Parent>,
+                "StructuralMutate Parent must derive from StructuralMapEngineBase");
+
+  /*! \brief Construct a mutate engine over callbacks tested in declaration order. */
+  explicit StructuralMutateEngine(Callbacks... callbacks)
+      : Parent(VTable()), callbacks_(std::move(callbacks)...) {}
+
+ private:
+  /*! \brief Return this engine's immutable callback-aware mutator vtable. */
+  static const StructuralMutatorVTable* VTable() {
+    static const StructuralMutatorVTable vtable{
+        &StructuralMutateEngine::DispatchMutate,
+        &StructuralMutateEngine::DispatchMaybeInplaceMutate,
+        &StructuralMutateEngine::DispatchVarRemapGet,
+        &StructuralMutateEngine::DispatchVarRemapSet,
+    };
+    return &vtable;
+  }
+
+  /*! \brief Dispatch ordinary mutation from the erased mutator pointer. */
+  static TVMFFIAny DispatchMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
+    return static_cast<StructuralMutateEngine*>(mutator)->MutateImplRaw(value);
+  }
+
+  /*! \brief Dispatch maybe-in-place mutation from the erased mutator pointer. */
+  static TVMFFIAny DispatchMaybeInplaceMutate(StructuralMutatorObj* mutator,
+                                              AnyView value) noexcept {
+    return static_cast<StructuralMutateEngine*>(mutator)->MaybeInplaceMutateImplRaw(value);
+  }
+
+  /*! \brief Mutate one value, handing a matched callback ownership of descent. */
+  TVMFFIAny MutateImplRaw(AnyView value) noexcept {
+    if (std::optional<Expected<Any>> matched = DispatchCallbacks(value, false)) {
+      Expected<Any> result = *std::move(matched);
+      if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
+        // Keep callback-boundary context in addition to the default-descent
+        // context: a callback may return a rebuilt value, so the two nodes can differ.
+        Parent::UpdateVisitErrorContext(result, value);
+      }
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+    }
+    return Parent::DefaultMutateRaw(value);
+  }
+
+  /*! \brief Maybe mutate one value in place, with callback-owned descent. */
+  TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
+    if (std::optional<Expected<Any>> matched = DispatchCallbacks(value, true)) {
+      Expected<Any> result = *std::move(matched);
+      if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
+        // Keep callback-boundary context in addition to the default-descent
+        // context: a callback may return a rebuilt value, so the two nodes can differ.
+        Parent::UpdateVisitErrorContext(result, value);
+      }
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+    }
+    return Parent::DefaultMaybeInplaceMutateRaw(value);
+  }
+
+  /*! \brief Try one typed callback and preserve Error as an expected result. */
+  template <typename Callback>
+  TVM_FFI_INLINE std::optional<Expected<Any>> TryLink(Callback& callback, AnyView value,
+                                                      bool allow_inplace) noexcept {
+    using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
+    static_assert(FuncInfo::num_args == 2 || FuncInfo::num_args == 3,
+                  "StructuralMutate callback must take (value, mutator) or "
+                  "(value, mutator, allow_inplace)");
+    using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
+    using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
+    using SecondArg = std::decay_t<std::tuple_element_t<1, typename FuncInfo::ArgType>>;
+    using Second = std::remove_pointer_t<SecondArg>;
+    static_assert(std::is_same_v<Second, typename Parent::MutatorObjType>,
+                  "second StructuralMutate callback argument must be exactly "
+                  "Parent::MutatorObjType*");
+    if constexpr (FuncInfo::num_args == 3) {
+      using ThirdArg = std::decay_t<std::tuple_element_t<2, typename FuncInfo::ArgType>>;
+      static_assert(std::is_same_v<ThirdArg, bool>,
+                    "third StructuralMutate callback argument must be bool");
+    }
+    auto* mutator = static_cast<typename Parent::MutatorObjType*>(this);
+    auto invoke = [&](auto&& matched) -> Expected<Any> {
+      try {
+        if constexpr (FuncInfo::num_args == 3) {
+          return callback(std::forward<decltype(matched)>(matched), mutator, allow_inplace);
+        } else {
+          return callback(std::forward<decltype(matched)>(matched), mutator);
+        }
+      } catch (Error& err) {
+        return Unexpected(std::move(err));
+      }
+    };
+    if constexpr (std::is_same_v<TSub, AnyView>) {
+      return invoke(value);
+    } else if constexpr (std::is_same_v<TSub, Any>) {
+      return invoke(Any(value));
+    } else if (auto matched = value.template as<TSub>()) {
+      return invoke(*std::move(matched));
+    }
+    return std::nullopt;
+  }
+
+  /*! \brief Fold callbacks in declaration order, stopping at the first match. */
+  template <size_t... Is>
+  TVM_FFI_INLINE std::optional<Expected<Any>> TryLinks(AnyView value, bool allow_inplace,
+                                                       std::index_sequence<Is...>) noexcept {
+    std::optional<Expected<Any>> result;
+    (... || (result = TryLink(std::get<Is>(callbacks_), value, allow_inplace)).has_value());
+    return result;
+  }
+
+  /*! \brief Run the callback chain, or return empty when no callback matched. */
+  std::optional<Expected<Any>> DispatchCallbacks(AnyView value, bool allow_inplace) noexcept {
+    return TryLinks(value, allow_inplace, std::index_sequence_for<Callbacks...>{});
+  }
+
+  /*! \brief Typed callbacks tested in declaration order, first match wins. */
+  std::tuple<Callbacks...> callbacks_;
+};
+
+/*!
  * \brief Map a structured value graph and invoke typed replacement callbacks.
  *
  * Each callback is selected by the type of its first argument. The argument may be ``AnyView``,
@@ -1368,7 +1515,7 @@ class StructuralMapDynEngine : public Parent {
  *
  * \tparam order Whether callbacks run before or after recursively mapping children.
  * \tparam Callbacks Callback types whose first parameters select matching values.
- * \param root The borrowed root value to map.
+ * \param root The owning root value to map.
  * \param callbacks Callbacks tested in declaration order. Each accepts ``(value)`` or
  *        ``(value, def_region_kind)`` and returns a bare Any-convertible replacement,
  *        ``Expected<U>`` where ``U`` is Any-convertible, or an error value.
@@ -1376,9 +1523,14 @@ class StructuralMapDynEngine : public Parent {
  *
  * \note Returning ``Expected<U>`` expresses errors as values; throwing ``Error`` is also
  *       supported and is converted to the error state.
+ * \note Pass an owned root with ``std::move(root)`` to permit root reuse. In a
+ *       ``__s_maybe_inplace_mutate__`` hook, a nested owned field follows the idiom
+ *       ``self->field = StructuralMap(std::move(self->field), callback)``.
  */
 template <WalkOrder order, typename... Callbacks>
-Expected<Any> StructuralMapExpected(AnyView root, Callbacks&&... callbacks) noexcept {
+// The owning parameter makes caller ownership visible to the uniqueness check.
+Expected<Any> StructuralMapExpected(
+    Any root, Callbacks&&... callbacks) noexcept {  // NOLINT(performance-unnecessary-value-param)
   static_assert(sizeof...(Callbacks) != 0, "StructuralMap requires at least one callback");
   using Mutator = StructuralMapEngine<StructuralMapEngineBase, order, std::decay_t<Callbacks>...>;
   StructuralMutator mutator(make_object<Mutator>(std::forward<Callbacks>(callbacks)...));
@@ -1393,7 +1545,7 @@ Expected<Any> StructuralMapExpected(AnyView root, Callbacks&&... callbacks) noex
  *
  * \tparam order Whether callbacks run before or after recursively mapping children.
  * \tparam Callbacks Callback types whose first parameters select matching values.
- * \param root The borrowed root value to map.
+ * \param root The owning root value to map.
  * \param callbacks Callbacks tested in declaration order. Each accepts ``(value)`` or
  *        ``(value, def_region_kind)`` and returns a bare Any-convertible replacement,
  *        ``Expected<U>`` where ``U`` is Any-convertible, or an error value.
@@ -1402,10 +1554,63 @@ Expected<Any> StructuralMapExpected(AnyView root, Callbacks&&... callbacks) noex
  *
  * \note Returning ``Expected<U>`` expresses errors as values; throwing ``Error`` is also
  *       supported and is rethrown by this interface.
+ * \note Pass an owned root with ``std::move(root)`` to permit root reuse.
  */
 template <WalkOrder order, typename... Callbacks>
-Any StructuralMap(AnyView root, Callbacks&&... callbacks) {
-  return StructuralMapExpected<order>(root, std::forward<Callbacks>(callbacks)...).value();
+// The owning parameter makes caller ownership visible to the uniqueness check.
+Any StructuralMap(Any root,
+                  Callbacks&&... callbacks) {  // NOLINT(performance-unnecessary-value-param)
+  return StructuralMapExpected<order>(std::move(root), std::forward<Callbacks>(callbacks)...)
+      .value();
+}
+
+/*!
+ * \brief Mutate a structured value with callbacks that own recursion.
+ *
+ * Each callback takes ``(value, StructuralMutatorObj* mutator)`` and may take
+ * a third ``bool allow_inplace`` argument. It returns ``Expected<Any>``. The first argument
+ * selects values by its FFI type;
+ * callbacks are tested in declaration order and the first match owns mutation.
+ * Its replacement is final and is not traversed again. The callback explicitly
+ * recurses through the mutator, which also carries remap and def-region state.
+ * A callback matching a variable owns repeated-use consistency and can use the
+ * mutator's ``VarRemapGetExpected`` and ``VarRemapSetExpected`` operations.
+ * An unmatched value follows registered or reflected default mutation. Success
+ * returns the owning replacement; ``Error`` reports mutation failure.
+ *
+ * \param root The owning root value to mutate.
+ * \param callbacks Callbacks tested in declaration order. Each accepts
+ *        ``(value, mutator)`` or ``(value, mutator, allow_inplace)``.
+ * \return The mutated owning value, or an Error if mutation or a callback fails.
+ *
+ * \note A two-argument callback descends with ``MutateExpected`` and remains copy-on-write.
+ *       A three-argument callback receives ``allow_inplace=true`` only when its value is on a
+ *       uniquely owned path and may then explicitly use the maybe-in-place mutator operation.
+ * \note Pass an owned root with ``std::move(root)`` to permit root reuse. In a
+ *       ``__s_maybe_inplace_mutate__`` hook, the corresponding nested idiom is
+ *       ``self->field = StructuralMap(std::move(self->field), callback)``; const-correctness
+ *       rejects that ownership transfer outside a mutable maybe-in-place hook.
+ */
+template <typename... Callbacks>
+// The owning parameter makes caller ownership visible to the uniqueness check.
+Expected<Any> StructuralMutateExpected(
+    Any root, Callbacks&&... callbacks) noexcept {  // NOLINT(performance-unnecessary-value-param)
+  static_assert(sizeof...(Callbacks) != 0, "StructuralMutate requires at least one callback");
+  using Mutator = StructuralMutateEngine<StructuralMapEngineBase, std::decay_t<Callbacks>...>;
+  StructuralMutator mutator(make_object<Mutator>(std::forward<Callbacks>(callbacks)...));
+  return mutator->MaybeInplaceMutateIfUniqueExpected(root);
+}
+
+/*!
+ * \brief Throwing form of \ref tvm::ffi::StructuralMutateExpected.
+ *
+ * \note Pass an owned root with ``std::move(root)`` to permit root reuse.
+ */
+template <typename... Callbacks>
+// The owning parameter makes caller ownership visible to the uniqueness check.
+Any StructuralMutate(Any root,
+                     Callbacks&&... callbacks) {  // NOLINT(performance-unnecessary-value-param)
+  return StructuralMutateExpected(std::move(root), std::forward<Callbacks>(callbacks)...).value();
 }
 
 }  // namespace ffi

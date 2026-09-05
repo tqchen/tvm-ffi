@@ -750,4 +750,25 @@ TEST(StructuralVisit, CallbackDrivenTraversal) {
   ExpectTrace(error_trace, {"throw"});
 }
 
+TEST(StructuralVisit, CallbackVisitsLhsOnly) {
+  TPair root(TPair(TVar("lhs"), TVar("inner-rhs")),
+             TPair(TVar("root-rhs-lhs"), TVar("root-rhs-rhs")));
+  std::vector<std::string> trace;
+
+  Expected<Optional<VisitInterrupt>> result = StructuralVisitExpected(
+      root,
+      [](const TPair& pair, StructuralVisitorObj* visitor) -> Expected<Optional<VisitInterrupt>> {
+        TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(pair->lhs));
+        return Optional<VisitInterrupt>(std::nullopt);
+      },
+      [&](const TVar& var, StructuralVisitorObj*) -> Expected<Optional<VisitInterrupt>> {
+        trace.emplace_back(var->name);
+        return Optional<VisitInterrupt>(std::nullopt);
+      });
+
+  ASSERT_TRUE(result.is_ok());
+  EXPECT_FALSE(result.value().has_value());
+  ExpectTrace(trace, {"lhs"});
+}
+
 }  // namespace
