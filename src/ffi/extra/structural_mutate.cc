@@ -47,40 +47,225 @@ namespace details {
  * \param order Integer value of \ref WalkOrder.
  * \return The mapped owning value, or an Error.
  */
+/*!
+ * \brief Structural mutator whose links are runtime ffi.Functions keyed by type index.
+ *
+ * The dynamic counterpart of \ref StructuralMapMutatorObj. It selects a link by scanning
+ * registered type indices where the static version does a compile-time ``as<TSub>()``. The two
+ * are kept apart, rather than sharing one template with a mode flag, so each version reads
+ * straight through; only the identity remap they share lives in the common base. Keeping this
+ * one in the .cc also keeps the link table out of the public header.
+ *
+ * \tparam order Callback placement relative to child mapping.
+ */
+template <WalkOrder order>
+class StructuralMapDynMutatorObj : public StructuralMapMutatorBaseObj {
+ public:
+  StructuralMapDynMutatorObj(Array<Tuple<int32_t, Function>> callbacks,
+                             Array<Tuple<int32_t, Function>> callbacks_with_def_region_kind)
+      : StructuralMapMutatorBaseObj(VTable()),
+        callbacks_(std::move(callbacks)),
+        callbacks_with_def_region_kind_(std::move(callbacks_with_def_region_kind)) {}
+
+ private:
+  static const StructuralMutatorVTable* VTable() {
+    static const StructuralMutatorVTable vtable{
+        &StructuralMapDynMutatorObj::DispatchMutate,
+        &StructuralMapDynMutatorObj::DispatchMaybeInplaceMutate,
+        &StructuralMapDynMutatorObj::DispatchVarRemapGet,
+        &StructuralMapDynMutatorObj::DispatchVarRemapSet,
+    };
+    return &vtable;
+  }
+
+  static TVMFFIAny DispatchMaybeInplaceMutate(StructuralMutatorObj* mutator,
+                                              AnyView value) noexcept {
+    return static_cast<StructuralMapDynMutatorObj*>(mutator)->MaybeInplaceMutateImplRaw(value);
+  }
+
+  static TVMFFIAny DispatchMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
+    return static_cast<StructuralMapDynMutatorObj*>(mutator)->MutateImplRaw(value);
+  }
+
+  /*!
+   * \brief Find the first link registered for \p type_index.
+   *
+   * \param type_index The input node's runtime type index.
+   * \param with_kind Set when the matched link also takes a def-region kind.
+   * \param link_type_index Set to the registered type index the link matched on, so a post-order
+   *        walk can recheck the descended node against the same target.
+   * \return The matched Function, or nullopt when no link applies.
+   */
+  Optional<Function> FindLink(int32_t type_index, bool* with_kind,
+                              int32_t* link_type_index) const noexcept {
+    for (const Tuple<int32_t, Function>& entry : callbacks_) {
+      if (RuntimeTypeIndexMatch(type_index, entry.get<0>())) {
+        *with_kind = false;
+        *link_type_index = entry.get<0>();
+        return entry.get<1>();
+      }
+    }
+    for (const Tuple<int32_t, Function>& entry : callbacks_with_def_region_kind_) {
+      if (RuntimeTypeIndexMatch(type_index, entry.get<0>())) {
+        *with_kind = true;
+        *link_type_index = entry.get<0>();
+        return entry.get<1>();
+      }
+    }
+    return std::nullopt;
+  }
+
+  /*!
+   * \brief Invoke a matched link, threading the live def-region kind through.
+   *
+   * \p kind is passed rather than stashed at selection time: the engine only knows the true
+   * def-region kind of the node handed back after descent (post-order) or of the matched node
+   * itself (pre-order).
+   */
+  TVM_FFI_INLINE static Expected<Any> InvokeLink(const Function& fn, bool with_kind, AnyView target,
+                                                 TVMFFIDefRegionKind kind) noexcept {
+    // CallExpected is exception-free: it goes through the safe-call path and returns any raised
+    // error as Unexpected, unlike a directly invoked C++ callback.
+    return with_kind ? fn.CallExpected<Any>(target, kind) : fn.CallExpected<Any>(target);
+  }
+
+  /*!
+   * \brief Test the link table against \p value and mutate through the first match.
+   *
+   * \tparam kMaybeInplace Whether a uniquely owned node may be mutated in place.
+   * \param value The borrowed value to test and mutate.
+   * \param out Receives the mutated value or Error when a link matched.
+   * \return Whether a link matched, in which case \p out was written.
+   */
+  template <bool kMaybeInplace>
+  TVM_FFI_INLINE bool TryLink(AnyView value, Expected<Any>* out) noexcept {
+    // Step for step the same walk as StructuralMapMutatorObj::TryLink, and deliberately so:
+    // only link detection and invocation differ between the two, and keeping them as separate
+    // straight-line copies lets each specialize on its own selection strategy and keeps both
+    // readable. Everything below except finding and calling the link is shared semantics, so a
+    // change to either copy belongs in both.
+
+    bool with_kind = false;
+    int32_t link_type_index = TypeIndex::kTVMFFINone;
+    // A local, so descending into a matching child cannot change what this node invokes.
+    Optional<Function> matched = FindLink(value.type_index(), &with_kind, &link_type_index);
+    if (!matched.has_value()) return false;
+
+    // --- identity remap, entry half -----------------------------------------
+    // A FreeVar or DAG node maps once and every later occurrence reuses that result, so if this
+    // node already has a cached remap entry, return it instead of mutating it again.
+    const bool remappable = IsRemappableIdentity(value.type_index());
+    if (remappable) {
+      Expected<Any> mapped = VarRemapGetExpected(value);
+      if (mapped.is_err()) {
+        *out = std::move(mapped);
+        return true;
+      }
+      if (ExpectedUnsafe::GetData(mapped).type_index() != TypeIndex::kTVMFFINone) {
+        *out = std::move(mapped);
+        return true;
+      }
+    }
+
+    // --- callback and descent, in walk order --------------------------------
+    const TVMFFIDefRegionKind kind = def_region_kind();
+    if constexpr (order == WalkOrder::kPreOrder) {
+      // Pre-order: the callback rewrites this node first, then descent runs over what it made.
+      Expected<Any> callback_result = InvokeLink(*matched, with_kind, value, kind);
+      if (TVM_FFI_PREDICT_FALSE(callback_result.is_err())) {
+        UpdateVisitErrorContext(callback_result, value);
+        *out = std::move(callback_result);
+        return true;
+      }
+      // Own the callback's result: it is the only reference from here on.
+      Any mapped_value = ExpectedUnsafe::GetData(callback_result);
+      // Each descent names the node it actually ran on in the error context.
+      *out = [&]() -> Expected<Any> {
+        if constexpr (kMaybeInplace) {
+          const TVMFFIAny* mapped_data = AnyUnsafe::TVMFFIAnyPtrFromAny(mapped_value);
+          const TVMFFIAny input_data = value.CopyToTVMFFIAny();
+          if (mapped_data->type_index == input_data.type_index &&
+              mapped_data->zero_padding == input_data.zero_padding &&
+              mapped_data->v_int64 == input_data.v_int64) {
+            return DefaultMaybeInplaceMutateExpected(value);
+          }
+          const Object* mapped_obj = mapped_value.as<Object>();
+          bool can_inplace = mapped_obj != nullptr && mapped_obj->unique();
+          return can_inplace ? DefaultMaybeInplaceMutateExpected(mapped_value)
+                             : DefaultMutateExpected(mapped_value);
+        } else {
+          return DefaultMutateExpected(mapped_value);
+        }
+      }();
+      if (TVM_FFI_PREDICT_FALSE(out->is_err())) return true;
+    } else {
+      // Post-order: children are mapped first, so the callback sees the rebuilt node.
+      Expected<Any> descended =
+          kMaybeInplace ? DefaultMaybeInplaceMutateExpected(value) : DefaultMutateExpected(value);
+      if (TVM_FFI_PREDICT_FALSE(descended.is_err())) {
+        *out = std::move(descended);
+        return true;
+      }
+      // Held by reference, not moved out: the error path below names this node, so it has to
+      // survive the callback.
+      const Any& mapped_value = ExpectedUnsafe::GetData(descended);
+      // The link was selected on the input node, and the callback must only see the type it
+      // registered for. The typed mutator gets this from its `mapped_value.as<TSub>()`; here the
+      // registered type index is the same target, so recheck against it.
+      if (TVM_FFI_PREDICT_FALSE(
+              !RuntimeTypeIndexMatch(mapped_value.type_index(), link_type_index))) {
+        *out =
+            Unexpected(Error("TypeError", "structural mutate: descent changed the node type", ""));
+        UpdateVisitErrorContext(*out, mapped_value);
+        return true;
+      }
+      *out = InvokeLink(*matched, with_kind, mapped_value, kind);
+      if (TVM_FFI_PREDICT_FALSE(out->is_err())) {
+        UpdateVisitErrorContext(*out, mapped_value);
+        return true;
+      }
+    }
+
+    // Bind this node's identity to its final result, so every later occurrence reuses it.
+    if (remappable) {
+      Expected<void> set_result = VarRemapSetExpected(value, ExpectedUnsafe::GetData(*out));
+      if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
+        *out = Unexpected(std::move(set_result).error());
+      }
+    }
+    return true;
+  }
+
+  TVM_FFI_INLINE TVMFFIAny MutateImplRaw(AnyView value) noexcept {
+    Expected<Any> out{Any()};
+    if (TryLink<false>(value, &out)) {
+      return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
+    }
+    return DefaultMutateRaw(value);
+  }
+
+  TVM_FFI_INLINE TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
+    Expected<Any> out{Any()};
+    if (TryLink<true>(value, &out)) {
+      return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
+    }
+    return DefaultMaybeInplaceMutateRaw(value);
+  }
+
+  Array<Tuple<int32_t, Function>> callbacks_;
+  Array<Tuple<int32_t, Function>> callbacks_with_def_region_kind_;
+};
+
 Expected<Any> StructuralMapExpected(
     AnyView root, const Array<Tuple<int32_t, Function>>& callbacks,
     const Array<Tuple<int32_t, Function>>& callbacks_with_def_region_kind, int order) noexcept {
-  auto dispatch = [callbacks, callbacks_with_def_region_kind](AnyView x, TVMFFIDefRegionKind kind,
-                                                              auto&& on_match,
-                                                              auto&& on_no_match) -> Expected<Any> {
-    for (const auto& entry : callbacks) {
-      int32_t type_index = entry.template get<0>();
-      if (!RuntimeTypeIndexMatch(x.type_index(), type_index)) {
-        continue;
-      }
-      Function fn = entry.template get<1>();
-      return on_match(
-          [&](AnyView target) -> Expected<Any> { return fn.CallExpected<Any>(target); });
-    }
-    for (const auto& entry : callbacks_with_def_region_kind) {
-      int32_t type_index = entry.template get<0>();
-      if (!RuntimeTypeIndexMatch(x.type_index(), type_index)) {
-        continue;
-      }
-      Function fn = entry.template get<1>();
-      return on_match(
-          [&](AnyView target) -> Expected<Any> { return fn.CallExpected<Any>(target, kind); });
-    }
-    return on_no_match();
-  };
-
   if (order == static_cast<int>(WalkOrder::kPreOrder)) {
-    using Mutator = StructuralMapMutatorObj<WalkOrder::kPreOrder, decltype(dispatch)>;
-    StructuralMutator mutator(make_object<Mutator>(std::move(dispatch)));
+    using Mutator = StructuralMapDynMutatorObj<WalkOrder::kPreOrder>;
+    StructuralMutator mutator(make_object<Mutator>(callbacks, callbacks_with_def_region_kind));
     return mutator->MaybeInplaceMutateIfUniqueExpected(root);
   } else {
-    using Mutator = StructuralMapMutatorObj<WalkOrder::kPostOrder, decltype(dispatch)>;
-    StructuralMutator mutator(make_object<Mutator>(std::move(dispatch)));
+    using Mutator = StructuralMapDynMutatorObj<WalkOrder::kPostOrder>;
+    StructuralMutator mutator(make_object<Mutator>(callbacks, callbacks_with_def_region_kind));
     return mutator->MaybeInplaceMutateIfUniqueExpected(root);
   }
 }
@@ -99,15 +284,15 @@ Expected<Any> StructuralMapExpected(
  * \return The mutated sequence, or an Error.
  */
 template <typename SeqObj>
-Expected<Any> MutateSeqContainerExpected(StructuralMutatorObj* mutator, AnyView value,
-                                         const SeqObj* self) noexcept {
+TVMFFIAny MutateSeqContainerRaw(StructuralMutatorObj* mutator, AnyView value,
+                                const SeqObj* self) noexcept {
   int64_t size = static_cast<int64_t>(self->size());
   const Any* items = self->begin();
   ObjectPtr<SeqObj> output = nullptr;
 
   for (int64_t i = 0; i < size; ++i) {
     const Any& item = items[i];
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value, mutator->MutateExpected(item), self);
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value, mutator->MutateExpected(item));
 
     if (output == nullptr) {
       if (item.same_as(mapped_value)) {
@@ -120,9 +305,9 @@ Expected<Any> MutateSeqContainerExpected(StructuralMutatorObj* mutator, AnyView 
   }
 
   if (output == nullptr) {
-    return Any(value);
+    return AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
   }
-  return Any(ObjectRef(std::move(output)));
+  return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
 }
 
 /*!
@@ -135,18 +320,18 @@ Expected<Any> MutateSeqContainerExpected(StructuralMutatorObj* mutator, AnyView 
  * \return The mutated sequence, or an Error.
  */
 template <typename SeqObj>
-Expected<Any> MaybeInplaceMutateSeqContainerExpected(StructuralMutatorObj* mutator, AnyView value,
-                                                     SeqObj* self) noexcept {
+TVMFFIAny MaybeInplaceMutateSeqContainerRaw(StructuralMutatorObj* mutator, AnyView value,
+                                            SeqObj* self) noexcept {
   for (int64_t i = 0; i < static_cast<int64_t>(self->size()); ++i) {
     const Any& item = self->begin()[i];
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value,
-                                      mutator->MaybeInplaceMutateIfUniqueExpected(item), self);
+                                      mutator->MaybeInplaceMutateIfUniqueExpected(item));
 
     if (!item.same_as(mapped_value)) {
       self->SetItemAfterCheck(i, std::move(mapped_value));
     }
   }
-  return Any(value);
+  return AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
 }
 
 /*!
@@ -159,15 +344,15 @@ Expected<Any> MaybeInplaceMutateSeqContainerExpected(StructuralMutatorObj* mutat
  * \return The mutated map, or an Error.
  */
 template <typename MapObjType>
-Expected<Any> MutateMapValuesExpected(StructuralMutatorObj* mutator, AnyView value,
-                                      const MapObjType* self) noexcept {
+TVMFFIAny MutateMapValuesRaw(StructuralMutatorObj* mutator, AnyView value,
+                             const MapObjType* self) noexcept {
   ObjectPtr<Object> output = nullptr;
   MapBaseObj::iterator output_it;
   size_t index = 0;
 
   for (auto source_it = self->begin(); source_it != self->end(); ++source_it, ++index) {
     const Any& old_value = source_it->second;
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value, mutator->MutateExpected(old_value), self);
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value, mutator->MutateExpected(old_value));
     bool changed = !old_value.same_as(new_value);
     if (output == nullptr) {
       if (!changed) {
@@ -186,9 +371,9 @@ Expected<Any> MutateMapValuesExpected(StructuralMutatorObj* mutator, AnyView val
   }
 
   if (output == nullptr) {
-    return Any(value);
+    return AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
   }
-  return Any(ObjectRef(std::move(output)));
+  return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
 }
 
 /*!
@@ -201,18 +386,18 @@ Expected<Any> MutateMapValuesExpected(StructuralMutatorObj* mutator, AnyView val
  * \return The mutated map, or an Error.
  */
 template <typename MapObjType>
-Expected<Any> MaybeInplaceMutateMapValuesExpected(StructuralMutatorObj* mutator, AnyView value,
-                                                  MapObjType* self) noexcept {
+TVMFFIAny MaybeInplaceMutateMapValuesRaw(StructuralMutatorObj* mutator, AnyView value,
+                                         MapObjType* self) noexcept {
   for (auto it = self->begin(); it != self->end(); ++it) {
     const Any& old_value = it->second;
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value,
-                                      mutator->MaybeInplaceMutateIfUniqueExpected(old_value), self);
+                                      mutator->MaybeInplaceMutateIfUniqueExpected(old_value));
 
     if (!old_value.same_as(new_value)) {
       it->second = std::move(new_value);
     }
   }
-  return Any(value);
+  return AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
 }
 
 /*! \brief Identity structural mutation hook for immutable String and Bytes leaves. */
@@ -223,58 +408,50 @@ TVMFFIAny MutateImmutableLeaf(StructuralMutatorObj*, AnyView value) noexcept {
 
 /*! \brief Structural mutation hook for ArrayObj. */
 TVMFFIAny MutateArray(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MutateSeqContainerExpected(
+  return MutateSeqContainerRaw(
       mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const ArrayObj>(value));
-  return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for ArrayObj. */
 TVMFFIAny MaybeInplaceMutateArray(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MaybeInplaceMutateSeqContainerExpected(
+  return MaybeInplaceMutateSeqContainerRaw(
       mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<ArrayObj>(value));
-  return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Structural mutation hook for ListObj. */
 TVMFFIAny MutateList(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MutateSeqContainerExpected(
+  return MutateSeqContainerRaw(
       mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const ListObj>(value));
-  return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for ListObj. */
 TVMFFIAny MaybeInplaceMutateList(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MaybeInplaceMutateSeqContainerExpected(
+  return MaybeInplaceMutateSeqContainerRaw(
       mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<ListObj>(value));
-  return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Structural mutation hook for MapObj. */
 TVMFFIAny MutateMap(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MutateMapValuesExpected(
+  return MutateMapValuesRaw(
       mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const MapObj>(value));
-  return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for MapObj. */
 TVMFFIAny MaybeInplaceMutateMap(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MaybeInplaceMutateMapValuesExpected(
+  return MaybeInplaceMutateMapValuesRaw(
       mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<MapObj>(value));
-  return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Structural mutation hook for DictObj. */
 TVMFFIAny MutateDict(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MutateMapValuesExpected(
+  return MutateMapValuesRaw(
       mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const DictObj>(value));
-  return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for DictObj. */
 TVMFFIAny MaybeInplaceMutateDict(StructuralMutatorObj* mutator, AnyView value) noexcept {
-  Expected<Any> result = MaybeInplaceMutateMapValuesExpected(
+  return MaybeInplaceMutateMapValuesRaw(
       mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<DictObj>(value));
-  return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
 }
 }  // namespace details
 

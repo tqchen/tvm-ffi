@@ -609,7 +609,12 @@ struct AnyUnsafe : public ObjectUnsafe {
 
   template <typename T>
   TVM_FFI_INLINE static bool CheckAnyStrict(const Any& ref) {
-    return TypeTraits<T>::CheckAnyStrict(&(ref.data_));
+    if constexpr (!std::is_same_v<T, Any>) {
+      return TypeTraits<T>::CheckAnyStrict(&(ref.data_));
+    } else {
+      // Any holds any value, so there is nothing to check against.
+      return true;
+    }
   }
 
   template <typename T>

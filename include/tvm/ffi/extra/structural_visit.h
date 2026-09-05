@@ -205,16 +205,27 @@ class StructuralVisitorObj : public Object {
     static reflection::TypeAttrColumn column(reflection::type_attr::kStructuralVisit);
     AnyView attr = column[type_index];
 
+    // Hooks propagate errors untouched; this is the engine dispatching into `value`, so the
+    // node is named here and nowhere else -- exactly one frame per node.
     // case 1: Type-specific override registered as an opaque ABI visit function pointer.
     if (attr.type_index() == TypeIndex::kTVMFFIOpaquePtr) {
       auto* visit_fn = reinterpret_cast<FStructuralVisit>(attr.cast<void*>());
-      return details::ExpectedUnsafe::MoveFromTVMFFIAny<Optional<VisitInterrupt>>(
-          (*visit_fn)(this, value));
+      TVMFFIAny raw = (*visit_fn)(this, value);
+      if (TVM_FFI_PREDICT_FALSE(raw.type_index == TypeIndex::kTVMFFIError)) {
+        details::UpdateVisitErrorContext(raw, value);
+      }
+      return details::ExpectedUnsafe::MoveFromTVMFFIAny<Optional<VisitInterrupt>>(raw);
     }
 
     // case 2: Type-specific override registered as an ffi::Function.
     if (attr.type_index() == TypeIndex::kTVMFFIFunction) {
-      return attr.cast<Function>().CallExpected<Optional<VisitInterrupt>>(this, value);
+      Expected<Optional<VisitInterrupt>> result =
+          attr.cast<Function>().CallExpected<Optional<VisitInterrupt>>(this, value);
+      if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
+        Error err = result.error();
+        details::UpdateVisitErrorContext(err, value);
+      }
+      return result;
     }
 
     if (TVM_FFI_PREDICT_FALSE(attr.type_index() != TypeIndex::kTVMFFINone)) {
@@ -451,23 +462,13 @@ namespace details {
 // If Result is an Error, append Node to the visit error context before returning. Node is
 // required: dropping it silently degrades every error message produced below this frame.
 // A raw pointer Node must be non-null; pass nullable nodes as ObjectRef or Any so None is skipped.
-#define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result, Node)                                           \
-  do {                                                                                             \
-    auto&& tvm_ffi_res_ = (Result);                                                                \
-    if (TVM_FFI_PREDICT_FALSE(                                                                     \
-            ::tvm::ffi::details::StructuralVisitNeedEarlyReturn(tvm_ffi_res_))) {                  \
-      if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.type_index() ==                                       \
-                                ::tvm::ffi::TypeIndex::kTVMFFIError)) {                            \
-        auto&& tvm_ffi_visit_node_owner_ = (Node);                                                 \
-        ::tvm::ffi::AnyView tvm_ffi_visit_node_ = tvm_ffi_visit_node_owner_;                       \
-        if (tvm_ffi_visit_node_.type_index() >= ::tvm::ffi::TypeIndex::kTVMFFIStaticObjectBegin) { \
-          ::tvm::ffi::Error tvm_ffi_visit_err_ = tvm_ffi_res_.error();                             \
-          ::tvm::ffi::details::UpdateVisitErrorContext(                                            \
-              tvm_ffi_visit_err_, tvm_ffi_visit_node_.cast<::tvm::ffi::ObjectRef>());              \
-        }                                                                                          \
-      }                                                                                            \
-      return ::tvm::ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(tvm_ffi_res_));        \
-    }                                                                                              \
+#define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result)                                          \
+  do {                                                                                      \
+    auto&& tvm_ffi_res_ = (Result);                                                         \
+    if (TVM_FFI_PREDICT_FALSE(                                                              \
+            ::tvm::ffi::details::StructuralVisitNeedEarlyReturn(tvm_ffi_res_))) {           \
+      return ::tvm::ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(tvm_ffi_res_)); \
+    }                                                                                       \
   } while (0)
 /// \endcond
 
@@ -523,7 +524,13 @@ class StructuralWalkVisitorObj : public StructuralVisitorObj {
     }
     if constexpr (order == WalkOrder::kPreOrder) {
       auto result = dispatch_(value, this->def_region_kind());
-      TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(result, value);
+      if (TVM_FFI_PREDICT_FALSE(details::StructuralVisitNeedEarlyReturn(result))) {
+        if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
+          Error err = result.error();
+          details::UpdateVisitErrorContext(err, value);
+        }
+        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+      }
       // Hoist the call out of TVM_FFI_UNSAFE_ASSUME: clang's -Wassume rejects
       // arguments that contain a call expression (its potential side effects
       // would be discarded), while [[maybe_unused]] keeps -Wunused-variable
@@ -537,10 +544,23 @@ class StructuralWalkVisitorObj : public StructuralVisitorObj {
       }
     }
 
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(DefaultVisitExpected(value), value);
+    {
+      // DefaultVisitExpected already named `value` if a hook it dispatched failed.
+      auto result = DefaultVisitExpected(value);
+      if (TVM_FFI_PREDICT_FALSE(details::StructuralVisitNeedEarlyReturn(result))) {
+        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+      }
+    }
 
     if constexpr (order == WalkOrder::kPostOrder) {
-      TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(dispatch_(value, this->def_region_kind()), value);
+      auto result = dispatch_(value, this->def_region_kind());
+      if (TVM_FFI_PREDICT_FALSE(details::StructuralVisitNeedEarlyReturn(result))) {
+        if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
+          Error err = result.error();
+          details::UpdateVisitErrorContext(err, value);
+        }
+        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+      }
     }
 
     return details::ExpectedUnsafe::MoveToTVMFFIAny(

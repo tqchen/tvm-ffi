@@ -348,29 +348,6 @@ class Expected<void> {
 
 namespace details {
 
-// Helper for TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN.
-class AssignOrReturnHelper {
- public:
-  TVM_FFI_INLINE explicit AssignOrReturnHelper(Any&& data) : data_(std::move(data)) {}
-
-  template <typename T>
-  TVM_FFI_INLINE Expected<T> TryMove() && {
-    if constexpr (!std::is_same_v<T, Any>) {
-      const TVMFFIAny* data = AnyUnsafe::TVMFFIAnyPtrFromAny(data_);
-      if (TVM_FFI_PREDICT_FALSE(!TypeTraits<T>::CheckAnyStrict(data))) {
-        return Unexpected(Error("TypeError",
-                                "Cannot treat type `" + TypeTraits<T>::GetMismatchTypeInfo(data) +
-                                    "` as type `" + TypeTraits<T>::TypeStr() + "`",
-                                ""));
-      }
-    }
-    return AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
-  }
-
- private:
-  Any data_;
-};
-
 /*!
  * \brief Unsafe raw-storage helpers for Expected.
  *
