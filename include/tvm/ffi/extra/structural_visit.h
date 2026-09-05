@@ -138,6 +138,8 @@ struct StructuralVisitorVTable {
  */
 class StructuralVisitorObj : public Object {
  public:
+  /*! \brief Callback-facing visitor type used by composed callback-driven engines. */
+  using VisitorObjType = StructuralVisitorObj;
   /*! \brief State references made available to callback-aware visitor layers. */
   using StateTupleType = std::tuple<>;
 
@@ -200,6 +202,12 @@ class StructuralVisitorObj : public Object {
    * \brief Visit using the structural visit behavior registered by kStructuralVisit for each type,
    * or reflected structural fields when no custom behavior is registered.
    *
+   * \note Dispatches to the value type's registered ``__s_visit__`` hook, falling back to
+   * reflected fields only when no hook is registered. Call it on a child, or on a matched
+   * value from a ``StructuralVisit`` callback to bypass callback dispatch for that value.
+   * Called on the value whose own hook is running, it re-enters that hook -- there is no way
+   * to request the reflected path from inside a hook.
+   *
    * \param value The value to visit.
    * \return Expected interrupt state. An error means traversal failed.
    */
@@ -208,27 +216,16 @@ class StructuralVisitorObj : public Object {
     static reflection::TypeAttrColumn column(reflection::type_attr::kStructuralVisit);
     AnyView attr = column[type_index];
 
-    // Hooks propagate errors untouched; this is the engine dispatching into `value`, so the
-    // node is named here and nowhere else -- exactly one frame per node.
     // case 1: Type-specific override registered as an opaque ABI visit function pointer.
     if (attr.type_index() == TypeIndex::kTVMFFIOpaquePtr) {
       auto* visit_fn = reinterpret_cast<FStructuralVisit>(attr.cast<void*>());
       TVMFFIAny raw = (*visit_fn)(this, value);
-      if (TVM_FFI_PREDICT_FALSE(raw.type_index == TypeIndex::kTVMFFIError)) {
-        details::UpdateVisitErrorContext(raw, value);
-      }
       return details::ExpectedUnsafe::MoveFromTVMFFIAny<Optional<VisitInterrupt>>(raw);
     }
 
     // case 2: Type-specific override registered as an ffi::Function.
     if (attr.type_index() == TypeIndex::kTVMFFIFunction) {
-      Expected<Optional<VisitInterrupt>> result =
-          attr.cast<Function>().CallExpected<Optional<VisitInterrupt>>(this, value);
-      if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
-        Error err = result.error();
-        details::UpdateVisitErrorContext(err, value);
-      }
-      return result;
+      return attr.cast<Function>().CallExpected<Optional<VisitInterrupt>>(this, value);
     }
 
     if (TVM_FFI_PREDICT_FALSE(attr.type_index() != TypeIndex::kTVMFFINone)) {
@@ -491,18 +488,15 @@ enum class WalkOrder : int32_t {
 namespace details {
 
 /// \cond Doxygen_Suppress
-// Return from the current ABI visit function if Result stops traversal.
-// Result must evaluate to Expected whose raw storage can be moved to TVMFFIAny.
-// If Result is an Error, append Node to the visit error context before returning. Node is
-// required: dropping it silently degrades every error message produced below this frame.
-// A raw pointer Node must be non-null; pass nullable nodes as ObjectRef or Any so None is skipped.
-#define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result)                                          \
-  do {                                                                                      \
-    auto&& tvm_ffi_res_ = (Result);                                                         \
-    if (TVM_FFI_PREDICT_FALSE(                                                              \
-            ::tvm::ffi::details::StructuralVisitNeedEarlyReturn(tvm_ffi_res_))) {           \
-      return ::tvm::ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(tvm_ffi_res_)); \
-    }                                                                                       \
+// Return from the current raw or same-T Expected visit function if Result stops traversal.
+// The rvalue-only proxy lets the enclosing return type select the representation.
+#define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result)                                \
+  do {                                                                            \
+    auto&& tvm_ffi_res_ = (Result);                                               \
+    if (TVM_FFI_PREDICT_FALSE(                                                    \
+            ::tvm::ffi::details::StructuralVisitNeedEarlyReturn(tvm_ffi_res_))) { \
+      return ::tvm::ffi::details::MaybeReturnHelper(::std::move(tvm_ffi_res_));   \
+    }                                                                             \
   } while (0)
 /// \endcond
 
@@ -525,43 +519,16 @@ namespace details {
  * ``Expected<Optional<VisitInterrupt>>`` storage produced by
  * ``details::ExpectedUnsafe::MoveToTVMFFIAny``; the engine propagates it without
  * a runtime type check. This deliberate pair keeps the raw ABI path available
- * without rematerializing a typed ``Expected``. Calls use ``this->``, so lookup
- * happens at instantiation in the Parent's class scope; it is not virtual
- * dispatch.
+ * without rematerializing a typed ``Expected``. Engine calls use ``Parent::``
+ * qualification; this is static layer dispatch, not virtual dispatch. A layer
+ * must still define its own raw boilerplate because boilerplate inherited from
+ * a base resolves its unqualified typed call in that base's scope.
  *
- * \code
- * class CountingLayer : public StructuralVisitorObj {
- *  public:
- *   using StateTupleType = std::tuple<const int&>;
- *   explicit CountingLayer(const StructuralVisitorVTable* vtable)
- *       : StructuralVisitorObj(vtable) {}
- *
- *   Expected<Optional<VisitInterrupt>> DefaultVisitExpected(AnyView value) noexcept {
- *     ++count_;
- *     return StructuralVisitorObj::DefaultVisitExpected(value);
- *   }
- *
- *  protected:
- *   TVMFFIAny DefaultVisitRaw(AnyView value) noexcept {
- *     return details::ExpectedUnsafe::MoveToTVMFFIAny(DefaultVisitExpected(value));
- *   }
- *   StateTupleType StateTuple() const noexcept { return std::tie(count_); }
- *
- *  private:
- *   int count_ = 0;
- * };
- *
- * auto callback = [](const ObjectRef&, const int&) -> Expected<WalkResult> {
- *   return WalkResult::Advance();
- * };
- * using Engine = StructuralWalkEngine<CountingLayer, WalkOrder::kPreOrder,
- *                                     decltype(callback)>;
- * StructuralVisitor visitor(make_object<Engine>(std::move(callback)));
- * auto result = visitor->VisitExpected(root);
- * \endcode
- *
- * \tparam Parent Visitor layer that supplies descent and callback state through
- *                the complete protocol above.
+ * \tparam Parent Traversal layer extended by the engine. Each layer that
+ *                customizes typed descent must define its own ``Default*Raw``
+ *                boilerplate; inherited boilerplate resolves its unqualified
+ *                typed call in the base layer's scope. Engine protocol and
+ *                descent calls are ``Parent::``-qualified.
  * \tparam order Callback placement relative to child traversal.
  * \tparam Callbacks Callback links, tested in declaration order.
  */
@@ -612,14 +579,14 @@ class StructuralWalkEngine : public Parent {
         "StructuralWalk callback takes (value, state...) with an optional trailing "
         "definition-region kind");
     try {
-      static_assert(std::is_same_v<decltype(this->StateTuple()), StateTupleType>,
+      static_assert(std::is_same_v<decltype(Parent::StateTuple()), StateTupleType>,
                     "Parent::StateTuple() must return Parent::StateTupleType by value");
-      StateTupleType states = this->StateTuple();
+      StateTupleType states = Parent::StateTuple();
       if constexpr (FuncInfo::num_args == 1 + sizeof...(Is)) {
         return callback(std::forward<Value>(value), std::get<Is>(states)...);
       } else {
         return callback(std::forward<Value>(value), std::get<Is>(states)...,
-                        this->def_region_kind());
+                        Parent::def_region_kind());
       }
     } catch (const Error& err) {
       return Unexpected(err);
@@ -689,9 +656,11 @@ class StructuralWalkEngine : public Parent {
     }
 
     {
-      // DefaultVisitExpected already named `value` if a hook it dispatched failed.
-      TVMFFIAny result = this->DefaultVisitRaw(value);
+      TVMFFIAny result = Parent::DefaultVisitRaw(value);
       if (TVM_FFI_PREDICT_FALSE(details::StructuralVisitRawNeedEarlyReturn(result))) {
+        if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
+          details::UpdateVisitErrorContext(result, value);
+        }
         return result;
       }
     }
@@ -733,22 +702,6 @@ class StructuralWalkEngine : public Parent {
  *
  * \sa WalkOrder, WalkResult
  *
- * Example:
- *
- * \code
- * int num_adds = 0;
- *
- * Expected<Optional<VisitInterrupt>> result = StructuralWalkExpected<WalkOrder::kPreOrder>(
- *     root,
- *     [&](const Add& add) -> Expected<WalkResult> {
- *       ++num_adds;
- *       return WalkResult::Advance();
- *     },
- *     [&](const Mul& mul) -> Expected<WalkResult> {
- *       return WalkResult::Skip();
- *     });
- * \endcode
- *
  * \tparam order Whether to invoke the callback before or after visiting children.
  * \tparam Callbacks Callback types.
  * \param root The root value to visit.
@@ -787,6 +740,188 @@ Expected<Optional<VisitInterrupt>> StructuralWalkExpected(AnyView root,
 template <WalkOrder order, typename... Callbacks>
 Optional<VisitInterrupt> StructuralWalk(AnyView root, Callbacks&&... callbacks) {
   return StructuralWalkExpected<order>(root, std::forward<Callbacks>(callbacks)...).value();
+}
+
+// ---------------------------------------------------------------------------
+// Structural Visit API.
+// ---------------------------------------------------------------------------
+
+/*!
+ * \brief Engine of the callback-dispatched \ref tvm::ffi::StructuralVisit.
+ *
+ * A matched callback owns descent into its value, and its result is final. A
+ * value matching no callback uses the Parent layer's default descent. The local
+ * typed callback fold preserves declaration-order first match and converts an
+ * ``Error`` thrown by a matched callback into the visit result.
+ *
+ * \tparam Parent Traversal layer extended by the engine. Each layer that
+ *                customizes typed descent must define its own ``Default*Raw``
+ *                boilerplate; inherited boilerplate resolves its unqualified
+ *                typed call in the base layer's scope. Engine protocol and
+ *                descent calls are ``Parent::``-qualified.
+ * \tparam Callbacks Callable types whose first parameter selects the dispatched value type.
+ */
+template <typename Parent, typename... Callbacks>
+class StructuralVisitEngine : public Parent {
+ public:
+  static_assert(std::is_base_of_v<StructuralVisitorObj, Parent>,
+                "StructuralVisit Parent must derive from StructuralVisitorObj");
+  /*!
+   * \brief Construct a visit engine over a chain of typed callbacks.
+   * \param callbacks Callbacks tested in declaration order; the first match runs.
+   */
+  explicit StructuralVisitEngine(Callbacks... callbacks)
+      : Parent(VTable()), callbacks_(std::move(callbacks)...) {}
+
+ private:
+  /*!
+   * \brief Return this engine's callback-aware visitor vtable.
+   * \return Pointer to the immutable visitor vtable for this specialization.
+   */
+  static const StructuralVisitorVTable* VTable() {
+    static const StructuralVisitorVTable vtable{
+        &StructuralVisitEngine::DispatchVisit,
+    };
+    return &vtable;
+  }
+
+  /*!
+   * \brief Dispatch from the erased visitor pointer to the concrete engine.
+   * \param self The erased structural visitor object.
+   * \param value The value to visit.
+   * \return Interrupt state, or an error if traversal failed.
+   */
+  static TVMFFIAny DispatchVisit(StructuralVisitorObj* self, AnyView value) noexcept {
+    return static_cast<StructuralVisitEngine*>(self)->VisitImpl(value);
+  }
+
+  /*!
+   * \brief Visit one value, handing a matched callback ownership of its descent.
+   * \param value The value to visit.
+   * \return Interrupt state, or an error if traversal failed.
+   */
+  TVMFFIAny VisitImpl(AnyView value) noexcept {
+    if (TVM_FFI_PREDICT_FALSE(value.type_index() == TypeIndex::kTVMFFINone)) {
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(
+          Expected<Optional<VisitInterrupt>>(std::nullopt));
+    }
+    if (std::optional<Expected<Optional<VisitInterrupt>>> matched = DispatchCallbacks(value)) {
+      // The matched callback already traversed as much of `value` as it wanted, so its
+      // result is final and the engine does not descend on its own.
+      Expected<Optional<VisitInterrupt>> result = *std::move(matched);
+      if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
+        Error err = result.error();
+        details::UpdateVisitErrorContext(err, value);
+      }
+      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+    }
+    // No callback claimed `value`. The Parent layer owns default descent.
+    TVMFFIAny result = Parent::DefaultVisitRaw(value);
+    if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
+      details::UpdateVisitErrorContext(result, value);
+    }
+    return result;
+  }
+
+  /*! \brief Try one typed callback and preserve Error as an expected result. */
+  template <typename Callback>
+  TVM_FFI_INLINE std::optional<Expected<Optional<VisitInterrupt>>> TryLink(Callback& callback,
+                                                                           AnyView value) noexcept {
+    using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
+    static_assert(FuncInfo::num_args == 2, "StructuralVisit callback takes (value, visitor)");
+    using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
+    using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
+    using SecondArg = std::decay_t<std::tuple_element_t<1, typename FuncInfo::ArgType>>;
+    using Second = std::remove_pointer_t<SecondArg>;
+    static_assert(std::is_same_v<Second, typename Parent::VisitorObjType>,
+                  "second StructuralVisit callback argument must be "
+                  "exactly Parent::VisitorObjType*");
+    auto* visitor = static_cast<typename Parent::VisitorObjType*>(this);
+    try {
+      if constexpr (std::is_same_v<TSub, AnyView>) {
+        return callback(value, visitor);
+      } else if constexpr (std::is_same_v<TSub, Any>) {
+        return callback(Any(value), visitor);
+      } else if (auto matched = value.template as<TSub>()) {
+        return callback(*std::move(matched), visitor);
+      }
+    } catch (const Error& err) {
+      return Unexpected(err);
+    }
+    return std::nullopt;
+  }
+
+  /*! \brief Fold this engine's callback tuple in declaration order. */
+  template <size_t... Is>
+  TVM_FFI_INLINE std::optional<Expected<Optional<VisitInterrupt>>> TryLinks(
+      AnyView value, std::index_sequence<Is...>) noexcept {
+    std::optional<Expected<Optional<VisitInterrupt>>> result;
+    (... || (result = TryLink(std::get<Is>(callbacks_), value)).has_value());
+    return result;
+  }
+
+  /*!
+   * \brief Run the callback chain on \p value.
+   * \param value The value to dispatch on.
+   * \return The matched callback's result, or an empty optional when none matched.
+   *
+   * \note An unmatched value is reported as such rather than folded into a "continue"
+   * result: the engine has to tell "the callback chose to stop here" apart from "no
+   * callback claimed this value".
+   */
+  std::optional<Expected<Optional<VisitInterrupt>>> DispatchCallbacks(AnyView value) noexcept {
+    return TryLinks(value, std::index_sequence_for<Callbacks...>{});
+  }
+
+  /*! \brief Typed callbacks tested in declaration order, first match wins. */
+  std::tuple<Callbacks...> callbacks_;
+};
+
+/*!
+ * \brief Visit a structured value, letting a matched callback own descent.
+ *
+ * Each callback takes ``(value, StructuralVisitorObj* visitor)`` and returns
+ * ``Expected<Optional<VisitInterrupt>>``. The first argument follows the same
+ * matching rules as ``StructuralWalk``; callbacks are tested in declaration
+ * order and the first match is used.
+ *
+ * A matched callback owns descent into its value, and its result is final.
+ * Returning ``std::nullopt`` completes that subtree, a ``VisitInterrupt`` halts
+ * the traversal, and an ``Error`` fails it. A value matching no callback uses
+ * the visitor's default descent.
+ *
+ * \sa StructuralWalkExpected, StructuralVisitorObj, VisitInterrupt
+ *
+ * \tparam Callbacks Callback types.
+ * \param root The root value to visit.
+ * \param callbacks Callbacks invoked for matching nodes.
+ * \return ``std::nullopt`` if traversal completed, or the interrupt that halted it.
+ */
+template <typename... Callbacks>
+Expected<Optional<VisitInterrupt>> StructuralVisitExpected(AnyView root,
+                                                           Callbacks&&... callbacks) noexcept {
+  static_assert(sizeof...(Callbacks) != 0, "StructuralVisit requires at least one callback");
+  using Engine = StructuralVisitEngine<StructuralVisitorObj, std::decay_t<Callbacks>...>;
+  StructuralVisitor visitor(make_object<Engine>(std::forward<Callbacks>(callbacks)...));
+  return visitor->VisitExpected(root);
+}
+
+/*!
+ * \brief Throwing error over \ref tvm::ffi::StructuralVisitExpected.
+ *
+ * See \ref tvm::ffi::StructuralVisitExpected for callback semantics and traversal behavior.
+ *
+ * \tparam Callbacks Callback types.
+ * \param root The root value to visit.
+ * \param callbacks Callbacks invoked for matching nodes. Each callback takes
+ *                  ``(value, StructuralVisitorObj*)`` and should return
+ *                  ``Expected<Optional<VisitInterrupt>>``.
+ * \return ``std::nullopt`` if traversal completed, or the interrupt that halted it.
+ * \throws Error if traversal or a callback returned an error.
+ */
+template <typename... Callbacks>
+Optional<VisitInterrupt> StructuralVisit(AnyView root, Callbacks&&... callbacks) {
+  return StructuralVisitExpected(root, std::forward<Callbacks>(callbacks)...).value();
 }
 
 }  // namespace ffi

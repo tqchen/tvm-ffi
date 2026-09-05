@@ -141,6 +141,9 @@ struct StructuralMutatorVTable {
  */
 class StructuralMutatorObj : public Object {
  public:
+  /*! \brief Callback-facing mutator type used by composed callback-driven engines. */
+  using MutatorObjType = StructuralMutatorObj;
+
   /*!
    * \brief Mutate a value through the mutator vtable.
    *
@@ -598,16 +601,14 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
 namespace details {
 
 /// \cond Doxygen_Suppress
-// Return from the current mutation function if Result is an Error.
-// Append Node to the mutate error context before returning. Node is required: dropping it
-// silently degrades every error message produced below this frame.
-// A raw pointer Node must be non-null; pass nullable nodes as ObjectRef or Any so None is skipped.
-#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result)                                           \
-  do {                                                                                        \
-    auto&& tvm_ffi_res_ = (Result);                                                           \
-    if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.is_err())) {                                       \
-      return ::tvm::ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(::std::move(tvm_ffi_res_)); \
-    }                                                                                         \
+// Return from the current raw or same-T Expected mutation function if Result is an Error.
+// The rvalue-only proxy lets the enclosing return type select the representation.
+#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result)                             \
+  do {                                                                          \
+    auto&& tvm_ffi_res_ = (Result);                                             \
+    if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.is_err())) {                         \
+      return ::tvm::ffi::details::MaybeReturnHelper(::std::move(tvm_ffi_res_)); \
+    }                                                                           \
   } while (0)
 
 /// \endcond
@@ -615,9 +616,9 @@ namespace details {
 // Out of line so its strings and Error construction stay out of the hot path of whatever hook
 // body TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN expands into. Same reason as
 // BadStructuralMutateHookError.
-TVM_FFI_COLD_CODE inline TVMFFIAny SMutateDeclaredTypeErrorRaw() noexcept {
-  return AnyUnsafe::MoveAnyToTVMFFIAny(
-      Any(Error("TypeError", "structural mutate result does not match the declared type", "")));
+TVM_FFI_COLD_CODE inline Expected<Any> SMutateDeclaredTypeError() noexcept {
+  return Unexpected(
+      Error("TypeError", "structural mutate result does not match the declared type", ""));
 }
 
 /// \cond Doxygen_Suppress
@@ -626,7 +627,8 @@ TVM_FFI_COLD_CODE inline TVMFFIAny SMutateDeclaredTypeErrorRaw() noexcept {
   TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result);                                     \
   if (TVM_FFI_PREDICT_FALSE(!::tvm::ffi::details::AnyUnsafe::CheckAnyStrict<Type>( \
           ::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))) {                \
-    return ::tvm::ffi::details::SMutateDeclaredTypeErrorRaw();                     \
+    return ::tvm::ffi::details::MaybeReturnHelper(                                 \
+        ::tvm::ffi::details::SMutateDeclaredTypeError());                          \
   }                                                                                \
   Type Name = /* NOLINT(bugprone-macro-parentheses) */                             \
       ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                 \
@@ -637,16 +639,15 @@ TVM_FFI_COLD_CODE inline TVMFFIAny SMutateDeclaredTypeErrorRaw() noexcept {
  * \brief Unwrap a successful mutation result into a newly declared value or return its error.
  *
  * ``Type`` must be concrete; use a type alias when it contains a top-level comma. A type mismatch
- * returns ``Unexpected(TypeError)`` through the surrounding ``Expected`` function without
- * throwing, reported with a fixed string so a correct hook pays only one predicted-not-taken
- * branch per field. This macro declares ``Name`` into the enclosing scope and must be used in a
- * braced block, never as an unbraced control-flow body. A raw pointer node must be non-null; pass
- * nullable nodes as ``ObjectRef`` or ``Any`` so ``None`` is skipped when constructing error
- * context.
+ * returns ``TypeError`` through the surrounding raw or ``Expected`` function without throwing,
+ * reported with a fixed string so a correct hook pays only one predicted-not-taken branch per
+ * field. Its early returns work from either a raw ``TVMFFIAny`` hook or a same-T ``Expected<T>``
+ * helper. This macro declares ``Name`` into the enclosing scope and must be used in a braced
+ * block, never as an unbraced control-flow body.
  *
  * Example:
  * \code{.cpp}
- * TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef, child, mutator->MutateExpected(self->child), self);
+ * TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef, child, mutator->MutateExpected(self->child));
  * \endcode
  *
  * \param Type The concrete type of the successful value.
@@ -672,8 +673,8 @@ TVM_FFI_COLD_CODE inline TVMFFIAny SMutateDeclaredTypeErrorRaw() noexcept {
 /*!
  * \brief \ref TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN without the type check.
  *
- * Same signature and same error propagation; the difference is only what happens to a
- * successful result that is not of type \p Type.
+ * Same signature, raw-or-same-T early-return support, and error propagation; the difference is
+ * only what happens to a successful result that is not of type \p Type.
  *
  * The caller must guarantee the result has the declared type; a mismatch is undefined behavior
  * in a release build, and debug builds catch it with ``TVM_FFI_DCHECK``.
