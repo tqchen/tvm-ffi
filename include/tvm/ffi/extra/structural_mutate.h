@@ -1327,6 +1327,14 @@ class StructuralMapDynEngine : public Parent {
 
 namespace details {
 
+template <typename Parent>
+class StructuralMutateParentProtocolProbe : public Parent {
+ public:
+  static auto ProbeDefaultMutateRaw(StructuralMutateParentProtocolProbe* self, AnyView value) {
+    return self->DefaultMutateRaw(value);
+  }
+};
+
 /*!
  * \brief Engine of the callback-dispatched \ref tvm::ffi::StructuralMutate.
  *
@@ -1346,9 +1354,9 @@ class StructuralMutateEngine : public Parent {
   using MutatorObjType = typename Parent::MutatorObjType;
   static_assert(std::is_base_of_v<MutatorObjType, Parent>,
                 "StructuralMutate Parent::MutatorObjType must be Parent or a base of it");
-  using Parent::DefaultMutateRaw;
-  using DefaultMutateRawResult =
-      decltype(std::declval<StructuralMutateEngine&>().DefaultMutateRaw(std::declval<AnyView>()));
+  using ParentProtocolProbe = details::StructuralMutateParentProtocolProbe<Parent>;
+  using DefaultMutateRawResult = decltype(ParentProtocolProbe::ProbeDefaultMutateRaw(
+      std::declval<ParentProtocolProbe*>(), std::declval<AnyView>()));
   static_assert(std::is_same_v<DefaultMutateRawResult, TVMFFIAny>,
                 "StructuralMutate Parent::DefaultMutateRaw(AnyView) must return TVMFFIAny");
 
