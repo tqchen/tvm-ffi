@@ -42,6 +42,7 @@ __all__ = [
     "structural_equal",
     "structural_hash",
     "structural_map",
+    "structural_visit",
     "structural_walk",
 ]
 
@@ -379,6 +380,37 @@ class StructuralVisitor(Object):
         """
         return _ffi_api.StructuralVisitorVisit(self, value)
 
+    def default_visit(self, value: Any) -> VisitInterrupt | None:
+        """Visit ``value`` using its registered or reflected child traversal.
+
+        .. warning::
+            Never call ``default_visit`` on the value whose ``__s_visit__`` hook
+            is currently running. Doing so re-enters the same hook recursively
+            and can exhaust the C stack, crashing the process.
+
+        This bypasses the active engine callback dispatch for ``value`` itself,
+        but still invokes the value type's registered ``__s_visit__`` hook when
+        one exists. Use it for a child whose default traversal is wanted.
+        Recursive children still use this visitor.
+
+        On a layered visitor the base implementation does not invoke a layer's
+        non-virtual descent override; callers that need layered dynamic
+        traversal must expose that policy separately.
+
+        Parameters
+        ----------
+        value
+            Value whose default children should be traversed.
+
+        Returns
+        -------
+        result
+            ``None`` if traversal should continue, otherwise a
+            :class:`VisitInterrupt` carrying the early-exit payload.
+
+        """
+        return _ffi_api.StructuralVisitorDefaultVisit(self, value)
+
     def def_region_kind(self) -> DefRegionKind:
         """Low-level API to return the currently active structural def-region kind.
 
@@ -617,6 +649,40 @@ def structural_walk(
         for t, fn in callback_entries_with_def_region_kind
     ]
     return _ffi_api.StructuralWalk(root, entries, entries_with_def_region_kind, order_int)
+
+
+def structural_visit(
+    root: Any,
+    callbacks: tuple | Sequence | Callable = (),
+) -> VisitInterrupt | None:
+    """Visit a value structurally with callbacks that own child traversal.
+
+    Each callback receives ``(value, visitor)``. It may call
+    :meth:`StructuralVisitor.visit` for selected children or
+    :meth:`StructuralVisitor.default_visit` for the value's registered/default
+    descent. Returning without either call prunes that value's subtree.
+
+    Parameters
+    ----------
+    root
+        Root value to traverse.
+
+    callbacks
+        A callback, ``(type, callback)`` entry, grouped type entry, or sequence
+        of entries. Entries are tried in order and the first match owns descent.
+
+    Returns
+    -------
+    result
+        ``None`` if traversal completed, otherwise a :class:`VisitInterrupt`.
+
+    """
+    callback_entries = _normalize_callbacks(callbacks, api_name="structural_visit")
+    entries: list[tuple[int, Callable[[Any, StructuralVisitor], Any]]] = [
+        (_callback_type_to_type_index(t, api_name="structural_visit"), fn)
+        for t, fn in callback_entries
+    ]
+    return _ffi_api.StructuralVisit(root, entries)
 
 
 def structural_map(

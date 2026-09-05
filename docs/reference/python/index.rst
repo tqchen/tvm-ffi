@@ -92,6 +92,7 @@ Structural
   structural_equal
   structural_hash
   structural_walk
+  structural_visit
   structural_map
 
 

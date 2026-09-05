@@ -85,9 +85,12 @@ struct VisitTag {
 template <typename Parent = StructuralVisitorObj>
 class StructuralWalkWithVisitCount : public Parent {
  public:
+  using VisitorObjType = StructuralWalkWithVisitCount;
   using StateTupleType = std::tuple<const VisitCount&, const VisitTag&>;
 
   explicit StructuralWalkWithVisitCount(const StructuralVisitorVTable* vtable) : Parent(vtable) {}
+
+  int callback_tag() const noexcept { return visit_tag_.value; }
 
   TVM_FFI_INLINE Expected<Optional<VisitInterrupt>> DefaultVisitExpected(AnyView value) noexcept {
     ++visit_count_.value;
@@ -106,6 +109,12 @@ class StructuralWalkWithVisitCount : public Parent {
  private:
   VisitCount visit_count_;
   VisitTag visit_tag_;
+};
+
+template <typename Parent>
+class StructuralVisitOuterLayer : public Parent {
+ public:
+  explicit StructuralVisitOuterLayer(const StructuralVisitorVTable* vtable) : Parent(vtable) {}
 };
 
 StructuralVisitor MakeTestVisitor() { return StructuralVisitor(make_object<TestVisitorObj>()); }
@@ -576,6 +585,7 @@ TEST(StructuralVisitor, WalkCatchesError) {
   Expected<Optional<VisitInterrupt>> result = StructuralWalkExpected<WalkOrder::kPreOrder>(
       root, [&](const ObjectRef&) -> Expected<WalkResult> {
         TVM_FFI_THROW(ValueError) << "walk callback threw";
+        return WalkResult::Advance();
       });
 
   ASSERT_TRUE(result.is_err());
@@ -664,6 +674,80 @@ TEST(StructuralVisitor, WalkAnyFallback) {
 
   EXPECT_FALSE(result.has_value());
   ExpectTrace(trace, {"object-ref", "object-ref"});
+}
+
+// ---------------------------------------------------------------------------
+// StructuralVisit behavior.
+// ---------------------------------------------------------------------------
+
+TEST(StructuralVisit, CallbackDrivenTraversal) {
+  TVarWithDep lhs("lhs", TVarWithDep("pruned-dependency"));
+  TVarWithDep stop("stop");
+  TVarWithDep skipped("skipped");
+  std::vector<std::pair<std::string, TVMFFIDefRegionKind>> trace;
+  Expected<Optional<VisitInterrupt>> result = StructuralVisitExpected(
+      TPair(Array<ObjectRef>{lhs}, Array<ObjectRef>{stop, skipped}),
+      [](const TPairObj* pair,
+         StructuralVisitorObj* visitor) -> Expected<Optional<VisitInterrupt>> {
+        TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->WithDefRegionKind(
+            kTVMFFIDefRegionKindRecursive, [&] { return visitor->VisitExpected(pair->lhs); }));
+        TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->WithDefRegionKind(
+            kTVMFFIDefRegionKindNonRecursive, [&] { return visitor->VisitExpected(pair->rhs); }));
+        return Optional<VisitInterrupt>(std::nullopt);
+      },
+      [&](const TVarWithDepObj* var,
+          StructuralVisitorObj* visitor) -> Expected<Optional<VisitInterrupt>> {
+        trace.emplace_back(var->name, visitor->def_region_kind());
+        if (var->name == "stop") {
+          return Optional<VisitInterrupt>(VisitInterrupt(String("found stop")));
+        }
+        return Optional<VisitInterrupt>(std::nullopt);
+      });
+  ASSERT_TRUE(result.is_ok());
+  ASSERT_TRUE(result.value().has_value());
+  EXPECT_EQ(result.value().value()->value.cast<String>(), "found stop");
+  ASSERT_EQ(trace.size(), 2u);
+  EXPECT_EQ(trace[0], std::make_pair(std::string("lhs"), kTVMFFIDefRegionKindRecursive));
+  EXPECT_EQ(trace[1], std::make_pair(std::string("stop"), kTVMFFIDefRegionKindNonRecursive));
+
+  using CallbackLayer = StructuralWalkWithVisitCount<>;
+  using ComposedLayer = StructuralVisitOuterLayer<CallbackLayer>;
+  bool layer_callback_ran = false;
+  bool base_callback_ran = false;
+  auto layer_callback = [&](const TVarWithDepObj*,
+                            CallbackLayer* visitor) -> Expected<Optional<VisitInterrupt>> {
+    EXPECT_EQ(visitor->callback_tag(), 7);
+    layer_callback_ran = true;
+    return Optional<VisitInterrupt>(std::nullopt);
+  };
+  auto base_callback = [&](const TVarObj*,
+                           StructuralVisitorObj*) -> Expected<Optional<VisitInterrupt>> {
+    base_callback_ran = true;
+    return Optional<VisitInterrupt>(std::nullopt);
+  };
+  using ComposedEngine =
+      StructuralVisitEngine<ComposedLayer, decltype(layer_callback), decltype(base_callback)>;
+  StructuralVisitor composed(
+      make_object<ComposedEngine>(std::move(layer_callback), std::move(base_callback)));
+  ASSERT_FALSE(composed->VisitExpected(Array<ObjectRef>{TVarWithDep("layer"), TVar("base")})
+                   .value()
+                   .has_value());
+  EXPECT_TRUE(layer_callback_ran);
+  EXPECT_TRUE(base_callback_ran);
+
+  std::vector<std::string> error_trace;
+  result = StructuralVisitExpected(
+      Array<ObjectRef>{TVar("throw"), TVar("after")},
+      [&](const TVarObj* var, StructuralVisitorObj*) -> Expected<Optional<VisitInterrupt>> {
+        error_trace.emplace_back(var->name);
+        if (var->name == "throw") {
+          TVM_FFI_THROW(ValueError) << "visit callback threw";
+        }
+        return Optional<VisitInterrupt>(std::nullopt);
+      });
+  ASSERT_TRUE(result.is_err());
+  EXPECT_EQ(result.error().message(), "visit callback threw");
+  ExpectTrace(error_trace, {"throw"});
 }
 
 }  // namespace

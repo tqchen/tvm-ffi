@@ -259,6 +259,76 @@ def test_structural_walk_interrupt() -> None:
     assert tvm_ffi.structural_equal(result.value, {"found": 2})
 
 
+def test_structural_visit_default_visit_binding() -> None:
+    trace: list[int | str] = []
+    root = tvm_ffi.Array([tvm_ffi.Array([1, 2, 3])])
+
+    def visit_array(
+        value: tvm_ffi.Array, visitor: tvm_ffi.StructuralVisitor
+    ) -> tvm_ffi.VisitInterrupt | None:
+        trace.append("array")
+        return visitor.default_visit(value[0])
+
+    def interrupt_on_two(
+        value: int, visitor: tvm_ffi.StructuralVisitor
+    ) -> tvm_ffi.VisitInterrupt | None:
+        assert isinstance(visitor, tvm_ffi.StructuralVisitor)
+        trace.append(value)
+        return tvm_ffi.VisitInterrupt("done") if value == 2 else None
+
+    result = tvm_ffi.structural_visit(
+        root,
+        [
+            (tvm_ffi.Array, visit_array),
+            (int, interrupt_on_two),
+        ],
+    )
+
+    # The root callback asks for the nested Array's registered/default descent.
+    # Its matching Array callback is bypassed, while recursive ints re-enter
+    # this visitor and reach their callback.
+    assert trace == ["array", 1, 2]
+    assert isinstance(result, tvm_ffi.VisitInterrupt)
+    assert result.value == "done"
+
+    direct_trace: list[int] = []
+
+    def fail_directly(
+        value: int, visitor: tvm_ffi.StructuralVisitor
+    ) -> tvm_ffi.VisitInterrupt | None:
+        assert isinstance(visitor, tvm_ffi.StructuralVisitor)
+        direct_trace.append(value)
+        raise ValueError("direct structural visit failure")
+
+    with pytest.raises(ValueError, match="direct structural visit failure"):
+        tvm_ffi.structural_visit(tvm_ffi.Array([1, 2]), [(int, fail_directly)])
+    assert direct_trace == [1]
+
+    nested_trace: list[int | str] = []
+
+    def visit_outer_array(
+        value: tvm_ffi.Array, visitor: tvm_ffi.StructuralVisitor
+    ) -> tvm_ffi.VisitInterrupt | None:
+        nested_trace.append("array")
+        return visitor.default_visit(value[0])
+
+    def fail_nested(
+        value: int, visitor: tvm_ffi.StructuralVisitor
+    ) -> tvm_ffi.VisitInterrupt | None:
+        assert isinstance(visitor, tvm_ffi.StructuralVisitor)
+        nested_trace.append(value)
+        if value == 2:
+            raise ValueError("nested structural visit failure")
+        return None
+
+    with pytest.raises(ValueError, match="nested structural visit failure"):
+        tvm_ffi.structural_visit(
+            tvm_ffi.Array([tvm_ffi.Array([1, 2, 3]), tvm_ffi.Array([4])]),
+            [(tvm_ffi.Array, visit_outer_array), (int, fail_nested)],
+        )
+    assert nested_trace == ["array", 1, 2]
+
+
 def test_structural_walk_nested_containers_and_skips_map_keys() -> None:
     root = tvm_ffi.Array(
         [

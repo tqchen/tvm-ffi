@@ -22,8 +22,9 @@ TVM FFI provides ``structural_equal`` and ``structural_hash`` for the
 object graph. These compare objects by **content** — recursively walking
 fields — rather than by pointer identity.
 
-The same reflection metadata also drives ``structural_walk`` for analyses and
-``structural_map`` for rewrites.  Their low-level engines,
+The same reflection metadata also drives ``structural_walk`` for analyses,
+``structural_visit`` for callback-owned descent, and ``structural_map`` for rewrites. Their
+low-level engines,
 ``StructuralVisitor`` and ``StructuralMutator``, let custom object types
 participate in the same traversal protocol.
 
@@ -1016,6 +1017,9 @@ There are two layers of API:
    * - :func:`~tvm_ffi.structural_walk`
      - Inspect a value graph without replacing values
      - Collect information, validate IR, or stop at a match
+   * - :func:`~tvm_ffi.structural_visit`
+     - Give each matching callback control over child traversal
+     - Visit selected children in a chosen order or definition scope
    * - :func:`~tvm_ffi.structural_map`
      - Recursively replace values and rebuild changed paths
      - Rewriting and compiler optimization passes
@@ -1026,11 +1030,11 @@ There are two layers of API:
      - Low-level recursive mutation engine
      - Implementing custom mutation hooks and identity substitution
 
-``structural_walk`` and ``structural_map`` construct the corresponding low-level
-object, install callback-aware dispatch, run it on the root, and return the final
-result.  Applications normally use these two functions directly.  Custom object
-hooks receive the low-level visitor or mutator so that recursive calls remain in
-the same traversal.
+``structural_walk``, ``structural_visit``, and ``structural_map`` construct the
+corresponding low-level object, install callback-aware dispatch, run it on the root, and
+return the final result. Applications normally use these functions directly. Custom object
+hooks receive the low-level visitor or mutator so that recursive calls remain in the same
+traversal.
 
 StructuralVisitor and StructuralMutator
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1040,9 +1044,20 @@ definition-region kind, and any early-interruption state.  Its main operations
 are:
 
 - ``visitor.visit(value)`` visits a child with the same visitor.
+- ``visitor.default_visit(value)`` bypasses the active engine callback for that
+  value but still dispatches its registered ``__s_visit__`` hook.
 - ``visitor.def_region_kind()`` reports the active definition-region kind.
 - ``visitor.with_def_region_kind(kind, callback)`` temporarily changes that kind
   while ``callback`` performs recursive visits.
+
+.. warning::
+
+   A ``__s_visit__`` hook must not call ``default_visit`` on the same value
+   currently being visited.  Doing so re-enters that hook without a recursion
+   guard, causing stack overflow and a process crash.  Use ``default_visit`` on
+   a child whose default traversal is wanted.  It is also safe for a
+   ``structural_visit`` engine callback to call ``default_visit`` on its matched
+   value; that bypasses engine callback dispatch for the value.
 
 The default visitor dispatches to a type's ``__s_visit__`` hook when present.
 Otherwise POD values are leaves and object-backed values are visited through
@@ -1262,8 +1277,29 @@ type and accepts an optional second ``TVMFFIDefRegionKind`` argument.  The
          return FoldAdd(add);
        });
 
+``StructuralVisitExpected`` is the lower-level callback-driven form.  A matched
+callback receives the active visitor and owns descent into its value; returning
+without calling the visitor prunes that subtree.  Its result is an optional
+interrupt rather than a ``WalkResult`` because ``Advance`` and ``Skip`` have no
+meaning once the callback controls descent:
+
+.. code-block:: cpp
+
+   Expected<Optional<VisitInterrupt>> visited = StructuralVisitExpected(
+       root,
+       [&](const IfThenElse& op, StructuralVisitorObj* visitor)
+           -> Expected<Optional<VisitInterrupt>> {
+         TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(op->cond));
+         TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->WithDefRegionKind(
+             kTVMFFIDefRegionKindRecursive,
+             [&] { return visitor->VisitExpected(op->then_case); }));
+         return visitor->WithDefRegionKind(
+             kTVMFFIDefRegionKindNonRecursive,
+             [&] { return visitor->VisitExpected(op->else_case); });
+       });
+
 Walk callbacks return ``Expected<WalkResult>``.  Map callbacks return
 ``Expected<Any>`` and must obey the same non-in-place callback contract as the
 Python API.  For ``Map`` and ``Dict``, both APIs process values and skip keys.
-``StructuralWalk`` and ``StructuralMap`` are the corresponding throwing
-convenience forms.
+``StructuralWalk``, ``StructuralVisit`` and ``StructuralMap`` are the
+corresponding throwing convenience forms.

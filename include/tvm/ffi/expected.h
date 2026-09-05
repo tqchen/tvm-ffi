@@ -431,6 +431,35 @@ struct ExpectedUnsafe {
   }
 };
 
+/*!
+ * \brief Return proxy used by early-return macros in raw or typed functions.
+ * \tparam T The success type, fixed when the proxy stores its ``Expected<T>``.
+ *
+ * A return statement selects either the raw ``TVMFFIAny`` conversion used by
+ * hooks or the same ``Expected<T>`` type used by typed helpers. Both
+ * conversions are rvalue-qualified because handing off the stored payload is
+ * a single move; an lvalue helper cannot accidentally transfer it twice. As
+ * with other moved-from values, deliberately converting ``std::move(helper)``
+ * twice remains caller error.
+ */
+template <typename T>
+class MaybeReturnHelper {
+ public:
+  TVM_FFI_INLINE explicit MaybeReturnHelper(Expected<T>&& value) noexcept
+      : value_(std::move(value)) {}
+
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE operator TVMFFIAny() && noexcept {
+    return ExpectedUnsafe::MoveToTVMFFIAny(std::move(value_));
+  }
+
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE operator Expected<T>() && noexcept { return std::move(value_); }
+
+ private:
+  Expected<T> value_;
+};
+
 }  // namespace details
 
 // TypeTraits specialization for Expected<T>
