@@ -401,4 +401,29 @@ TEST(StructuralMap, HandlesInlineAndHeapStringAndBytesLeaves) {
   CheckStringAndBytesLeaves<WalkOrder::kPostOrder>();
 }
 
+// The dynamic mutator duplicates the static one's walk deliberately, so the semantics they
+// share need coverage on this copy too. Driven through the same entry point Python uses.
+Any CallDynStructuralMap(AnyView root, const Array<Tuple<int32_t, Function>>& callbacks,
+                         WalkOrder order) {
+  Function fn = Function::GetGlobalRequired("ffi.StructuralMap");
+  return fn(root, callbacks, Array<Tuple<int32_t, Function>>(), static_cast<int32_t>(order));
+}
+
+TEST(StructuralMapDyn, ReusesRemapResultForRepeatedVar) {
+  // A FreeVar maps once and every later occurrence reuses that result. Both mutators share this
+  // half of the walk, so it must hold identically here.
+  TVar var("x");
+  AnyArray root{Any(var), Any(var)};
+  int64_t calls = 0;
+  Function remap = Function::FromTyped([&](AnyView v) -> Any {
+    ++calls;
+    return Any(TVar(v.cast<TVar>()->name + "-mapped"));
+  });
+  Any mapped = CallDynStructuralMap(
+      root, {Tuple<int32_t, Function>(TVarObj::RuntimeTypeIndex(), remap)}, WalkOrder::kPostOrder);
+  auto arr = mapped.cast<AnyArray>();
+  EXPECT_EQ(calls, 1);
+  EXPECT_TRUE(arr[0].cast<TVar>().same_as(arr[1].cast<TVar>()));
+}
+
 }  // namespace

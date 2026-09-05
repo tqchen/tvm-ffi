@@ -429,6 +429,31 @@ TEST(StructuralVisitor, WalkReturnsError) {
   EXPECT_EQ(result.error().message(), "walk callback failed");
 }
 
+// A callback that fails on a primitive node must surface the error, not abort.
+//
+// On failure the engine names the node it dispatched on in the visit error context. A visited
+// node is not always object-backed -- a container element or reflected field may be a primitive --
+// and `AnyView::cast<ObjectRef>()` throws on one. The walk is `noexcept`, so naming the node
+// without a type-index guard terminates the process instead of returning the error. Every other
+// error test above fails on an ObjectRef node, so only a primitive exercises that guard.
+TEST(StructuralVisitor, WalkReturnsErrorOnPrimitiveNode) {
+  Array<Any> root = {Any(static_cast<int64_t>(1))};
+  auto fail = [](int64_t) -> Expected<WalkResult> {
+    return Unexpected(Error("ValueError", "walk callback failed on primitive", ""));
+  };
+
+  Expected<Optional<VisitInterrupt>> pre = StructuralWalkExpected<WalkOrder::kPreOrder>(root, fail);
+  ASSERT_TRUE(pre.is_err());
+  EXPECT_EQ(pre.error().kind(), "ValueError");
+  EXPECT_EQ(pre.error().message(), "walk callback failed on primitive");
+
+  Expected<Optional<VisitInterrupt>> post =
+      StructuralWalkExpected<WalkOrder::kPostOrder>(root, fail);
+  ASSERT_TRUE(post.is_err());
+  EXPECT_EQ(post.error().kind(), "ValueError");
+  EXPECT_EQ(post.error().message(), "walk callback failed on primitive");
+}
+
 TEST(StructuralVisitor, WalkCatchesError) {
   ObjectRef root = TVar("root");
 

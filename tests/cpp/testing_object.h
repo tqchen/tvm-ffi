@@ -249,20 +249,16 @@ class TMutatePairObj : public Object {
     return count;
   }
 
-  static Expected<Any> StructuralMutateExpected(StructuralMutatorObj* mutator,
-                                                AnyView value) noexcept {
+  static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
     ++StructuralMutateCallCount();
     const auto* self = value.cast<const TMutatePairObj*>();
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef, lhs, mutator->MutateExpected(self->lhs), self);
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef, rhs, mutator->MutateExpected(self->rhs), self);
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef, lhs, mutator->MutateExpected(self->lhs));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef, rhs, mutator->MutateExpected(self->rhs));
     if (lhs.same_as(self->lhs) && rhs.same_as(self->rhs)) {
-      return Any(value);
+      return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
     }
-    return Any(ObjectRef(make_object<TMutatePairObj>(std::move(lhs), std::move(rhs))));
-  }
-
-  static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(StructuralMutateExpected(mutator, value));
+    return details::AnyUnsafe::MoveAnyToTVMFFIAny(
+        Any(make_object<TMutatePairObj>(std::move(lhs), std::move(rhs))));
   }
 
   static void RegisterReflection() {
@@ -413,13 +409,11 @@ class TFuncObj : public Object {
   static TVMFFIAny StructuralVisit(StructuralVisitorObj* visitor, AnyView value) noexcept {
     const auto* self = value.cast<const TFuncObj*>();
 
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(
-        visitor->WithDefRegionKind(kTVMFFIDefRegionKindRecursive,
-                                   [&]() { return visitor->VisitExpected(self->params); }),
-        self);
+    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->WithDefRegionKind(
+        kTVMFFIDefRegionKindRecursive, [&]() { return visitor->VisitExpected(self->params); }));
 
     auto body_result = visitor->VisitExpected(self->body);
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(body_result, self);
+    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(body_result);
     return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(body_result));
   }
 
