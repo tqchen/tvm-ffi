@@ -329,6 +329,57 @@ def test_structural_visit_default_visit_binding() -> None:
     assert nested_trace == ["array", 1, 2]
 
 
+def test_structural_mutate_callback_owned_recursion_and_errors() -> None:
+    trace: list[int | str] = []
+
+    def mutate_array(value: tvm_ffi.Array, mutator: tvm_ffi.StructuralMutator) -> object:
+        assert isinstance(mutator, tvm_ffi.StructuralMutator)
+        trace.append("array")
+        return tvm_ffi.Array([mutator.mutate(value[0]), 10])
+
+    def mutate_int(value: int, mutator: tvm_ffi.StructuralMutator) -> int:
+        assert isinstance(mutator, tvm_ffi.StructuralMutator)
+        trace.append(value)
+        return value + 1
+
+    mapped = tvm_ffi.structural_mutate(
+        tvm_ffi.Array([1, 2]),
+        [(tvm_ffi.Array, mutate_array), (int, mutate_int)],
+    )
+    assert list(mapped) == [2, 10]
+    assert trace == ["array", 1]
+
+    default_mapped = tvm_ffi.structural_mutate(
+        tvm_ffi.Array([3, 4]),
+        (int, mutate_int),
+    )
+    assert list(default_mapped) == [4, 5]
+
+    direct_trace: list[int] = []
+
+    def fail_directly(value: int, mutator: tvm_ffi.StructuralMutator) -> object:
+        assert isinstance(mutator, tvm_ffi.StructuralMutator)
+        direct_trace.append(value)
+        raise ValueError("direct structural mutate failure")
+
+    with pytest.raises(ValueError, match="direct structural mutate failure"):
+        tvm_ffi.structural_mutate(1, (int, fail_directly))
+    assert direct_trace == [1]
+
+    nested_trace: list[int] = []
+
+    def fail_nested(value: int, mutator: tvm_ffi.StructuralMutator) -> int:
+        assert isinstance(mutator, tvm_ffi.StructuralMutator)
+        nested_trace.append(value)
+        if value == 2:
+            raise ValueError("nested structural mutate failure")
+        return value
+
+    with pytest.raises(ValueError, match="nested structural mutate failure"):
+        tvm_ffi.structural_mutate(tvm_ffi.Array([1, 2, 3]), (int, fail_nested))
+    assert nested_trace == [1, 2]
+
+
 def test_structural_walk_nested_containers_and_skips_map_keys() -> None:
     root = tvm_ffi.Array(
         [

@@ -91,6 +91,16 @@ class StructuralMapWithMutateCount : public StructuralMapEngineBase {
   int marker_ = 17;
 };
 
+class StructuralMutateLayer : public StructuralMapEngineBase {
+ public:
+  using MutatorObjType = StructuralMutateLayer;
+
+  explicit StructuralMutateLayer(const StructuralMutatorVTable* vtable)
+      : StructuralMapEngineBase(vtable) {}
+
+  int callback_tag() const { return 23; }
+};
+
 TEST(StructuralMap, ParentLayerOwnsBothDescentsAndProvidesState) {
   std::vector<int> callback_counts;
   auto identity = [&](const AnyArray& value, const MutateCount& live_count, const int& live_marker,
@@ -134,6 +144,51 @@ TEST(StructuralMap, ParentLayerOwnsBothDescentsAndProvidesState) {
   AnyArray mapped = mutator->MutateExpected(repeated).value().cast<AnyArray>();
   EXPECT_EQ(var_callback_count, 1);
   EXPECT_TRUE(mapped[0].cast<TVar>().same_as(mapped[1].cast<TVar>()));
+}
+
+TEST(StructuralMutate, CallbackOwnsMutationAndErrorsStayExpected) {
+  std::vector<int64_t> trace;
+  auto mutate_array = [&](const AnyArray& value, StructuralMutateLayer* mutator) -> Expected<Any> {
+    EXPECT_EQ(mutator->callback_tag(), 23);
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, first, mutator->MutateExpected(value[0]));
+    return Any(AnyArray{std::move(first), int64_t{10}});
+  };
+  auto mutate_int = [&](int64_t value, StructuralMutatorObj*) -> Expected<Any> {
+    trace.push_back(value);
+    return Any(value + 1);
+  };
+  using Mutator = details::StructuralMutateEngine<StructuralMutateLayer, decltype(mutate_array),
+                                                  decltype(mutate_int)>;
+  StructuralMutator mutator(make_object<Mutator>(std::move(mutate_array), std::move(mutate_int)));
+
+  AnyArray mapped =
+      mutator->MutateExpected(AnyArray{int64_t{1}, int64_t{2}}).value().cast<AnyArray>();
+  ASSERT_EQ(mapped.size(), 2U);
+  EXPECT_EQ(mapped[0].cast<int64_t>(), 2);
+  EXPECT_EQ(mapped[1].cast<int64_t>(), 10);
+  EXPECT_EQ(trace, std::vector<int64_t>{1});
+
+  AnyArray default_mapped =
+      StructuralMutate(
+          AnyArray{int64_t{3}, int64_t{4}},
+          [](int64_t value, StructuralMutatorObj*) -> Expected<Any> { return Any(value + 1); })
+          .cast<AnyArray>();
+  EXPECT_EQ(default_mapped[0].cast<int64_t>(), 4);
+  EXPECT_EQ(default_mapped[1].cast<int64_t>(), 5);
+
+  Expected<Any> returned_error =
+      StructuralMutateExpected(int64_t{1}, [](int64_t, StructuralMutatorObj*) -> Expected<Any> {
+        return Unexpected(Error("ValueError", "returned mutate error", ""));
+      });
+  ASSERT_TRUE(returned_error.is_err());
+  EXPECT_EQ(returned_error.error().message(), "returned mutate error");
+
+  Expected<Any> thrown_error =
+      StructuralMutateExpected(int64_t{1}, [](int64_t, StructuralMutatorObj*) -> Expected<Any> {
+        TVM_FFI_THROW(ValueError) << "thrown mutate error";
+      });
+  ASSERT_TRUE(thrown_error.is_err());
+  EXPECT_EQ(thrown_error.error().message(), "thrown mutate error");
 }
 
 template <WalkOrder order>

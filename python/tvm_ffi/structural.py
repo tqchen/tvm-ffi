@@ -42,6 +42,7 @@ __all__ = [
     "structural_equal",
     "structural_hash",
     "structural_map",
+    "structural_mutate",
     "structural_visit",
     "structural_walk",
 ]
@@ -683,6 +684,38 @@ def structural_visit(
         for t, fn in callback_entries
     ]
     return _ffi_api.StructuralVisit(root, entries)
+
+
+def structural_mutate(
+    root: Any,
+    callbacks: tuple | Sequence | Callable = (),
+) -> Any:
+    """Mutate a value with callbacks that own recursive mutation.
+
+    Each callback receives ``(value, mutator)``. It may call
+    :meth:`StructuralMutator.mutate` for selected children; its returned value
+    is final and is not traversed again. Entries use ``structural_map`` matching
+    rules, and an unmatched value follows registered/default mutation.
+
+    Parameters
+    ----------
+    root
+        Root value to mutate.
+    callbacks
+        Callback entries tried in order; the first match owns mutation.
+
+    Returns
+    -------
+    result
+        The mutated owning value.
+
+    """
+    callback_entries = _normalize_callbacks(callbacks, api_name="structural_mutate")
+    entries: list[tuple[int, Callable[[Any, StructuralMutator], Any]]] = [
+        (_callback_type_to_type_index(t, api_name="structural_mutate"), fn)
+        for t, fn in callback_entries
+    ]
+    return _ffi_api.StructuralMutate(root, entries)
 
 
 def structural_map(

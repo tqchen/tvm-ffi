@@ -1325,6 +1325,119 @@ class StructuralMapDynEngine : public Parent {
   Array<Tuple<int32_t, Function>> callbacks_with_def_region_kind_;
 };
 
+namespace details {
+
+/*!
+ * \brief Engine of the callback-dispatched \ref tvm::ffi::StructuralMutate.
+ *
+ * A matched callback owns mutation of its value, so the engine returns the
+ * callback result without descending into it. An unmatched value keeps the
+ * Parent's default mutation. ``Parent::MutatorObjType`` pins the callback-facing
+ * mutator view across layer composition; callbacks may accept that pointer type
+ * or a pointer to one of its bases.
+ *
+ * \tparam Parent Mutator layer extended by the engine.
+ * \tparam Callbacks Callable types whose first parameter selects the value type.
+ */
+template <typename Parent, typename... Callbacks>
+class StructuralMutateEngine : public Parent {
+  static_assert(std::is_base_of_v<StructuralMapEngineBase, Parent>,
+                "StructuralMutate Parent must derive from StructuralMapEngineBase");
+  using MutatorObjType = typename Parent::MutatorObjType;
+  static_assert(std::is_base_of_v<MutatorObjType, Parent>,
+                "StructuralMutate Parent::MutatorObjType must be Parent or a base of it");
+  using Parent::DefaultMutateRaw;
+  using DefaultMutateRawResult =
+      decltype(std::declval<StructuralMutateEngine&>().DefaultMutateRaw(std::declval<AnyView>()));
+  static_assert(std::is_same_v<DefaultMutateRawResult, TVMFFIAny>,
+                "StructuralMutate Parent::DefaultMutateRaw(AnyView) must return TVMFFIAny");
+
+ public:
+  /*! \brief Construct a mutate engine over callbacks tested in declaration order. */
+  explicit StructuralMutateEngine(Callbacks... callbacks)
+      : Parent(VTable()), callbacks_(std::move(callbacks)...) {}
+
+ private:
+  /*! \brief Return this engine's immutable callback-aware mutator vtable. */
+  static const StructuralMutatorVTable* VTable() {
+    static const StructuralMutatorVTable vtable{
+        &StructuralMutateEngine::DispatchMutate,
+        &StructuralMutateEngine::DispatchMaybeInplaceMutate,
+        &StructuralMutateEngine::DispatchVarRemapGet,
+        &StructuralMutateEngine::DispatchVarRemapSet,
+    };
+    return &vtable;
+  }
+
+  /*! \brief Dispatch ordinary mutation from the erased mutator pointer. */
+  static TVMFFIAny DispatchMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
+    return static_cast<StructuralMutateEngine*>(mutator)->MutateImplRaw(value);
+  }
+
+  /*! \brief Preserve callback ownership for the required maybe-inplace vtable entry. */
+  static TVMFFIAny DispatchMaybeInplaceMutate(StructuralMutatorObj* mutator,
+                                              AnyView value) noexcept {
+    return static_cast<StructuralMutateEngine*>(mutator)->MutateImplRaw(value);
+  }
+
+  /*! \brief Mutate one value, handing a matched callback ownership of descent. */
+  TVMFFIAny MutateImplRaw(AnyView value) noexcept {
+    if (std::optional<Expected<Any>> matched = DispatchCallbacks(value)) {
+      Expected<Any> result = *std::move(matched);
+      if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
+        Parent::UpdateVisitErrorContext(result, value);
+      }
+      return ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+    }
+    return Parent::DefaultMutateRaw(value);
+  }
+
+  /*! \brief Try one typed callback and preserve Error as an expected result. */
+  template <typename Callback>
+  TVM_FFI_INLINE std::optional<Expected<Any>> TryLink(Callback& callback, AnyView value) noexcept {
+    using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
+    using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
+    using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
+    using SecondArg = std::decay_t<std::tuple_element_t<1, typename FuncInfo::ArgType>>;
+    using Second = std::remove_pointer_t<SecondArg>;
+    static_assert(std::is_base_of_v<Second, MutatorObjType>,
+                  "second StructuralMutate callback argument must be "
+                  "Parent::MutatorObjType* or a base of it");
+    auto* mutator = static_cast<MutatorObjType*>(this);
+    try {
+      if constexpr (std::is_same_v<TSub, AnyView>) {
+        return callback(value, mutator);
+      } else if constexpr (std::is_same_v<TSub, Any>) {
+        return callback(Any(value), mutator);
+      } else if (auto matched = value.template as<TSub>()) {
+        return callback(*std::move(matched), mutator);
+      }
+    } catch (const Error& err) {
+      return Unexpected(err);
+    }
+    return std::nullopt;
+  }
+
+  /*! \brief Fold callbacks in declaration order, stopping at the first match. */
+  template <size_t... Is>
+  TVM_FFI_INLINE std::optional<Expected<Any>> TryLinks(AnyView value,
+                                                       std::index_sequence<Is...>) noexcept {
+    std::optional<Expected<Any>> result;
+    (... || (result = TryLink(std::get<Is>(callbacks_), value)).has_value());
+    return result;
+  }
+
+  /*! \brief Run the callback chain, or return empty when no callback matched. */
+  std::optional<Expected<Any>> DispatchCallbacks(AnyView value) noexcept {
+    return TryLinks(value, std::index_sequence_for<Callbacks...>{});
+  }
+
+  /*! \brief Typed callbacks tested in declaration order, first match wins. */
+  std::tuple<Callbacks...> callbacks_;
+};
+
+}  // namespace details
+
 /*!
  * \brief Map a structured value graph and invoke typed replacement callbacks.
  *
@@ -1406,6 +1519,32 @@ Expected<Any> StructuralMapExpected(AnyView root, Callbacks&&... callbacks) noex
 template <WalkOrder order, typename... Callbacks>
 Any StructuralMap(AnyView root, Callbacks&&... callbacks) {
   return StructuralMapExpected<order>(root, std::forward<Callbacks>(callbacks)...).value();
+}
+
+/*!
+ * \brief Mutate a structured value with callbacks that own recursion.
+ *
+ * Each callback takes ``(value, StructuralMutatorObj* mutator)`` and returns
+ * ``Expected<Any>``. Its first argument follows the same matching rules as
+ * \ref StructuralMap; callbacks are tested in order and the first match wins.
+ * A matched result is final and is not traversed again. The callback explicitly
+ * recurses through the mutator, which also carries remap and def-region state.
+ * An unmatched value uses the Parent's default structural mutation. Success
+ * returns the owning replacement and ``Error`` reports mutation failure.
+ */
+template <typename... Callbacks>
+Expected<Any> StructuralMutateExpected(AnyView root, Callbacks&&... callbacks) noexcept {
+  static_assert(sizeof...(Callbacks) != 0, "StructuralMutate requires at least one callback");
+  using Mutator =
+      details::StructuralMutateEngine<StructuralMapEngineBase, std::decay_t<Callbacks>...>;
+  StructuralMutator mutator(make_object<Mutator>(std::forward<Callbacks>(callbacks)...));
+  return mutator->MutateExpected(root);
+}
+
+/*! \brief Throwing form of \ref tvm::ffi::StructuralMutateExpected. */
+template <typename... Callbacks>
+Any StructuralMutate(AnyView root, Callbacks&&... callbacks) {
+  return StructuralMutateExpected(root, std::forward<Callbacks>(callbacks)...).value();
 }
 
 }  // namespace ffi

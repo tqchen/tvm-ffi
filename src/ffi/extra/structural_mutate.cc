@@ -61,6 +61,27 @@ Expected<Any> StructuralMapExpected(
   }
 }
 
+/*!
+ * \brief Runtime callback-driven structural mutation.
+ * \param root The root value to mutate.
+ * \param callbacks Runtime entries invoked as ``callback(value, mutator)``.
+ * \return The mutated owning value, or an Error.
+ */
+Expected<Any> StructuralMutateExpected(AnyView root,
+                                       const Array<Tuple<int32_t, Function>>& callbacks) noexcept {
+  auto dispatch = [callbacks](AnyView value, StructuralMutatorObj* mutator) -> Expected<Any> {
+    for (const auto& entry : callbacks) {
+      if (!RuntimeTypeIndexMatch(value.type_index(), entry.template get<0>())) continue;
+      return entry.template get<1>().CallExpected<Any>(value, GetRef<StructuralMutator>(mutator));
+    }
+    return mutator->DefaultMutateExpected(value);
+  };
+
+  using Mutator = StructuralMutateEngine<StructuralMapEngineBase, decltype(dispatch)>;
+  StructuralMutator mutator(make_object<Mutator>(std::move(dispatch)));
+  return mutator->MutateExpected(root);
+}
+
 // ---------------------------------------------------------------------------
 // Built-in container structural mutation.
 // ---------------------------------------------------------------------------
@@ -278,6 +299,10 @@ TVM_FFI_STATIC_INIT_BLOCK() {
              return details::StructuralMapExpected(root, callbacks, callbacks_with_def_region_kind,
                                                    order)
                  .value();
+           })
+      .def("ffi.StructuralMutate",
+           [](AnyView root, const Array<Tuple<int32_t, Function>>& callbacks) -> Any {
+             return details::StructuralMutateExpected(root, callbacks).value();
            });
   refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMutate);
   refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMaybeInplaceMutate);
