@@ -117,6 +117,10 @@ class HVarObj : public HExprObj {
     refl::TypeAttrDef<HVarObj>().attr(
         refl::type_attr::kStructuralMutate,
         reinterpret_cast<void*>(static_cast<FStructuralMutate>(&HVarObj::StructuralMutate)));
+    refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMaybeInplaceMutate);
+    refl::TypeAttrDef<HVarObj>().attr(
+        refl::type_attr::kStructuralMaybeInplaceMutate,
+        reinterpret_cast<void*>(static_cast<FStructuralMutate>(&HVarObj::StructuralMutate)));
 #ifdef BENCH_WALK
     refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralVisit);
     refl::TypeAttrDef<HVarObj>().attr(
@@ -154,6 +158,10 @@ class HIntImmObj : public HExprObj {
     refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMutate);
     refl::TypeAttrDef<HIntImmObj>().attr(
         refl::type_attr::kStructuralMutate,
+        reinterpret_cast<void*>(static_cast<FStructuralMutate>(&HIntImmObj::StructuralMutate)));
+    refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMaybeInplaceMutate);
+    refl::TypeAttrDef<HIntImmObj>().attr(
+        refl::type_attr::kStructuralMaybeInplaceMutate,
         reinterpret_cast<void*>(static_cast<FStructuralMutate>(&HIntImmObj::StructuralMutate)));
 #ifdef BENCH_WALK
     refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralVisit);
@@ -212,6 +220,28 @@ class HBinOpObj : public HExprObj {
     TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(rb);
     return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(rb));
   }
+  // Mirrors tvm::MaybeInplaceMutateBinary: the node is uniquely owned, so operands are written
+  // back in place instead of rebuilding. Carries MutateBinary's ty-reuse guard, whose absence
+  // measured 4.48 ns/node slower than rebuilding.
+  static TVMFFIAny StructuralMaybeInplaceMutate(StructuralMutatorObj* mutator,
+                                                AnyView value) noexcept {
+    const auto* self = value.cast<const T*>();
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimExpr, a,
+                                      mutator->MaybeInplaceMutateIfUniqueExpected(self->a));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimExpr, b,
+                                      mutator->MaybeInplaceMutateIfUniqueExpected(self->b));
+    if (a.same_as(self->a) && b.same_as(self->b)) {
+      return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
+    }
+    T* mut = const_cast<T*>(self);
+    if (!a->ty.same_as(self->a->ty) || !b->ty.same_as(self->b->ty)) {
+      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimType, rty, ResultType(a, b));
+      mut->HExprObj::ty = std::move(rty);
+    }
+    mut->a = std::move(a);
+    mut->b = std::move(b);
+    return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
+  }
   static void RegisterReflection() {
     namespace refl = tvm::ffi::reflection;
     refl::ObjectDef<T>().def_ro("a", &T::a).def_ro("b", &T::b);
@@ -219,6 +249,10 @@ class HBinOpObj : public HExprObj {
     refl::TypeAttrDef<T>().attr(
         refl::type_attr::kStructuralMutate,
         reinterpret_cast<void*>(static_cast<FStructuralMutate>(&HBinOpObj<T>::StructuralMutate)));
+    refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMaybeInplaceMutate);
+    refl::TypeAttrDef<T>().attr(refl::type_attr::kStructuralMaybeInplaceMutate,
+                                reinterpret_cast<void*>(static_cast<FStructuralMutate>(
+                                    &HBinOpObj<T>::StructuralMaybeInplaceMutate)));
 #ifdef BENCH_WALK
     refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralVisit);
     refl::TypeAttrDef<T>().attr(
@@ -333,6 +367,20 @@ static void Build() {
   g_root = Bin<HAddObj>(Bin<HMulObj>(Bin<HFloorDivObj>(q, Imm(32)), Imm(32)),
                         Bin<HFloorModObj>(r, Imm(32)));
 }
+// A fresh tree per call, so the root is uniquely owned and the walk enters the in-place path.
+static HExpr BuildFresh() {
+  HPrimExpr q = Bin<HAddObj>(Bin<HMulObj>(g_outer, Imm(16)), g_inner);
+  HPrimExpr r = Bin<HAddObj>(Bin<HMulObj>(g_outer, Imm(16)), g_inner);
+  return Bin<HAddObj>(Bin<HMulObj>(Bin<HFloorDivObj>(q, Imm(32)), Imm(32)),
+                      Bin<HFloorModObj>(r, Imm(32)));
+}
+// A deep chain, to separate fixed per-traversal cost from genuine per-node cost: if the
+// per-node overhead falls as the tree grows, the difference was a fixed cost divided by n.
+static HExpr BuildDeep(int depth) {
+  HPrimExpr acc = Bin<HAddObj>(g_outer, g_inner);
+  for (int i = 0; i < depth; ++i) acc = Bin<HAddObj>(Bin<HMulObj>(acc, Imm(16)), g_inner);
+  return acc;
+}
 static size_t CountNodes(const HExpr& e) {
   const auto* o = e.as<HExprObj>();
   if (o == nullptr) return 0;
@@ -422,7 +470,134 @@ int main() {
       2000, 15, 500);
 
 #endif
+  // MATCHED but UNCHANGED: the link matches every Var and hands back the same object, so the
+  // binop hooks see same_as on both operands and rebuild nothing. Isolates matched-node engine
+  // work from the allocation cost of rebuilding the spine above a replaced node.
+  auto nochange_cb = [](const HVarObj* v, TVMFFIDefRegionKind) -> Expected<Any> {
+    return Any(GetRef<HVar>(v));
+  };
+  // Storage-enabled TSub: as<TSub>() copies into an owning HVar, costing a refcount inc on the
+  // match and again on the post-descent recheck. The pointer form borrows and costs neither.
+  auto nochange_ref_cb = [](const HVar& v, TVMFFIDefRegionKind) -> Expected<Any> { return Any(v); };
+  double nc_ref = BestNs(
+      [&] {
+        Any v = StructuralMap<WalkOrder::kPostOrder>(AnyView(g_root), nochange_ref_cb);
+        sink += v.type_index();
+      },
+      2000, 15, 500);
+  double nc = BestNs(
+      [&] {
+        Any v = StructuralMap<WalkOrder::kPostOrder>(AnyView(g_root), nochange_cb);
+        sink += v.type_index();
+      },
+      2000, 15, 500);
+
+  // IN-PLACE vs ORDINARY on identical work. Both arms build a fresh tree inside the timed
+  // region, so construction cost is common and cancels in the difference. The only difference is
+  // ownership: `keep` holds a second reference, so unique() is false and the walk takes the
+  // ordinary rebuild path instead of the in-place one.
+  {
+    HExpr probe = BuildFresh();
+    Any pv = StructuralMap<WalkOrder::kPostOrder>(AnyView(probe), replace_cb);
+    printf("in-place arm sanity: root unique before map=%d, result non-null=%d\n",
+           (int)(probe.as<Object>() != nullptr), (int)(pv.as<Object>() != nullptr));
+  }
+  double build_only = BestNs(
+      [&] {
+        HExpr t = BuildFresh();
+        sink += (t.get() != nullptr);
+      },
+      2000, 15, 500);
+  double ip = BestNs(
+      [&] {
+        HExpr t = BuildFresh();
+        Any v = StructuralMap<WalkOrder::kPostOrder>(AnyView(t), replace_cb);
+        sink += v.type_index();
+      },
+      2000, 15, 500);
+  double sh = BestNs(
+      [&] {
+        HExpr t = BuildFresh();
+        HExpr keep = t;  // second reference: unique() is false, so the ordinary path runs
+        Any v = StructuralMap<WalkOrder::kPostOrder>(AnyView(t), replace_cb);
+        sink += v.type_index() + (keep.get() != nullptr);
+      },
+      2000, 15, 500);
+
+  // SCALING: same three arms on a much larger tree.
+  {
+    HExpr deep = BuildDeep(400);
+    const double dn = static_cast<double>(CountNodes(deep));
+    double dfloor = BestNs(
+        [&] {
+          ObjectPtr<HMinimalMutatorObj> m = make_object<HMinimalMutatorObj>();
+          TVMFFIAny o = HMinimalMutatorObj::Mutate(m.get(), AnyView(deep));
+          Any owned = details::AnyUnsafe::MoveTVMFFIAnyToAny(&o);
+          sink += owned.type_index();
+        },
+        200, 15, 50);
+    double dnever = BestNs(
+        [&] {
+          Any v = StructuralMap<WalkOrder::kPostOrder>(AnyView(deep), never_mut_cb);
+          sink += v.type_index();
+        },
+        200, 15, 50);
+    double dnc = BestNs(
+        [&] {
+          Any v = StructuralMap<WalkOrder::kPostOrder>(AnyView(deep), nochange_cb);
+          sink += v.type_index();
+        },
+        200, 15, 50);
+    printf("\n--- SCALING (nodes=%.0f vs %.0f) -----------------------\n", dn, n);
+    printf("deep floor                  : %8.2f ns/node\n", dfloor / dn);
+    printf("deep Never                  : %8.2f ns/node   over floor %+7.2f  (small tree %+.2f)\n",
+           dnever / dn, (dnever - dfloor) / dn, (nm - mn) / n);
+    printf("deep Match-NoChange         : %8.2f ns/node   over floor %+7.2f  (small tree %+.2f)\n",
+           dnc / dn, (dnc - dfloor) / dn, (nc - mn) / n);
+  }
+
+  // FIXED SETUP: a StructuralMap over a single leaf. Total time is per-traversal setup plus
+  // one node, so against the minimal mutator on the same leaf it prices the setup directly.
+  {
+    HPrimExpr leaf = Imm(7);
+    double lf = BestNs(
+        [&] {
+          ObjectPtr<HMinimalMutatorObj> m = make_object<HMinimalMutatorObj>();
+          TVMFFIAny o = HMinimalMutatorObj::Mutate(m.get(), AnyView(leaf));
+          Any owned = details::AnyUnsafe::MoveTVMFFIAnyToAny(&o);
+          sink += owned.type_index();
+        },
+        5000, 15, 1000);
+    double lh = BestNs(
+        [&] {
+          Any v = StructuralMap<WalkOrder::kPostOrder>(AnyView(leaf), never_mut_cb);
+          sink += v.type_index();
+        },
+        5000, 15, 1000);
+    printf("\n--- CALLBACK PARAM TYPE (prices the as<TSub>() conversions) ---\n");
+  printf("callback takes const HVarObj* : %8.2f ns/node  (borrows, no refcount)\n", nc / n);
+  printf("callback takes const HVar&    : %8.2f ns/node  (storage-enabled, copies)\n", nc_ref / n);
+  printf("  conversion cost             : %+8.2f ns/node  = %+.1f ns per matched node\n",
+         (nc_ref - nc) / n, (nc_ref - nc) / 4.0);
+  printf("\n--- FIXED PER-TRAVERSAL SETUP (1-node tree) ------------\n");
+    printf("minimal mutator, 1 node     : %8.2f ns total\n", lf);
+    printf("StructuralMap,  1 node      : %8.2f ns total\n", lh);
+    printf("fixed setup (difference)    : %8.2f ns per traversal\n", lh - lf);
+    printf("  spread over %.0f nodes      : %8.2f ns/node of the measured overhead\n", n,
+           (lh - lf) / n);
+  }
+
+  printf("\n--- MUTATE MODES (fresh tree per iteration) -------------\n");
+  printf("build only (common cost)    : %8.2f ns/node\n", build_only / n);
+  printf("IN-PLACE   (unique root)    : %8.2f ns/node   net of build %+7.2f\n", ip / n,
+         (ip - build_only) / n);
+  printf("ORDINARY   (shared root)    : %8.2f ns/node   net of build %+7.2f\n", sh / n,
+         (sh - build_only) / n);
+  printf("  in-place saves            : %+8.2f ns/node\n", (ip - sh) / n);
+
   printf("\n--- MUTATE ---------------------------------------------\n");
+  printf("hooked Match-NoChange       : %8.2f ns/node   over floor %+7.2f\n", nc / n,
+         (nc - mn) / n);
   printf("minimal-vtable floor        : %8.2f ns/node\n", mn / n);
   printf("hooked Never   (no match)   : %8.2f ns/node   over floor %+7.2f\n", nm / n,
          (nm - mn) / n);
