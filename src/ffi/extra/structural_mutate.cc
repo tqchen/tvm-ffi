@@ -214,8 +214,7 @@ class StructuralMapDynMutatorObj : public StructuralMapMutatorBaseObj {
       // registered type index is the same target, so recheck against it.
       if (TVM_FFI_PREDICT_FALSE(
               !RuntimeTypeIndexMatch(mapped_value.type_index(), link_type_index))) {
-        *out =
-            Unexpected(Error("TypeError", "structural mutate: descent changed the node type", ""));
+        *out = SMutateDescentTypeError();
         UpdateVisitErrorContext(*out, mapped_value);
         return true;
       }

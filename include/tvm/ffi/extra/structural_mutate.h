@@ -612,17 +612,24 @@ namespace details {
 
 /// \endcond
 
+// Out of line so its strings and Error construction stay out of the hot path of whatever hook
+// body TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN expands into. Same reason as
+// BadStructuralMutateHookError.
+TVM_FFI_COLD_CODE inline TVMFFIAny SMutateDeclaredTypeErrorRaw() noexcept {
+  return AnyUnsafe::MoveAnyToTVMFFIAny(
+      Any(Error("TypeError", "structural mutate result does not match the declared type", "")));
+}
+
 /// \cond Doxygen_Suppress
-#define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Type, Name, ResultExpr)                  \
-  auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */                           \
-  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result);                                                   \
-  if (TVM_FFI_PREDICT_FALSE(!::tvm::ffi::details::AnyUnsafe::CheckAnyStrict<Type>(               \
-          ::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))) {                              \
-    return ::tvm::ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(::tvm::ffi::Any(::tvm::ffi::Error( \
-        "TypeError", "structural mutate result does not match the declared type", "")));         \
-  }                                                                                              \
-  Type Name = /* NOLINT(bugprone-macro-parentheses) */                                           \
-      ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                               \
+#define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Type, Name, ResultExpr)    \
+  auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */             \
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result);                                     \
+  if (TVM_FFI_PREDICT_FALSE(!::tvm::ffi::details::AnyUnsafe::CheckAnyStrict<Type>( \
+          ::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))) {                \
+    return ::tvm::ffi::details::SMutateDeclaredTypeErrorRaw();                     \
+  }                                                                                \
+  Type Name = /* NOLINT(bugprone-macro-parentheses) */                             \
+      ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                 \
           ::std::move(::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))
 /// \endcond
 
@@ -710,6 +717,14 @@ class StructuralMapMutatorBaseObj : public StructuralMutatorObj {
       : StructuralMutatorObj(vtable) {}
 
  protected:
+  /// \cond Doxygen_Suppress
+  // Out of line so its strings stay out of the per-node dispatch function, which TryLink inlines
+  // into. Shared by both map mutators: the typed one here and the dynamic one in the .cc.
+  TVM_FFI_COLD_CODE static Expected<Any> SMutateDescentTypeError() noexcept {
+    return Unexpected(Error("TypeError", "structural mutate: descent changed the node type", ""));
+  }
+  /// \endcond
+
   /*!
    * \brief Dispatch variable-remap lookup through the mutator vtable.
    * \param mutator The erased callback-aware mutator.
@@ -1000,8 +1015,7 @@ class StructuralMapMutatorObj : public StructuralMapMutatorBaseObj {
           // required to preserve the type, so failing here means some hook broke that.
           std::optional<TSub> descended_sub = mapped_value.template as<TSub>();
           if (TVM_FFI_PREDICT_FALSE(!descended_sub.has_value())) {
-            return Unexpected(
-                Error("TypeError", "structural mutate: descent changed the node type", ""));
+            return SMutateDescentTypeError();
           }
           return InvokeCallbackLink(callback, *std::move(descended_sub), kind);
         }
