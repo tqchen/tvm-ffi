@@ -27,6 +27,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -71,6 +72,40 @@ class TestVisitorObj : public StructuralVisitorObj {
     }
     return details::ExpectedUnsafe::MoveToTVMFFIAny(DefaultVisitExpected(value));
   }
+};
+
+struct VisitCount {
+  int value = 0;
+};
+
+struct VisitTag {
+  int value = 7;
+};
+
+template <typename Parent = StructuralVisitorObj>
+class StructuralWalkWithVisitCount : public Parent {
+ public:
+  using StateTupleType = std::tuple<const VisitCount&, const VisitTag&>;
+
+  explicit StructuralWalkWithVisitCount(const StructuralVisitorVTable* vtable) : Parent(vtable) {}
+
+  TVM_FFI_INLINE Expected<Optional<VisitInterrupt>> DefaultVisitExpected(AnyView value) noexcept {
+    ++visit_count_.value;
+    return Parent::DefaultVisitExpected(value);
+  }
+
+ protected:
+  TVM_FFI_INLINE TVMFFIAny DefaultVisitRaw(AnyView value) noexcept {
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(DefaultVisitExpected(value));
+  }
+
+  TVM_FFI_INLINE StateTupleType StateTuple() const noexcept {
+    return std::tie(visit_count_, visit_tag_);
+  }
+
+ private:
+  VisitCount visit_count_;
+  VisitTag visit_tag_;
 };
 
 StructuralVisitor MakeTestVisitor() { return StructuralVisitor(make_object<TestVisitorObj>()); }
@@ -409,6 +444,87 @@ TEST(StructuralVisitor, WalkReceivesDefRegionKind) {
 
   EXPECT_FALSE(result.has_value());
   ExpectTrace(use_vars, {"x", "y"});
+}
+
+TEST(StructuralVisitor, WalkParentStatePreservesDescentSkipAndInterrupt) {
+  ObjectRef lhs = TVar("lhs");
+  ObjectRef rhs = TVar("rhs");
+  ObjectRef root = TPair(lhs, rhs);
+  std::vector<int> counts;
+  std::vector<int> tags;
+  std::vector<TVMFFIDefRegionKind> kinds;
+
+  auto pair_callback = [&](const TPairObj*, const VisitCount& count, const VisitTag& tag,
+                           TVMFFIDefRegionKind kind) -> Expected<WalkResult> {
+    counts.push_back(count.value);
+    tags.push_back(tag.value);
+    kinds.push_back(kind);
+    return WalkResult::Advance();
+  };
+  auto fallback_callback = [&](const ObjectRef&, const VisitCount& count, const VisitTag& tag,
+                               TVMFFIDefRegionKind kind) -> Expected<WalkResult> {
+    counts.push_back(count.value);
+    tags.push_back(tag.value);
+    kinds.push_back(kind);
+    return WalkResult::Advance();
+  };
+  using PreOrderEngine = StructuralWalkEngine<StructuralWalkWithVisitCount<>, WalkOrder::kPreOrder,
+                                              decltype(pair_callback), decltype(fallback_callback)>;
+  StructuralVisitor visitor(
+      make_object<PreOrderEngine>(std::move(pair_callback), std::move(fallback_callback)));
+  Optional<VisitInterrupt> result = visitor->VisitExpected(root).value();
+
+  EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(counts, (std::vector<int>{0, 1, 2}));
+  EXPECT_EQ(tags, (std::vector<int>{7, 7, 7}));
+  EXPECT_EQ(kinds,
+            (std::vector<TVMFFIDefRegionKind>{kTVMFFIDefRegionKindNone, kTVMFFIDefRegionKindNone,
+                                              kTVMFFIDefRegionKindNone}));
+  counts.clear();
+
+  auto interrupt_callback = [&](const ObjectRef& node, const VisitCount& count,
+                                const VisitTag&) -> Expected<WalkResult> {
+    counts.push_back(count.value);
+    if (node.same_as(lhs)) return WalkResult::Skip();
+    if (node.same_as(rhs)) return WalkResult::Interrupt(VisitInterrupt(String("done")));
+    return WalkResult::Advance();
+  };
+  using InterruptEngine = StructuralWalkEngine<StructuralWalkWithVisitCount<>, WalkOrder::kPreOrder,
+                                               decltype(interrupt_callback)>;
+  StructuralVisitor interrupt_visitor(make_object<InterruptEngine>(std::move(interrupt_callback)));
+  Optional<VisitInterrupt> interrupt_result = interrupt_visitor->VisitExpected(root).value();
+
+  ASSERT_TRUE(interrupt_result.has_value());
+  EXPECT_EQ(interrupt_result.value()->value.cast<String>(), "done");
+  EXPECT_EQ(counts, (std::vector<int>{0, 1, 1}));
+
+  counts.clear();
+  auto postorder_callback = [&](const ObjectRef&, const VisitCount& count,
+                                const VisitTag&) -> Expected<WalkResult> {
+    counts.push_back(count.value);
+    return WalkResult::Advance();
+  };
+  using PostOrderEngine = StructuralWalkEngine<StructuralWalkWithVisitCount<>,
+                                               WalkOrder::kPostOrder, decltype(postorder_callback)>;
+  StructuralVisitor postorder_visitor(make_object<PostOrderEngine>(std::move(postorder_callback)));
+  Optional<VisitInterrupt> postorder_result = postorder_visitor->VisitExpected(root).value();
+  EXPECT_FALSE(postorder_result.has_value());
+  EXPECT_EQ(counts, (std::vector<int>{2, 3, 3}));
+
+  auto error_callback = [&](const ObjectRef& node, const VisitCount&,
+                            const VisitTag&) -> Expected<WalkResult> {
+    if (node.same_as(lhs)) {
+      return Unexpected(Error("ValueError", "stateful walk failed", ""));
+    }
+    return WalkResult::Advance();
+  };
+  using ErrorEngine = StructuralWalkEngine<StructuralWalkWithVisitCount<>, WalkOrder::kPreOrder,
+                                           decltype(error_callback)>;
+  StructuralVisitor error_visitor(make_object<ErrorEngine>(std::move(error_callback)));
+  Expected<Optional<VisitInterrupt>> error_result = error_visitor->VisitExpected(root);
+  ASSERT_TRUE(error_result.is_err());
+  EXPECT_EQ(error_result.error().kind(), "ValueError");
+  EXPECT_EQ(error_result.error().message(), "stateful walk failed");
 }
 
 TEST(StructuralVisitor, WalkReturnsError) {

@@ -74,11 +74,13 @@ Expected<Optional<VisitInterrupt>> StructuralWalkExpected(
   };
 
   if (order == static_cast<int>(WalkOrder::kPreOrder)) {
-    using Visitor = StructuralWalkVisitorObj<WalkOrder::kPreOrder, decltype(dispatch)>;
+    using Visitor =
+        StructuralWalkEngine<StructuralVisitorObj, WalkOrder::kPreOrder, decltype(dispatch)>;
     StructuralVisitor visitor(make_object<Visitor>(std::move(dispatch)));
     return visitor->VisitExpected(root);
   } else {
-    using Visitor = StructuralWalkVisitorObj<WalkOrder::kPostOrder, decltype(dispatch)>;
+    using Visitor =
+        StructuralWalkEngine<StructuralVisitorObj, WalkOrder::kPostOrder, decltype(dispatch)>;
     StructuralVisitor visitor(make_object<Visitor>(std::move(dispatch)));
     return visitor->VisitExpected(root);
   }
