@@ -355,39 +355,45 @@ class HSeqStmtObj : public HStmtObj {
     copy->seq = std::move(output);
     return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
   }
-  // Mirrors 20275's MaybeInplaceMutateSeqStmtRaw. `self->seq[i]` returns HStmt by value, so
-  // the element gains a second reference for the duration of the call and is never unique:
-  // every element takes the copy-on-write path even though the array itself is now mutated in
-  // place by Set(). MINI_SEQSTMT_INPLACE_FIX selects the repaired variant, which moves each
-  // element out of a uniquely owned array first. Same switch as tvm_hook_override.h.
+  // Mirrors e40167046ed6's MaybeInplaceMutateSeqStmtRaw, element path only -- mini has no
+  // splice arm, so the cursor's erase/insert and overflow branches would be dead code here.
+  // The shape that matters is the same: a `.unique()` precondition on the field, because seq
+  // is a field rather than a container the engine has established ownership of, and a borrowed
+  // `const Any&` into storage rather than `self->seq[i]`'s by-value return, which is what lets
+  // MaybeInplaceMutateIfUniqueExpected find the element unique.  At b51da96381 this hook took
+  // the by-value return and no element was ever unique; e40167046ed6 fixed that.
+  //
+  // MINI_SEQSTMT_INPLACE_FIX still selects mini's own variant, which reaches the same place
+  // through Array::MutateByApply instead. Same switch as tvm_hook_override.h.
   static TVMFFIAny StructuralMaybeInplaceMutate(StructuralMutatorObj* mutator,
                                                 AnyView value) noexcept {
     auto* self = const_cast<HSeqStmtObj*>(value.cast<const HSeqStmtObj*>());
+    if (!self->seq.unique()) return StructuralMutate(mutator, value);
 #if MINI_SEQSTMT_INPLACE_FIX
-    if (self->seq.unique()) {
-      Any failure;
-      bool failed = false;
-      self->seq.MutateByApply([&](HStmt statement) -> HStmt {
-        if (TVM_FFI_PREDICT_FALSE(failed)) return statement;
-        Expected<Any> mapped = mutator->MaybeInplaceMutateIfUniqueExpected(statement);
-        if (TVM_FFI_PREDICT_FALSE(mapped.is_err())) {
-          failed = true;
-          failure = Any(std::move(mapped).error());
-          return statement;
-        }
-        return details::AnyUnsafe::MoveFromAnyAfterCheck<HStmt>(std::move(mapped).value());
-      });
-      if (TVM_FFI_PREDICT_FALSE(failed)) {
-        return details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(failure));
+    Any failure;
+    bool failed = false;
+    self->seq.MutateByApply([&](HStmt statement) -> HStmt {
+      if (TVM_FFI_PREDICT_FALSE(failed)) return statement;
+      Expected<Any> mapped = mutator->MaybeInplaceMutateIfUniqueExpected(statement);
+      if (TVM_FFI_PREDICT_FALSE(mapped.is_err())) {
+        failed = true;
+        failure = Any(std::move(mapped).error());
+        return statement;
       }
-      return KeepValue(value);
+      return details::AnyUnsafe::MoveFromAnyAfterCheck<HStmt>(std::move(mapped).value());
+    });
+    if (TVM_FFI_PREDICT_FALSE(failed)) {
+      return details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(failure));
+    }
+#else
+    ArrayObj* seq = self->seq.GetArrayObj();
+    for (int64_t i = 0; i < static_cast<int64_t>(seq->size()); ++i) {
+      const Any& item = seq->begin()[i];
+      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HStmt, mapped,
+                                        mutator->MaybeInplaceMutateIfUniqueExpected(item));
+      if (!item.same_as(mapped)) seq->SetItemAfterCheck(i, Any(std::move(mapped)));
     }
 #endif
-    for (size_t i = 0; i < self->seq.size(); ++i) {
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HStmt, mapped,
-                                        mutator->MaybeInplaceMutateIfUniqueExpected(self->seq[i]));
-      if (!mapped.same_as(self->seq[i])) self->seq.Set(i, std::move(mapped));
-    }
     return KeepValue(value);
   }
 

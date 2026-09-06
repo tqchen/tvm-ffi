@@ -254,20 +254,26 @@ Any MapNever(Any input, ReplaceKind, Ownership) {
                                               [](const HPrimType& v) { return Any(v); });
 }
 
-Any MapIdentity(Any input, ReplaceKind kind, Ownership) {
-  if (kind == ReplaceKind::kSingleVar) {
-    return StructuralMap<WalkOrder::kPostOrder>(std::move(input),
-                                                [](const HStmt& stmt) { return Any(stmt); });
-  }
+// Two named operations rather than one selected by fixture; see real_tvm_bench.cc for why.
+// `*_var` is Expr-level Var substitution, which is what map_functor and map_old do, so those
+// two are baselines for these arms and for no others. `*_stmt` swaps whole HEvaluate nodes and
+// has no functor baseline. Var arms run everywhere, Stmt arms on the seq fixtures only.
+Any MapIdentityVar(Any input, ReplaceKind, Ownership) {
   return StructuralMap<WalkOrder::kPostOrder>(std::move(input),
                                               [](const HVar& var) { return Any(var); });
 }
 
-Any MapReplace(Any input, ReplaceKind kind, Ownership) {
-  if (kind == ReplaceKind::kSingleVar) {
-    return StructuralMap<WalkOrder::kPostOrder>(std::move(input), SwapEvaluates);
-  }
+Any MapReplaceVar(Any input, ReplaceKind, Ownership) {
   return StructuralMap<WalkOrder::kPostOrder>(std::move(input), SwapAllVars);
+}
+
+Any MapIdentityStmt(Any input, ReplaceKind, Ownership) {
+  return StructuralMap<WalkOrder::kPostOrder>(std::move(input),
+                                              [](const HStmt& stmt) { return Any(stmt); });
+}
+
+Any MapReplaceStmt(Any input, ReplaceKind, Ownership) {
+  return StructuralMap<WalkOrder::kPostOrder>(std::move(input), SwapEvaluates);
 }
 
 /*! \brief The functor-era Substitute: ExprMutator/StmtMutator vtable + IRSubstitute. */
@@ -295,9 +301,13 @@ struct MapArm {
   bool rebuilds;
 };
 constexpr MapArm kMapArms[] = {
-    {"map_floor", &MapFloor, false},     {"map_never", &MapNever, false},
-    {"map_identity", &MapIdentity, false}, {"map_replace", &MapReplace, true},
-    {"map_functor", &MapFunctor, true},  {"map_old", &MapOld, true},
+    {"map_floor", &MapFloor, false},              {"map_never", &MapNever, false},
+    {"map_identity_var", &MapIdentityVar, false}, {"map_replace_var", &MapReplaceVar, true},
+    {"map_functor", &MapFunctor, true},           {"map_old", &MapOld, true},
+};
+constexpr MapArm kStmtMapArms[] = {
+    {"map_identity_stmt", &MapIdentityStmt, false},
+    {"map_replace_stmt", &MapReplaceStmt, true},
 };
 
 // ---------------------------------------------------------------------------
@@ -369,10 +379,16 @@ void RunFixture(const FixtureInfo& info, Any (*build)()) {
   }
   for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
     for (const MapArm& arm : kMapArms) {
-      if (std::string(arm.name) == "map_old" && !info.run_old) continue;
       double ns = MeasureMapArm(arm.run, ownership, info.replace_kind, info.repeats, build,
                                 arm.rebuilds && info.has_sharing);
       EmitResult(kHarness, info.name, OwnershipName(ownership), arm.name, ns);
+    }
+    if (info.replace_kind == ReplaceKind::kSingleVar) {
+      for (const MapArm& arm : kStmtMapArms) {
+        double ns = MeasureMapArm(arm.run, ownership, info.replace_kind, info.repeats, build,
+                                  arm.rebuilds && info.has_sharing);
+        EmitResult(kHarness, info.name, OwnershipName(ownership), arm.name, ns);
+      }
     }
   }
 }
@@ -383,7 +399,7 @@ int main() {
   using namespace mini_tir;  // NOLINT(build/namespaces)
   EmitStandardProvenance(kHarness);
   EmitProvenance("structural_hooks",
-                 "mini-TIR's own (mini_tir.h), shaped after apache/tvm#20275 b51da96381");
+                 "mini-TIR's own (mini_tir.h), shaped after apache/tvm#20275 e40167046ed6");
   EmitProvenance("seqstmt_inplace_hook",
                  MINI_SEQSTMT_INPLACE_FIX ? "repaired" : "20275 as shipped");
 
@@ -391,7 +407,6 @@ int main() {
   auto build_distinct = [] { return Any(SplitFuse(false)); };
   FixtureInfo shared{"split-fuse-shared", 12, 17, kSplitFuseSharedBytes, 9, 3, kSplitFuseRepeats,
                      true, ReplaceKind::kAllVars};
-  shared.run_old = true;
   FixtureInfo distinct{"split-fuse-distinct", 15, 17, kSplitFuseDistinctBytes, 9, 1,
                        kSplitFuseRepeats, false, ReplaceKind::kAllVars};
   RunFixture(shared, build_shared);

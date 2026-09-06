@@ -23,38 +23,52 @@
 // installation that puts them over the ones TVM registered from its own static-init blocks.
 //
 // ===========================================================================================
-// PORTED FROM apache/tvm#20275, head b51da96381 ("[REFACTOR][IR] Normalize structural hook
-// source shape"), branch redo-expr-stmt-structural-hooks-current.
+// PORTED FROM apache/tvm#20275, head e40167046ed6 ("[REFACTOR][IR] Add structural hooks for
+// Expr and Stmt"), branch redo-expr-stmt-structural-hooks-current.
 //
 //   hook group   source file             functions
 //   ----------   ---------------------   ----------------------------------------------------
-//   IntImm       src/ir/expr.cc:206-224  IntImmVisit / IntImmMutate / IntImmMaybeInplaceMutate
-//   Var          src/ir/expr.cc:281-374  VarVisit / VarMutate / VarMaybeInplaceMutate
-//   binary ops   src/ir/prim/expr.cc:51-93   BinaryVisit / BinaryMutate /
+//   IntImm       src/ir/expr.cc          IntImmVisit / IntImmMutate / IntImmMaybeInplaceMutate
+//   Var          src/ir/expr.cc          VarVisit / VarMutate / VarMaybeInplaceMutate
+//   binary ops   src/ir/prim/expr.cc     BinaryVisit / BinaryMutate /
 //                                            BinaryMaybeInplaceMutate
-//   SeqStmt      src/tirx/ir/stmt.cc:504-590  SeqStmtVisit / MutateSeqStmtRaw /
+//   SeqStmt      src/tirx/ir/stmt.cc     SeqStmtVisit / MutateSeqStmtRaw /
 //                                            MaybeInplaceMutateSeqStmtRaw
-//   Evaluate     src/tirx/ir/stmt.cc:641-672  EvaluateVisit / EvaluateMutate /
+//   Evaluate     src/tirx/ir/stmt.cc     EvaluateVisit / EvaluateMutate /
 //                                            EvaluateMaybeInplaceMutate
 //
-// 20275 is under review and moving -- it has a tvm-ffi bump, a visit-macro adoption, a squash
-// and two missed hook files pending -- so this port follows it rather than apache/tvm main.
-// `./port_check.sh` re-extracts these ranges from the recorded sha and diffs them against the
-// bodies below; run it before trusting a measurement, and after any rebase of the PR.
+// 20275 is under review and moving, so this port follows it rather than apache/tvm main.
+// `./port_check.sh` re-extracts these functions from the recorded sha and diffs them against
+// the bodies below; run it before trusting a measurement, and after any rebase of the PR.
 //
 // The bodies are copied verbatim: same names, same signatures, same order, same internal
 // structure, grouped by the TVM file each came from. Nothing is reordered, renamed or tidied,
 // because a change prototyped here has to lift back into apache/tvm as a patch. The only
 // intended differences are marked `HARNESS DEVIATION` and there are two, both on SeqStmt.
 //
-// Note what 20275 changed relative to apache/tvm main, since it invalidates measurements taken
-// against main:
+// What e40167046ed6 changed relative to the previous port at b51da96381 -- all of it re-ported
+// here, and all of it re-measured:
+//   * `3rdparty/tvm-ffi` bumped 4e754f9f -> 9d784c4d, which is where
+//     TVM_FFI_S_VISIT_RETURN_NONE() is defined.
+//   * every visit hook now ends in TVM_FFI_S_VISIT_RETURN_NONE() rather than spelling out
+//     `MoveAnyToTVMFFIAny(ffi::Any(nullptr))`.  The same value, named.
+//   * VarMutate and VarMaybeInplaceMutate return `ffi::Any(self)` where they returned
+//     `ffi::Any(value)` -- four sites, on the split/fuse hot path.
+//   * MaybeInplaceMutateSeqStmtRaw is rewritten: a `.unique()` precondition falling through to
+//     MutateSeqStmtRaw, a borrowed `const Any&` into storage instead of `self->seq[i]`'s
+//     by-value return, a cursor with `erase`/`insert` splicing, and a one-shot overflow path
+//     that finishes the suffix and allocates the exact flattened size.  See the note above
+//     MaybeInplaceMutateSeqStmtRepaired for what this does to the defect the repair addressed.
+//   * two hook files the earlier port did not cover were normalized (src/tirx/ir/tirx_stmt.cc,
+//     src/tirx/ir/layout/tile_core.cc); neither holds a hook this harness dispatches into.
+//
+// And what 20275 as a whole still changes relative to apache/tvm main, since it invalidates
+// measurements taken against main:
 //   * BinaryMutate no longer re-infers the result type at all -- the `BinaryResultType` guard
 //     is gone, on the ground that StructuralMap preserves node types.
 //   * BinaryMaybeInplaceMutate lost its `same_as` early return.
 //   * SeqStmt's hooks were replaced outright by the splice-capable MutateSeqStmtRaw /
-//     MaybeInplaceMutateSeqStmtRaw, with lazy `output` allocation, a `growing` flag, prefix
-//     back-fill, and `self->seq.Set(i, ...)` in place of main's `Array<Stmt> mapped_seq` copy.
+//     MaybeInplaceMutateSeqStmtRaw.
 //   * SeqStmtVisit visits `self->seq` as a value rather than iterating its elements, so the
 //     Array itself is now a visited node and the fixtures' node and occurrence counts include
 //     it.
@@ -100,7 +114,7 @@ namespace ffi = tvm::ffi;
 
 TVMFFIAny IntImmVisit(ffi::StructuralVisitorObj*, ffi::AnyView) noexcept {
   // skips: value
-  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
+  TVM_FFI_S_VISIT_RETURN_NONE();
 }
 
 TVMFFIAny IntImmMutate(ffi::StructuralMutatorObj*, ffi::AnyView value) noexcept {
@@ -137,7 +151,7 @@ TVMFFIAny VarVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) noexc
       TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->ty));
     }
   }
-  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
+  TVM_FFI_S_VISIT_RETURN_NONE();
 }
 
 TVMFFIAny VarMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
@@ -161,7 +175,7 @@ TVMFFIAny VarMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noex
   // A PrimType carries only a dtype, so it has nothing to substitute.  Broad callbacks do not see
   // this skipped field; dynamically typed Vars still descend through the Type value.
   if (self->ty.as<PrimTypeNode>()) {
-    return return_mapped_var(ffi::Any(value));
+    return return_mapped_var(ffi::Any(self));
   }
   // Only NonRecursive is clamped: Recursive co-introduces type fields such as BufferType shape
   // variables, so that ambient region must continue through the dynamic type.
@@ -171,7 +185,7 @@ TVMFFIAny VarMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noex
           ? mutator->WithDefRegionKind(kTVMFFIDefRegionKindNone, mutate_ty)
           : mutate_ty();
   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Type, mapped_ty, std::move(mapped_ty_result));
-  ffi::Any mapped_var = ffi::Any(value);
+  ffi::Any mapped_var = ffi::Any(self);
   if (!mapped_ty.same_as(self->ty)) {
     ffi::ObjectPtr<VarNode> copy = ffi::make_object<VarNode>(*self);
     copy->ty = std::move(mapped_ty);
@@ -201,7 +215,7 @@ TVMFFIAny VarMaybeInplaceMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView
   // A PrimType carries only a dtype, so it has nothing to substitute.  Broad callbacks do not see
   // this skipped field; dynamically typed Vars still descend through the Type value.
   if (self->ty.as<PrimTypeNode>()) {
-    return return_mapped_var(ffi::Any(value));
+    return return_mapped_var(ffi::Any(self));
   }
   // Only NonRecursive is clamped: Recursive co-introduces type fields such as BufferType shape
   // variables, so that ambient region must continue through the dynamic type.
@@ -212,7 +226,7 @@ TVMFFIAny VarMaybeInplaceMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView
           : mutate_ty();
   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Type, mapped_ty, std::move(mapped_ty_result));
   if (!mapped_ty.same_as(self->ty)) self->ty = std::move(mapped_ty);
-  return return_mapped_var(ffi::Any(value));
+  return return_mapped_var(ffi::Any(self));
 }
 
 // ---------------------------------------------------------------------------
@@ -226,7 +240,7 @@ TVMFFIAny BinaryVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) no
       ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const TNode>(value);
   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->a));
   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->b));
-  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
+  TVM_FFI_S_VISIT_RETURN_NONE();
 }
 
 template <typename TNode>
@@ -271,7 +285,7 @@ TVMFFIAny SeqStmtVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) n
   const SeqStmtNode* self =
       ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const SeqStmtNode>(value);
   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->seq));
-  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
+  TVM_FFI_S_VISIT_RETURN_NONE();
 }
 
 TVMFFIAny MutateSeqStmtRaw(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
@@ -311,85 +325,116 @@ TVMFFIAny MaybeInplaceMutateSeqStmtRaw(ffi::StructuralMutatorObj* mutator,
                                        ffi::AnyView value) noexcept {
   SeqStmtNode* self = const_cast<SeqStmtNode*>(
       ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const SeqStmtNode>(value));
-  ffi::Array<Stmt> output;
-  bool growing = false;
-  for (size_t i = 0; i < self->seq.size(); ++i) {
+  // The engine establishes ownership of the SeqStmt, but seq is a field and needs its own check.
+  if (!self->seq.unique()) {
+    return MutateSeqStmtRaw(mutator, value);
+  }
+  ffi::ArrayObj* seq = self->seq.GetArrayObj();
+  // A null output means the uniquely owned field is still the mutation destination.
+  ffi::ObjectPtr<ffi::ArrayObj> output = nullptr;
+  int64_t cursor = 0;
+  while (cursor < static_cast<int64_t>(seq->size())) {
+    // Borrow the storage slot so the element stays unique during in-place dispatch.
+    const ffi::Any& item = seq->begin()[cursor];
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Stmt, mapped,
-                                      mutator->MaybeInplaceMutateIfUniqueExpected(self->seq[i]));
-    if (!growing) {
-      if (mapped.same_as(self->seq[i])) {
-        continue;
-      }
-      if (const auto* nested = mapped.as<SeqStmtNode>()) {
-        growing = true;
-        output.reserve(self->seq.size());
-        for (size_t j = 0; j < i; ++j) {
-          output.push_back(self->seq[j]);
+                                      mutator->MaybeInplaceMutateIfUniqueExpected(item));
+
+    const auto* nested = mapped.as<SeqStmtNode>();
+    int64_t contribution = nested == nullptr ? 1 : static_cast<int64_t>(nested->seq.size());
+    int64_t new_size = static_cast<int64_t>(seq->size()) - 1 + contribution;
+    if (new_size > static_cast<int64_t>(seq->capacity())) {
+      // Finish the suffix exactly once, then allocate the exact flattened size without replaying
+      // callbacks over the already-mutated prefix.
+      seq->SetItemAfterCheck(cursor, ffi::Any(std::move(mapped)));
+      int64_t source_size = static_cast<int64_t>(seq->size());
+      int64_t output_size = cursor + contribution;
+      for (int64_t read_cursor = cursor + 1; read_cursor < source_size; ++read_cursor) {
+        const ffi::Any& source_item = seq->begin()[read_cursor];
+        TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Stmt, source_mapped,
+                                          mutator->MaybeInplaceMutateIfUniqueExpected(source_item));
+        if (!source_item.same_as(source_mapped)) {
+          seq->SetItemAfterCheck(read_cursor, ffi::Any(std::move(source_mapped)));
         }
-        for (const Stmt& stmt : nested->seq) {
-          output.push_back(stmt);
+        const auto* source_nested = seq->begin()[read_cursor].as<SeqStmtNode>();
+        output_size +=
+            source_nested == nullptr ? 1 : static_cast<int64_t>(source_nested->seq.size());
+      }
+
+      output = ffi::ArrayObj::CreateRepeated(output_size, ffi::Any());
+      int64_t write_cursor = 0;
+      for (int64_t read_cursor = 0; read_cursor < source_size; ++read_cursor) {
+        const ffi::Any& source_item = seq->begin()[read_cursor];
+        if (const auto* source_nested = source_item.as<SeqStmtNode>()) {
+          for (const Stmt& stmt : source_nested->seq) {
+            output->SetItemAfterCheck(write_cursor++, ffi::Any(stmt));
+          }
+        } else {
+          output->SetItemAfterCheck(write_cursor++, ffi::Any(source_item.cast<Stmt>()));
         }
-      } else {
-        self->seq.Set(i, std::move(mapped));
       }
-    } else if (const auto* nested = mapped.as<SeqStmtNode>()) {
-      for (const Stmt& stmt : nested->seq) {
-        output.push_back(stmt);
+      TVM_FFI_ICHECK_EQ(write_cursor, output_size);
+      break;
+    }
+
+    if (nested == nullptr) {
+      if (!item.same_as(mapped)) {
+        seq->SetItemAfterCheck(cursor, ffi::Any(std::move(mapped)));
       }
+      ++cursor;
     } else {
-      output.push_back(std::move(mapped));
+      const ffi::ArrayObj* nested_seq = nested->seq.GetArrayObj();
+      seq->erase(cursor);
+      seq->insert(cursor, nested_seq->begin(), nested_seq->end());
+      cursor += contribution;
     }
   }
-  if (growing) {
-    self->seq = std::move(output);
+  if (output != nullptr) {
+    self->seq = ffi::Array<Stmt>(std::move(output));
   }
   return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
 }
 
 // HARNESS DEVIATION 1 of 2, and the only change to a hook body.
 //
-// The defect it addresses, stated as a fact about the code and independently of whether
-// repairing it is worthwhile: 20275 dropped main's `Array<Stmt> mapped_seq = self->seq` handle
-// copy, so the sequence itself is no longer copied. But `Array::operator[]` is
-// `const T operator[](int64_t) const` -- it returns *by value* -- so `self->seq[i]` materialises
-// a second handle to the element for the duration of the call, and
-// `MaybeInplaceMutateIfUniqueExpected` therefore never finds an element unique.
-// **20275's hook cannot mutate any element in place.** Only the array-level copy was fixed.
+// **The defect this was written against is fixed upstream.** At b51da96381 the hook took
+// `self->seq[i]`, and `Array::operator[]` is `const T operator[](int64_t) const` -- it returns
+// *by value* -- so the element gained a second handle for the duration of the call and
+// `MaybeInplaceMutateIfUniqueExpected` never found one unique.  e40167046ed6 adopts the
+// pattern this deviation was prototyping: a `.unique()` precondition on the field, a borrowed
+// `const ffi::Any&` into storage, and `SetItemAfterCheck` write-back.  So the shipped hook
+// now mutates elements in place, and the gap this variant existed to close is closed.
 //
-// The repair is tvm-ffi's own pattern, `MaybeInplaceMutateSeqContainerRaw`
-// (src/ffi/extra/structural_mutate.cc:198): bind `const Any&` into the sequence object's
-// storage instead of taking `Array::operator[]`'s by-value return, so no reference is added,
-// the element's count stays at one, and the hook sees it as unique. Writing back through
-// `SetItemAfterCheck` only when the value actually changed. Nothing is moved out of a slot, so
-// there is no restore obligation on the error paths and nothing unsafe to justify.
+// It is kept, behind TVM_SEQSTMT_INPLACE_FIX, for two things it still does:
 //
-// Two additions over tvm-ffi's version, both because `SeqStmt` differs from a bare container:
+//   * It is the **differential reference for the splice matrix**.  The two implementations
+//     splice differently -- upstream now uses `erase`/`insert` with a cursor plus a one-shot
+//     overflow rebuild; this one uses a single read/write cursor pair with spill-on-overrun --
+//     and `real_tvm_bench.cc` runs both against `MutateSeqStmtRaw` across the same twelve
+//     cases.  Two independent in-place implementations agreeing with the reference is a
+//     stronger check on the reference than either alone.
+//   * It prices **spill-on-grow against shift-on-grow**, which is a real trade the upstream
+//     choice settles one way and this one the other.  Upstream reuses the array on any splice
+//     that fits its capacity, shifting the tail with `insert`, at O(n) per splice.  This
+//     variant never shifts and spills to a fresh array whenever a write would pass the read
+//     cursor -- which a growing splice does even with capacity to spare.
 //
-//   * **The precondition is checked rather than assumed.** tvm-ffi's version is dispatched by
-//     the engine only after the engine has established that the container is uniquely owned.
-//     Here the sequence is a *field* of the node, so the hook has to establish it itself. When
-//     the array is shared this falls through to `MutateSeqStmtRaw` entirely unchanged -- no
-//     copy-on-write, no allocation on the shared path. `ObjectRef::unique()` (object.h:499) is
-//     `data_ != nullptr && data_->use_count() == 1` and binds no new reference, so reading it
-//     does not perturb the count it reads.
-//   * **Splice is handled in the same pass, without direction cases.** An element that maps to
-//     a nested `SeqStmt` of n statements replaces itself with all n, so n > 1 grows, n == 1
-//     leaves the length alone and n == 0 shrinks. A read cursor and a write cursor make those
-//     the same code: the write cursor advances by however many statements the result
-//     contributes. `output` is null while writing in place and is allocated once, carrying the
-//     already-mutated prefix, at the first write that has nowhere to go -- the tvm-ffi idiom
-//     from `MutateMapValuesRaw` (structural_mutate.cc:221).
+// The mechanics of this variant, unchanged: bind `const Any&` into the sequence object's
+// storage rather than taking `Array::operator[]`'s by-value return, so no reference is added
+// and the element stays unique; write back through `SetItemAfterCheck` only when the value
+// actually changed.  Nothing is moved out of a slot, so there is no restore obligation on the
+// error paths.  The `.unique()` precondition is checked rather than assumed because the
+// sequence is a *field* of the node rather than a container the engine has already established
+// ownership of; a shared array falls through to `MutateSeqStmtRaw` unchanged.
+// `ObjectRef::unique()` binds no new reference, so reading it does not perturb what it reads.
 //
-//     One deviation from the instruction as given, because capacity alone is not a sufficient
-//     trigger: a write also has nowhere to go when it would pass the read cursor and clobber
-//     input not yet consumed, which a growing splice does even with capacity to spare. The
-//     condition is therefore `write >= capacity || write > read`. Slack opened by an earlier
-//     shrink is still reused by a later grow, so a pass that nets out even or shorter never
-//     allocates -- which was the point of judging against the running length.
-//
-//     The in-place path must produce exactly what the non-in-place path produces: it is an
-//     optimization of the same semantics, and `real_tvm_bench.cc` differential-tests the two
-//     against each other across the splice matrix.
+// Splice is handled in the same pass without direction cases: an element mapping to a nested
+// `SeqStmt` of n statements replaces itself with all n, and the write cursor advances by
+// however many statements the result contributes.  `output` is null while writing in place and
+// is allocated once, carrying the already-mutated prefix, at the first write that has nowhere
+// to go.  The spill condition is `write >= capacity || write > read`: capacity alone is not
+// sufficient, because a write also has nowhere to go when it would pass the read cursor and
+// clobber input not yet consumed.  Slack opened by an earlier shrink is reused by a later
+// grow, so a pass that nets out even or shorter never allocates.
 TVMFFIAny MaybeInplaceMutateSeqStmtRepaired(ffi::StructuralMutatorObj* mutator,
                                             ffi::AnyView value) noexcept {
   SeqStmtNode* self = const_cast<SeqStmtNode*>(
@@ -471,7 +516,7 @@ TVMFFIAny EvaluateVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) 
   const EvaluateNode* self =
       ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const EvaluateNode>(value);
   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->value));
-  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
+  TVM_FFI_S_VISIT_RETURN_NONE();
 }
 
 TVMFFIAny EvaluateMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {

@@ -315,19 +315,6 @@ ffi::Optional<Expr> SwapVarsFn(const Var& var) {
   if (mapped.same_as(var)) return std::nullopt;
   return ffi::Optional<Expr>(mapped);
 }
-/*!
- * \brief `replace` without the var remap: returns a fresh Var instead of consulting the table.
- *
- * A cost probe, not a valid substitution -- without the remap the same `Var` reached twice
- * yields two independent replacements, so the output is not what a consistent substitution
- * produces.  Run once on split/fuse, where `Outer` repeats and the remap therefore has work
- * to do, to price the remap on its own.
- */
-ffi::Any ReplaceNoRemap(const Var& var) {
-  if (var.same_as(Outer())) return ffi::Any(PrimVar("fresh"));
-  return ffi::Any(var);
-}
-
 void WalkFloor(ffi::AnyView root) {
   MinimalVisitorObj visitor;
   g_sink += visitor.VisitExpected(root).is_err();
@@ -405,22 +392,41 @@ ffi::Any MapNever(ffi::Any input, ReplaceKind, Ownership) {
       std::move(input), [](const FloatImm& v) { return ffi::Any(v); });
 }
 
-// identity and replace match the node type their fixture's replacement acts on, so the two
-// rungs of the ladder differ only in what the callback returns.
-ffi::Any MapIdentity(ffi::Any input, ReplaceKind kind, Ownership) {
-  if (kind == ReplaceKind::kSingleVar) {
-    return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(
-        std::move(input), [](const Stmt& stmt) { return ffi::Any(stmt); });
-  }
+// The ladder has two operations, and they are named rather than selected by fixture.
+//
+// `*_var` is Expr-level: match `Var`, substitute through the remap.  That is exactly what
+// `Substitute` and `FunctorSubstitute` do, so `map_functor` and `map_old` are baselines for
+// these arms and for no others.  It runs on every fixture.
+//
+// `*_stmt` is Stmt-level: match `Stmt`, swap two whole `Evaluate` nodes.  It is what exercises
+// the SeqStmt hook's element in-place and splice paths, and it has no functor baseline --
+// `StmtExprMutator` hooks `VisitExpr_(const VarNode*)` and does different work on the same
+// graph.  It runs on the seq fixtures only; split/fuse is an Expr tree with no Stmt nodes.
+//
+// The previous report printed the Stmt-level `replace` beside `functor`/`old` on the seq rows
+// with no marker, which invited reading two operations as one comparison.
+ffi::Any MapIdentityVar(ffi::Any input, ReplaceKind, Ownership) {
   return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(
       std::move(input), [](const Var& var) { return ffi::Any(var); });
 }
 
-ffi::Any MapReplace(ffi::Any input, ReplaceKind kind, Ownership) {
-  if (kind == ReplaceKind::kSingleVar) {
-    return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(std::move(input), SwapEvaluates);
-  }
+ffi::Any MapReplaceVar(ffi::Any input, ReplaceKind, Ownership) {
   return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(std::move(input), SwapAllVars);
+}
+
+ffi::Any MapIdentityStmt(ffi::Any input, ReplaceKind, Ownership) {
+  return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(
+      std::move(input), [](const Stmt& stmt) { return ffi::Any(stmt); });
+}
+
+ffi::Any MapReplaceStmt(ffi::Any input, ReplaceKind, Ownership) {
+  return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(std::move(input), SwapEvaluates);
+}
+
+/*! \brief The fixture-selected replacement, used by the checks and the density sweep. */
+ffi::Any MapReplace(ffi::Any input, ReplaceKind kind, Ownership ownership) {
+  return kind == ReplaceKind::kSingleVar ? MapReplaceStmt(std::move(input), kind, ownership)
+                                         : MapReplaceVar(std::move(input), kind, ownership);
 }
 
 /*! \brief seq only: change a leaf inside the element rather than replacing the element. */
@@ -431,11 +437,6 @@ ffi::Any MapReplaceField(ffi::Any input, ReplaceKind, Ownership) {
 /*! \brief seq only: the only arm that reaches the hook's splice path. */
 ffi::Any MapSplice(ffi::Any input, ReplaceKind, Ownership) {
   return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(std::move(input), SpliceElements);
-}
-
-/*! \brief One-off probe; see ReplaceNoRemap. split/fuse only. */
-ffi::Any MapReplaceNoRemap(ffi::Any input, ReplaceKind, Ownership) {
-  return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(std::move(input), ReplaceNoRemap);
 }
 
 ffi::Any MapFunctor(ffi::Any input, ReplaceKind, Ownership) {
@@ -468,10 +469,17 @@ struct MapArm {
   /*! rief Whether the arm changes the graph, which is what makes it consume a shared DAG. */
   bool rebuilds;
 };
+// The Expr-level ladder plus its two baselines. Every arm here performs Var substitution, so
+// every column in the table it renders is the same operation and every delta in it is real.
 constexpr MapArm kMapArms[] = {
-    {"map_floor", &MapFloor, false},       {"map_never", &MapNever, false},
-    {"map_identity", &MapIdentity, false}, {"map_replace", &MapReplace, true},
-    {"map_functor", &MapFunctor, true},    {"map_old", &MapOld, true},
+    {"map_floor", &MapFloor, false},            {"map_never", &MapNever, false},
+    {"map_identity_var", &MapIdentityVar, false}, {"map_replace_var", &MapReplaceVar, true},
+    {"map_functor", &MapFunctor, true},         {"map_old", &MapOld, true},
+};
+// Stmt-level, seq only. No functor baseline exists for it; see MapReplaceStmt.
+constexpr MapArm kStmtMapArms[] = {
+    {"map_identity_stmt", &MapIdentityStmt, false},
+    {"map_replace_stmt", &MapReplaceStmt, true},
 };
 
 
@@ -750,22 +758,22 @@ void RunFixture(const FixtureInfo& info, ffi::Any (*build)()) {
 
   for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
     for (const MapArm& arm : kMapArms) {
-      // `map_old` is Substitute, which is the same engine as map_replace differing only in
-      // API, so a full grid of it would spend columns confirming a null result.
-      if (std::string(arm.name) == "map_old" && !info.run_old) continue;
+      // `map_old` runs on every fixture. It is Substitute, which shares the engine with
+      // map_replace_var but carries a dtype ICHECK per substitution plus buffer/attr handling
+      // FunctorSubstitute omits, so the column is not a null result and belongs on every row.
       double ns = MeasureMapArm(arm.run, ownership, info.replace_kind, info.repeats, build,
                                 arm.rebuilds && info.has_sharing);
       EmitResult(kHarness, info.name, OwnershipName(ownership), arm.name, ns);
     }
     if (info.replace_kind == ReplaceKind::kSingleVar) {
+      for (const MapArm& arm : kStmtMapArms) {
+        double ns = MeasureMapArm(arm.run, ownership, info.replace_kind, info.repeats, build,
+                                  arm.rebuilds && info.has_sharing);
+        EmitResult(kHarness, info.name, OwnershipName(ownership), arm.name, ns);
+      }
       double ns = MeasureMapArm(&MapReplaceField, ownership, info.replace_kind, info.repeats,
                                 build);
       EmitResult(kHarness, info.name, OwnershipName(ownership), "map_replace_field", ns);
-    }
-    if (info.run_noremap) {
-      double ns = MeasureMapArm(&MapReplaceNoRemap, ownership, info.replace_kind, info.repeats,
-                                build);
-      EmitResult(kHarness, info.name, OwnershipName(ownership), "map_replace_noremap", ns);
     }
   }
 }
@@ -778,7 +786,7 @@ int main() {
 
   EmitStandardProvenance(kHarness);
   EmitProvenance("structural_hooks",
-                 "harness (tvm_hook_override.h), ported from apache/tvm#20275 b51da96381, "
+                 "harness (tvm_hook_override.h), ported from apache/tvm#20275 e40167046ed6, "
                  "installed over TVM's");
   EmitProvenance("seqstmt_inplace_hook", TVM_SEQSTMT_INPLACE_FIX ? "repaired" : "20275 as shipped");
 
@@ -790,8 +798,6 @@ int main() {
   auto build_distinct = [] { return ffi::Any(SplitFuse(false)); };
   FixtureInfo shared{"split-fuse-shared", 12, 17, kSplitFuseSharedBytes, 9, 3, kSplitFuseRepeats,
                      true, ReplaceKind::kAllVars};
-  shared.run_old = true;       // the one fixture map_old runs on
-  shared.run_noremap = true;   // Outer repeats here, so the remap has work to do
   FixtureInfo distinct{"split-fuse-distinct", 15, 17, kSplitFuseDistinctBytes, 9, 1,
                        kSplitFuseRepeats, false, ReplaceKind::kAllVars};
 
@@ -901,7 +907,7 @@ int main() {
       for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
         double ns = MeasureMapArm(&MapReplace, ownership, ReplaceKind::kSingleVar,
                                   SeqRepeats(sweep_length), build);
-        EmitResult(kHarness, name, OwnershipName(ownership), "map_replace", ns);
+        EmitResult(kHarness, name, OwnershipName(ownership), "map_replace_stmt", ns);
       }
     }
   }

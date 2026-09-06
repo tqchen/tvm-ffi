@@ -92,10 +92,6 @@ struct FixtureInfo {
   /*! \brief True when an in-place rebuild un-shares the graph, so the arm consumes it. */
   bool has_sharing;
   ReplaceKind replace_kind;
-  /*! \brief `map_old` runs on one fixture only: it is the same engine as `map_replace`. */
-  bool run_old = false;
-  /*! \brief The one-off remap probe, on the fixture where the remap has work to do. */
-  bool run_noremap = false;
 };
 
 // ---------------------------------------------------------------------------

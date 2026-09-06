@@ -31,7 +31,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HEADER="${HERE}/tvm_hook_override.h"
 TVM="${1:?usage: port_check.sh /path/to/tvm [sha]}"
-SHA="${2:-$(grep -o 'head [0-9a-f]\{10\}' "${HEADER}" | head -1 | cut -d' ' -f2)}"
+SHA="${2:-$(grep -o 'head [0-9a-f]\{7,40\}' "${HEADER}" | head -1 | cut -d' ' -f2)}"
 
 # function name -> source file, in the order the header groups them.
 FUNCS=(
