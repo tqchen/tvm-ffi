@@ -22,44 +22,57 @@
 // Every structural hook the benchmark dispatches into on real TVM node types, plus the
 // installation that puts them over the ones TVM registered from its own static-init blocks.
 //
-// This is the point of the real-TVM harness rather than a refinement of it.  With the hooks
-// here, a hook experiment is an edit to this file and a rebuild of one translation unit;
-// without them it is a TVM branch and a full TVM build.
+// ===========================================================================================
+// PORTED FROM apache/tvm#20275, head b51da96381 ("[REFACTOR][IR] Normalize structural hook
+// source shape"), branch redo-expr-stmt-structural-hooks-current.
 //
-// They are always installed -- there is no dual mode.  `walk_old` and `map_old` run on them
-// too, because `PostOrderVisit` and `Substitute` are built on the structural engine, so the
-// old-versus-new comparison then differs only in the traversal API and not in the hooks
-// underneath it.  The consequence, which the report states plainly: no number here describes
-// TVM's own registered hook implementations.
+//   hook group   source file             functions
+//   ----------   ---------------------   ----------------------------------------------------
+//   IntImm       src/ir/expr.cc:206-224  IntImmVisit / IntImmMutate / IntImmMaybeInplaceMutate
+//   Var          src/ir/expr.cc:281-374  VarVisit / VarMutate / VarMaybeInplaceMutate
+//   binary ops   src/ir/prim/expr.cc:51-93   BinaryVisit / BinaryMutate /
+//                                            BinaryMaybeInplaceMutate
+//   SeqStmt      src/tirx/ir/stmt.cc:504-590  SeqStmtVisit / MutateSeqStmtRaw /
+//                                            MaybeInplaceMutateSeqStmtRaw
+//   Evaluate     src/tirx/ir/stmt.cc:641-672  EvaluateVisit / EvaluateMutate /
+//                                            EvaluateMaybeInplaceMutate
 //
-// Fidelity.  The bodies are a port of what apache/tvm registers today, grouped in the same
-// order as TVM's own registration blocks so they are easy to diff:
+// 20275 is under review and moving -- it has a tvm-ffi bump, a visit-macro adoption, a squash
+// and two missed hook files pending -- so this port follows it rather than apache/tvm main.
+// `./port_check.sh` re-extracts these ranges from the recorded sha and diffs them against the
+// bodies below; run it before trusting a measurement, and after any rebase of the PR.
 //
-//   src/ir/prim/expr.cc     Var, IntImm, FloatImm, the binary operators
-//   src/tirx/ir/stmt.cc     Evaluate, SeqStmt
+// The bodies are copied verbatim: same names, same signatures, same order, same internal
+// structure, grouped by the TVM file each came from. Nothing is reordered, renamed or tidied,
+// because a change prototyped here has to lift back into apache/tvm as a patch. The only
+// intended differences are marked `HARNESS DEVIATION` and there are two, both on SeqStmt.
 //
-// Deliberate divergences, both named in the report:
+// Note what 20275 changed relative to apache/tvm main, since it invalidates measurements taken
+// against main:
+//   * BinaryMutate no longer re-infers the result type at all -- the `BinaryResultType` guard
+//     is gone, on the ground that StructuralMap preserves node types.
+//   * BinaryMaybeInplaceMutate lost its `same_as` early return.
+//   * SeqStmt's hooks were replaced outright by the splice-capable MutateSeqStmtRaw /
+//     MaybeInplaceMutateSeqStmtRaw, with lazy `output` allocation, a `growing` flag, prefix
+//     back-fill, and `self->seq.Set(i, ...)` in place of main's `Array<Stmt> mapped_seq` copy.
+//   * SeqStmtVisit visits `self->seq` as a value rather than iterating its elements, so the
+//     Array itself is now a visited node and the fixtures' node and occurrence counts include
+//     it.
+//   * Hooks return `ffi::Any(self)` from the raw pointer rather than `ffi::Any(value)`.
+// ===========================================================================================
 //
-//   * result-type re-inference copies the left operand's type instead of running TVM's
-//     `BinaryResultType`, which is internal to TVM.  Equivalent for equal-typed scalar
-//     operands, which is every case these fixtures build.
-//   * `MaybeInplaceMutateSeqStmt` has two shapes, selected by TVM_SEQSTMT_INPLACE_FIX.  TVM's
-//     current body takes a handle copy of the sequence, so no element is ever uniquely owned
-//     and every one takes the copy-on-write path; the repaired body moves each element out of
-//     a uniquely owned array instead.  Both are compiled so before and after are measured on
-//     the same footing.
-//
-// Which types appear here was derived empirically, from a dispatch-count pass over the
-// fixtures rather than from reading TVM's registry: `Var`, `IntImm`, `prim::Add`, `prim::Mul`,
-// `prim::FloorDiv`, `prim::FloorMod`, `Evaluate`, `SeqStmt`.  `real_tvm_bench.cc` asserts
-// coverage -- every type a fixture dispatches on must be one of these -- so a new fixture that
-// reaches a new type names it instead of silently falling through to TVM's hook.
+// These hooks are always installed; there is no dual mode. `walk_old` and `map_old` run on
+// them too, because `PostOrderVisit` and `Substitute` are built on the structural engine, so
+// the old-versus-new comparison differs only in the traversal API and not in the hooks
+// underneath it. The consequence, which the report states: no number here describes TVM's own
+// registered hook implementations.
 
 #include <tvm/ffi/any.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/extra/structural_mutate.h>
 #include <tvm/ffi/extra/structural_visit.h>
 #include <tvm/ffi/reflection/registry.h>
+#include <tvm/ir/expr.h>
 #include <tvm/ir/prim/expr.h>
 #include <tvm/ir/type.h>
 #include <tvm/tirx/stmt.h>
@@ -70,8 +83,7 @@
 
 #include "bench_common.h"
 
-// Whether SeqStmt's in-place hook is the repaired shape.  The same switch exists in
-// `mini_tir.h`, so the before/after is measured identically on both node sets.
+// Selects between 20275's SeqStmt in-place hook and the repaired variant built on top of it.
 #ifndef TVM_SEQSTMT_INPLACE_FIX
 #define TVM_SEQSTMT_INPLACE_FIX 1
 #endif
@@ -83,223 +95,359 @@ using namespace tvm::tirx;        // NOLINT(build/namespaces)
 namespace ffi = tvm::ffi;
 
 // ---------------------------------------------------------------------------
-// Result carriers.
+// src/ir/expr.cc -- IntImm
 // ---------------------------------------------------------------------------
 
-TVM_FFI_INLINE TVMFFIAny VisitDone() {
-  return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(
-      ffi::Expected<ffi::Optional<ffi::VisitInterrupt>>(std::nullopt));
+TVMFFIAny IntImmVisit(ffi::StructuralVisitorObj*, ffi::AnyView) noexcept {
+  // skips: value
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
 }
-TVM_FFI_INLINE TVMFFIAny KeepValue(ffi::AnyView value) {
-  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(value));
+
+TVMFFIAny IntImmMutate(ffi::StructuralMutatorObj*, ffi::AnyView value) noexcept {
+  // skips: value
+  const IntImmNode* self =
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const IntImmNode>(value);
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
+}
+
+TVMFFIAny IntImmMaybeInplaceMutate(ffi::StructuralMutatorObj*, ffi::AnyView value) noexcept {
+  // skips: value
+  const IntImmNode* self =
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const IntImmNode>(value);
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
 }
 
 // ---------------------------------------------------------------------------
-// src/ir/prim/expr.cc -- Var
+// src/ir/expr.cc -- Var
 // ---------------------------------------------------------------------------
 
-TVMFFIAny VisitVar(ffi::StructuralVisitorObj*, ffi::AnyView) noexcept {
-  return VisitDone();
-}
-
-/*!
- * \brief Port of tvm::MutateVar: consult the remap first, record the answer on the way out.
- *
- * This is what makes a substitution consistent across occurrences.  The first occurrence of
- * an identity runs the callback and records the result; every later occurrence is served from
- * the remap without re-entering a hook, which is why a matching map arm's dispatch count is
- * `occurrences - remap hits` rather than `occurrences`.
- */
-TVMFFIAny MutateVar(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
-  ffi::Expected<ffi::Any> cached = mutator->VarRemapGetExpected(value);
-  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(cached);
-  if (ffi::details::ExpectedUnsafe::GetData(cached).type_index() != ffi::TypeIndex::kTVMFFINone) {
-    return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(cached));
+TVMFFIAny VarVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) noexcept {
+  // skips: name
+  const VarNode* self =
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const VarNode>(value);
+  // A PrimType carries only a dtype, so it has nothing to visit.  Broad callbacks do not see this
+  // skipped field; dynamically typed Vars still descend through the Type value.
+  if (!self->ty.as<PrimTypeNode>()) {
+    // Only NonRecursive is clamped: Recursive co-introduces type fields such as BufferType shape
+    // variables, so that ambient region must continue through the dynamic type.
+    if (visitor->def_region_kind() == kTVMFFIDefRegionKindNonRecursive) {
+      TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->WithDefRegionKind(
+          kTVMFFIDefRegionKindNone, [&]() { return visitor->VisitExpected(self->ty); }));
+    } else {
+      TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->ty));
+    }
   }
-  ffi::Expected<void> set_result = mutator->VarRemapSetExpected(value, ffi::AnyView(value));
-  if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
-    return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(std::move(set_result).error()));
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
+}
+
+TVMFFIAny VarMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
+  // skips: name
+  const VarNode* self =
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const VarNode>(value);
+  ffi::Expected<ffi::Any> remap_result = mutator->VarRemapGetExpected(value);
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(remap_result);
+  if (ffi::details::ExpectedUnsafe::GetData(remap_result).type_index() !=
+      ffi::TypeIndex::kTVMFFINone) {
+    return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(remap_result));
   }
-  return KeepValue(value);
+  auto return_mapped_var = [&](ffi::Any mapped_var) -> TVMFFIAny {
+    auto set_result = mutator->VarRemapSetExpected(value, mapped_var);
+    if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
+      // Hooks propagate errors untouched; the engine names this node.
+      return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(std::move(set_result).error()));
+    }
+    return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(mapped_var));
+  };
+  // A PrimType carries only a dtype, so it has nothing to substitute.  Broad callbacks do not see
+  // this skipped field; dynamically typed Vars still descend through the Type value.
+  if (self->ty.as<PrimTypeNode>()) {
+    return return_mapped_var(ffi::Any(value));
+  }
+  // Only NonRecursive is clamped: Recursive co-introduces type fields such as BufferType shape
+  // variables, so that ambient region must continue through the dynamic type.
+  auto mutate_ty = [&]() { return mutator->MutateExpected(self->ty); };
+  ffi::Expected<ffi::Any> mapped_ty_result =
+      mutator->def_region_kind() == kTVMFFIDefRegionKindNonRecursive
+          ? mutator->WithDefRegionKind(kTVMFFIDefRegionKindNone, mutate_ty)
+          : mutate_ty();
+  TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Type, mapped_ty, std::move(mapped_ty_result));
+  ffi::Any mapped_var = ffi::Any(value);
+  if (!mapped_ty.same_as(self->ty)) {
+    ffi::ObjectPtr<VarNode> copy = ffi::make_object<VarNode>(*self);
+    copy->ty = std::move(mapped_ty);
+    mapped_var = ffi::Any(std::move(copy));
+  }
+  return return_mapped_var(std::move(mapped_var));
 }
 
-// ---------------------------------------------------------------------------
-// src/ir/prim/expr.cc -- IntImm
-// ---------------------------------------------------------------------------
-
-TVMFFIAny VisitIntImm(ffi::StructuralVisitorObj*, ffi::AnyView) noexcept {
-  return VisitDone();
-}
-
-TVMFFIAny MutateIntImm(ffi::StructuralMutatorObj*, ffi::AnyView value) noexcept {
-  return KeepValue(value);
+TVMFFIAny VarMaybeInplaceMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
+  // skips: name
+  VarNode* self = const_cast<VarNode*>(
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const VarNode>(value));
+  ffi::Expected<ffi::Any> remap_result = mutator->VarRemapGetExpected(value);
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(remap_result);
+  if (ffi::details::ExpectedUnsafe::GetData(remap_result).type_index() !=
+      ffi::TypeIndex::kTVMFFINone) {
+    return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(remap_result));
+  }
+  auto return_mapped_var = [&](ffi::Any mapped_var) -> TVMFFIAny {
+    auto set_result = mutator->VarRemapSetExpected(value, mapped_var);
+    if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
+      // Hooks propagate errors untouched; the engine names this node.
+      return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(std::move(set_result).error()));
+    }
+    return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(mapped_var));
+  };
+  // A PrimType carries only a dtype, so it has nothing to substitute.  Broad callbacks do not see
+  // this skipped field; dynamically typed Vars still descend through the Type value.
+  if (self->ty.as<PrimTypeNode>()) {
+    return return_mapped_var(ffi::Any(value));
+  }
+  // Only NonRecursive is clamped: Recursive co-introduces type fields such as BufferType shape
+  // variables, so that ambient region must continue through the dynamic type.
+  auto mutate_ty = [&]() { return mutator->MaybeInplaceMutateIfUniqueExpected(self->ty); };
+  ffi::Expected<ffi::Any> mapped_ty_result =
+      mutator->def_region_kind() == kTVMFFIDefRegionKindNonRecursive
+          ? mutator->WithDefRegionKind(kTVMFFIDefRegionKindNone, mutate_ty)
+          : mutate_ty();
+  TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Type, mapped_ty, std::move(mapped_ty_result));
+  if (!mapped_ty.same_as(self->ty)) self->ty = std::move(mapped_ty);
+  return return_mapped_var(ffi::Any(value));
 }
 
 // ---------------------------------------------------------------------------
 // src/ir/prim/expr.cc -- the binary operators
-//
-// Written once per operator would be eight near-identical function pairs, so the operator
-// type is the one thing parameterized here; the bodies are otherwise literal.
 // ---------------------------------------------------------------------------
 
 template <typename TNode>
-TVMFFIAny VisitBinary(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) noexcept {
-  const TNode* self = value.cast<const TNode*>();
-  auto a_result = visitor->VisitExpected(self->a);
-  TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(a_result);
-  auto b_result = visitor->VisitExpected(self->b);
-  TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(b_result);
-  return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(b_result));
+TVMFFIAny BinaryVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) noexcept {
+  // skips: PrimExpr types are always PrimType and remain unchanged in normal mutation.
+  const TNode* self =
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const TNode>(value);
+  TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->a));
+  TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->b));
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
 }
 
 template <typename TNode>
-TVMFFIAny MutateBinary(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
-  const TNode* self = value.cast<const TNode*>();
+TVMFFIAny BinaryMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
+  // skips: PrimExpr types are always PrimType and remain unchanged in normal mutation.
+  const TNode* self =
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const TNode>(value);
   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(PrimExpr, a, mutator->MutateExpected(self->a));
   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(PrimExpr, b, mutator->MutateExpected(self->b));
-  if (a.same_as(self->a) && b.same_as(self->b)) return KeepValue(value);
-  ffi::ObjectPtr<TNode> copy = ffi::make_object<TNode>(*self);
-  // The result type is a function of the operand types alone, so when neither operand's type
-  // moved the copy already carries the right one, and substituting a variable of the same
-  // type is the common case. This is TVM's own guard.
-  if (!a->ty.same_as(self->a->ty) || !b->ty.same_as(self->b->ty)) {
-    copy->ExprNode::ty = a->ty;
+  if (a.same_as(self->a) && b.same_as(self->b)) {
+    return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
   }
+  ffi::ObjectPtr<TNode> copy = ffi::make_object<TNode>(*self);
+  // StructuralMap preserves node types. A rewrite that changes operand dtypes must keep the
+  // operands compatible and set the result type itself; a generic traversal cannot infer the
+  // casts that would require.
   copy->a = std::move(a);
   copy->b = std::move(b);
-  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(PrimExpr(std::move(copy))));
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(std::move(copy)));
 }
 
 template <typename TNode>
-TVMFFIAny MaybeInplaceMutateBinary(ffi::StructuralMutatorObj* mutator,
+TVMFFIAny BinaryMaybeInplaceMutate(ffi::StructuralMutatorObj* mutator,
                                    ffi::AnyView value) noexcept {
-  TNode* self = const_cast<TNode*>(value.cast<const TNode*>());
+  // skips: PrimExpr types are always PrimType and remain unchanged in normal mutation.
+  TNode* self = const_cast<TNode*>(
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const TNode>(value));
   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(PrimExpr, a,
                                     mutator->MaybeInplaceMutateIfUniqueExpected(self->a));
   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(PrimExpr, b,
                                     mutator->MaybeInplaceMutateIfUniqueExpected(self->b));
-  if (a.same_as(self->a) && b.same_as(self->b)) return KeepValue(value);
-  if (!a->ty.same_as(self->a->ty) || !b->ty.same_as(self->b->ty)) {
-    self->ExprNode::ty = a->ty;
-  }
-  self->a = std::move(a);
-  self->b = std::move(b);
-  return KeepValue(value);
-}
-
-// ---------------------------------------------------------------------------
-// src/tirx/ir/stmt.cc -- Evaluate
-// ---------------------------------------------------------------------------
-
-TVMFFIAny VisitEvaluate(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) noexcept {
-  const EvaluateNode* self = value.cast<const EvaluateNode*>();
-  auto result = visitor->VisitExpected(self->value);
-  TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(result);
-  return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
-}
-
-TVMFFIAny MutateEvaluate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
-  const EvaluateNode* self = value.cast<const EvaluateNode*>();
-  TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Expr, mapped, mutator->MutateExpected(self->value));
-  if (mapped.same_as(self->value)) return KeepValue(value);
-  ffi::ObjectPtr<EvaluateNode> copy = ffi::make_object<EvaluateNode>(*self);
-  copy->value = std::move(mapped);
-  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(Stmt(std::move(copy))));
-}
-
-TVMFFIAny MaybeInplaceMutateEvaluate(ffi::StructuralMutatorObj* mutator,
-                                     ffi::AnyView value) noexcept {
-  EvaluateNode* self = const_cast<EvaluateNode*>(value.cast<const EvaluateNode*>());
-  TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Expr, mapped,
-                                    mutator->MaybeInplaceMutateIfUniqueExpected(self->value));
-  if (mapped.same_as(self->value)) return KeepValue(value);
-  self->value = std::move(mapped);
-  return KeepValue(value);
+  if (!a.same_as(self->a)) self->a = std::move(a);
+  if (!b.same_as(self->b)) self->b = std::move(b);
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
 }
 
 // ---------------------------------------------------------------------------
 // src/tirx/ir/stmt.cc -- SeqStmt
 // ---------------------------------------------------------------------------
 
-TVMFFIAny VisitSeqStmt(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) noexcept {
-  const SeqStmtNode* self = value.cast<const SeqStmtNode*>();
-  ffi::Expected<ffi::Optional<ffi::VisitInterrupt>> result = std::nullopt;
-  for (const Stmt& statement : self->seq) {
-    result = visitor->VisitExpected(statement);
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(result);
-  }
-  TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(result);
-  return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+TVMFFIAny SeqStmtVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) noexcept {
+  const SeqStmtNode* self =
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const SeqStmtNode>(value);
+  TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->seq));
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
 }
 
-TVMFFIAny MutateSeqStmt(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
-  const SeqStmtNode* self = value.cast<const SeqStmtNode*>();
-  ffi::Array<Stmt> mapped = self->seq;
-  for (size_t i = 0; i < mapped.size(); ++i) {
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Stmt, statement, mutator->MutateExpected(mapped[i]));
-    if (!statement.same_as(mapped[i])) mapped.Set(i, std::move(statement));
-  }
-  if (mapped.same_as(self->seq)) return KeepValue(value);
-  ffi::ObjectPtr<SeqStmtNode> copy = ffi::make_object<SeqStmtNode>(*self);
-  copy->seq = std::move(mapped);
-  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(Stmt(std::move(copy))));
-}
-
-/*!
- * \brief SeqStmt's in-place hook, in both shapes.
- *
- * TVM's current body is the `#else` branch.  Binding `Array<Stmt> mapped = self->seq` gives
- * the sequence -- and through `mapped[i]` every element -- a second reference, so no element
- * is ever uniquely owned and all of them take the copy-on-write path.  Only the SeqStmt node
- * itself is mutated in place; nothing below it is.
- *
- * The repaired body extends the path invariant rather than breaking it.  In-place mutation is
- * sound only while every node from the root down to the value is uniquely owned, and this
- * hook is dispatched under exactly that condition; `MutateByApply` on a uniquely owned array
- * moves each element out and clears its slot before calling back, so the handle handed down
- * is the sole reference.  A shared array still takes the copy-on-write path, which is what
- * correctness requires.
- */
-TVMFFIAny MaybeInplaceMutateSeqStmt(ffi::StructuralMutatorObj* mutator,
-                                    ffi::AnyView value) noexcept {
-  SeqStmtNode* self = const_cast<SeqStmtNode*>(value.cast<const SeqStmtNode*>());
-#if TVM_SEQSTMT_INPLACE_FIX
-  if (self->seq.unique()) {
-    ffi::Any failure;
-    bool failed = false;
-    self->seq.MutateByApply([&](Stmt statement) -> Stmt {
-      if (TVM_FFI_PREDICT_FALSE(failed)) return statement;
-      ffi::Expected<ffi::Any> mapped = mutator->MaybeInplaceMutateIfUniqueExpected(statement);
-      if (TVM_FFI_PREDICT_FALSE(mapped.is_err())) {
-        failed = true;
-        failure = ffi::Any(std::move(mapped).error());
-        return statement;
-      }
-      return ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Stmt>(std::move(mapped).value());
-    });
-    if (TVM_FFI_PREDICT_FALSE(failed)) {
-      return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(failure));
+TVMFFIAny MutateSeqStmtRaw(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
+  const SeqStmtNode* self =
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const SeqStmtNode>(value);
+  ffi::Array<Stmt> output;
+  bool changed = false;
+  for (size_t i = 0; i < self->seq.size(); ++i) {
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Stmt, mapped, mutator->MutateExpected(self->seq[i]));
+    if (!changed && mapped.same_as(self->seq[i])) {
+      continue;
     }
-    return KeepValue(value);
+    if (!changed) {
+      changed = true;
+      output.reserve(self->seq.size());
+      for (size_t j = 0; j < i; ++j) {
+        output.push_back(self->seq[j]);
+      }
+    }
+    if (const auto* nested = mapped.as<SeqStmtNode>()) {
+      for (const Stmt& stmt : nested->seq) {
+        output.push_back(stmt);
+      }
+    } else {
+      output.push_back(std::move(mapped));
+    }
   }
+  if (!changed) {
+    return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
+  }
+  ffi::ObjectPtr<SeqStmtNode> copy = ffi::make_object<SeqStmtNode>(*self);
+  copy->seq = std::move(output);
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(std::move(copy)));
+}
+
+TVMFFIAny MaybeInplaceMutateSeqStmtRaw(ffi::StructuralMutatorObj* mutator,
+                                       ffi::AnyView value) noexcept {
+  SeqStmtNode* self = const_cast<SeqStmtNode*>(
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const SeqStmtNode>(value));
+  ffi::Array<Stmt> output;
+  bool growing = false;
+  for (size_t i = 0; i < self->seq.size(); ++i) {
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Stmt, mapped,
+                                      mutator->MaybeInplaceMutateIfUniqueExpected(self->seq[i]));
+    if (!growing) {
+      if (mapped.same_as(self->seq[i])) {
+        continue;
+      }
+      if (const auto* nested = mapped.as<SeqStmtNode>()) {
+        growing = true;
+        output.reserve(self->seq.size());
+        for (size_t j = 0; j < i; ++j) {
+          output.push_back(self->seq[j]);
+        }
+        for (const Stmt& stmt : nested->seq) {
+          output.push_back(stmt);
+        }
+      } else {
+        self->seq.Set(i, std::move(mapped));
+      }
+    } else if (const auto* nested = mapped.as<SeqStmtNode>()) {
+      for (const Stmt& stmt : nested->seq) {
+        output.push_back(stmt);
+      }
+    } else {
+      output.push_back(std::move(mapped));
+    }
+  }
+  if (growing) {
+    self->seq = std::move(output);
+  }
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
+}
+
+// HARNESS DEVIATION 1 of 2, and the only change to a hook body.
+//
+// 20275 dropped main's `Array<Stmt> mapped_seq = self->seq` handle copy, so the sequence
+// itself is no longer copied.  But `self->seq[i]` returns `Stmt` *by value*
+// (`Array::operator[]` is `const T operator[](int64_t) const`), so the element still gains a
+// second reference for the duration of the call and `MaybeInplaceMutateIfUniqueExpected`
+// still finds it non-unique.  Every element therefore still takes the copy-on-write path;
+// only the array-level copy was fixed.
+//
+// This variant extends the path invariant instead.  In-place mutation is sound only while
+// every node from the root down is uniquely owned, and this hook is dispatched under exactly
+// that condition; `MutateByApply` on a uniquely owned array moves each element out and clears
+// its slot before calling back, so the handle handed down is the sole reference.  A shared
+// array still takes 20275's path above, which is what correctness requires.
+//
+// It cannot splice, so it defers to the ported body whenever an element maps to a nested
+// SeqStmt.  These fixtures never produce one.
+TVMFFIAny MaybeInplaceMutateSeqStmtRepaired(ffi::StructuralMutatorObj* mutator,
+                                            ffi::AnyView value) noexcept {
+  SeqStmtNode* self = const_cast<SeqStmtNode*>(
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const SeqStmtNode>(value));
+  if (!self->seq.unique()) {
+    return MaybeInplaceMutateSeqStmtRaw(mutator, value);
+  }
+  ffi::Any failure;
+  bool failed = false;
+  bool nested_seen = false;
+  self->seq.MutateByApply([&](Stmt statement) -> Stmt {
+    if (TVM_FFI_PREDICT_FALSE(failed || nested_seen)) return statement;
+    ffi::Expected<ffi::Any> mapped = mutator->MaybeInplaceMutateIfUniqueExpected(statement);
+    if (TVM_FFI_PREDICT_FALSE(mapped.is_err())) {
+      failed = true;
+      failure = ffi::Any(std::move(mapped).error());
+      return statement;
+    }
+    Stmt out = ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Stmt>(std::move(mapped).value());
+    if (TVM_FFI_PREDICT_FALSE(out.as<SeqStmtNode>() != nullptr)) nested_seen = true;
+    return out;
+  });
+  if (TVM_FFI_PREDICT_FALSE(failed)) {
+    return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(failure));
+  }
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
+}
+
+TVMFFIAny SeqStmtMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
+  return MutateSeqStmtRaw(mutator, value);
+}
+
+TVMFFIAny SeqStmtMaybeInplaceMutate(ffi::StructuralMutatorObj* mutator,
+                                    ffi::AnyView value) noexcept {
+#if TVM_SEQSTMT_INPLACE_FIX
+  return MaybeInplaceMutateSeqStmtRepaired(mutator, value);
+#else
+  return MaybeInplaceMutateSeqStmtRaw(mutator, value);
 #endif
-  ffi::Array<Stmt> mapped = self->seq;
-  for (size_t i = 0; i < mapped.size(); ++i) {
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Stmt, statement,
-                                      mutator->MaybeInplaceMutateIfUniqueExpected(mapped[i]));
-    if (!statement.same_as(mapped[i])) mapped.Set(i, std::move(statement));
+}
+
+// ---------------------------------------------------------------------------
+// src/tirx/ir/stmt.cc -- Evaluate
+// ---------------------------------------------------------------------------
+
+TVMFFIAny EvaluateVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) noexcept {
+  const EvaluateNode* self =
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const EvaluateNode>(value);
+  TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->value));
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
+}
+
+TVMFFIAny EvaluateMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
+  const EvaluateNode* self =
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const EvaluateNode>(value);
+  TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Expr, mapped_value, mutator->MutateExpected(self->value));
+  if (mapped_value.same_as(self->value)) {
+    return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
   }
-  if (mapped.same_as(self->seq)) return KeepValue(value);
-  self->seq = std::move(mapped);
-  return KeepValue(value);
+  ffi::ObjectPtr<EvaluateNode> copy = ffi::make_object<EvaluateNode>(*self);
+  copy->value = std::move(mapped_value);
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(std::move(copy)));
+}
+
+TVMFFIAny EvaluateMaybeInplaceMutate(ffi::StructuralMutatorObj* mutator,
+                                     ffi::AnyView value) noexcept {
+  EvaluateNode* self = const_cast<EvaluateNode*>(
+      ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const EvaluateNode>(value));
+  TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Expr, mapped_value,
+                                    mutator->MaybeInplaceMutateIfUniqueExpected(self->value));
+  if (mapped_value.same_as(self->value)) {
+    return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
+  }
+  self->value = std::move(mapped_value);
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
 }
 
 // ---------------------------------------------------------------------------
 // Installation, over whatever TVM registered.
 //
-// Re-registering a type attribute is what the branch-local
-// TVM_FFI_BENCH_ALLOW_TYPE_ATTR_OVERRIDE build of tvm-ffi exists for: TVM installs its hooks
-// from static-init blocks, which run before main(), so the harness has to overwrite them.
+// HARNESS DEVIATION 2 of 2: TVM registers these through `refl::TypeAttrDef<T>()` in
+// static-init blocks. The harness cannot use that path -- it has to overwrite an already
+// registered attribute from main(), which is what the branch-local
+// TVM_FFI_BENCH_ALLOW_TYPE_ATTR_OVERRIDE build of tvm-ffi permits -- so registration goes
+// through TVMFFITypeRegisterAttr directly. The hook bodies above are unaffected.
 // ---------------------------------------------------------------------------
 
 inline void SetAttr(int32_t type_index, const char* name, void* fn) {
@@ -317,40 +465,39 @@ inline void Install(int32_t type_index, ffi::FStructuralVisit visit, ffi::FStruc
           reinterpret_cast<void*>(inplace));
 }
 
-/*! \brief Type indices the harness registered a hook for; the coverage assertion reads this. */
-inline std::vector<int32_t>* CoveredTypes() {
-  static std::vector<int32_t> covered;
-  return &covered;
-}
-
 template <typename TNode>
 void InstallBinary() {
-  Install(TNode::RuntimeTypeIndex(), &VisitBinary<TNode>, &MutateBinary<TNode>,
-          &MaybeInplaceMutateBinary<TNode>);
-  CoveredTypes()->push_back(TNode::RuntimeTypeIndex());
+  Install(TNode::RuntimeTypeIndex(), &BinaryVisit<TNode>, &BinaryMutate<TNode>,
+          &BinaryMaybeInplaceMutate<TNode>);
 }
 
 /*!
  * \brief Install every hook the benchmark dispatches into. Call once from main().
  *
- * The set was derived from a dispatch-count pass over the fixtures, not from TVM's registry,
- * and `real_tvm_bench.cc` fails the run if a fixture reaches a type that is not here.
+ * The set was derived empirically, from a dispatch pass over the fixtures rather than from
+ * TVM's registry. `real_tvm_bench.cc` asserts coverage: every type a fixture reaches must be
+ * one of these, so a new fixture that reaches a new type names it instead of silently falling
+ * through to TVM's own hook.
  */
 inline void InstallAll() {
-  Install(VarNode::RuntimeTypeIndex(), &VisitVar, &MutateVar, &MutateVar);
-  CoveredTypes()->push_back(VarNode::RuntimeTypeIndex());
-  Install(IntImmNode::RuntimeTypeIndex(), &VisitIntImm, &MutateIntImm, &MutateIntImm);
-  CoveredTypes()->push_back(IntImmNode::RuntimeTypeIndex());
+  Install(VarNode::RuntimeTypeIndex(), &VarVisit, &VarMutate, &VarMaybeInplaceMutate);
+  Install(IntImmNode::RuntimeTypeIndex(), &IntImmVisit, &IntImmMutate, &IntImmMaybeInplaceMutate);
   InstallBinary<prim::AddNode>();
   InstallBinary<prim::MulNode>();
   InstallBinary<prim::FloorDivNode>();
   InstallBinary<prim::FloorModNode>();
-  Install(EvaluateNode::RuntimeTypeIndex(), &VisitEvaluate, &MutateEvaluate,
-          &MaybeInplaceMutateEvaluate);
-  CoveredTypes()->push_back(EvaluateNode::RuntimeTypeIndex());
-  Install(SeqStmtNode::RuntimeTypeIndex(), &VisitSeqStmt, &MutateSeqStmt,
-          &MaybeInplaceMutateSeqStmt);
-  CoveredTypes()->push_back(SeqStmtNode::RuntimeTypeIndex());
+  Install(SeqStmtNode::RuntimeTypeIndex(), &SeqStmtVisit, &SeqStmtMutate,
+          &SeqStmtMaybeInplaceMutate);
+  Install(EvaluateNode::RuntimeTypeIndex(), &EvaluateVisit, &EvaluateMutate,
+          &EvaluateMaybeInplaceMutate);
+}
+
+/*! \brief The type indices InstallAll covers, for the coverage assertion. */
+inline std::vector<int32_t> CoveredTypes() {
+  return {VarNode::RuntimeTypeIndex(),           IntImmNode::RuntimeTypeIndex(),
+          prim::AddNode::RuntimeTypeIndex(),     prim::MulNode::RuntimeTypeIndex(),
+          prim::FloorDivNode::RuntimeTypeIndex(), prim::FloorModNode::RuntimeTypeIndex(),
+          SeqStmtNode::RuntimeTypeIndex(),       EvaluateNode::RuntimeTypeIndex()};
 }
 
 }  // namespace tvm_hooks

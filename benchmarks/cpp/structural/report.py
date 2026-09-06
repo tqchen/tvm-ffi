@@ -31,7 +31,7 @@ import statistics
 import subprocess
 import sys
 
-WALK_ARMS = ["walk_floor", "walk", "walk_never", "walk_functor", "walk_old"]
+WALK_ARMS = ["walk_floor", "walk_var", "walk_never", "walk_functor", "walk_old"]
 MAP_ARMS = ["map_floor", "map_never", "map_identity", "map_replace", "map_functor", "map_old"]
 
 # The benchmark machine's data-cache geometry, stated rather than probed.
@@ -89,6 +89,12 @@ def human(n):
         n /= 1024.0
 
 
+def header(arm):
+    """`map_floor` renders as `map<br>floor`: full arm name, no column width."""
+    quantity, _, rest = arm.partition("_")
+    return "%s<br>%s" % (quantity, rest)
+
+
 def pct(new, base):
     return "**%+.1f%%**" % (100.0 * (new - base) / base)
 
@@ -96,7 +102,8 @@ def pct(new, base):
 def render(merged, runs, out):
     prov = merged["provenance"]
     harness = prov["harness"]
-    fixtures, results = merged["fixtures"], merged["order"]
+    fixtures = merged["fixtures"]
+    results = [n for n in merged["order"] if not n.startswith("density-")]
     w = out.write
 
     w("### Provenance -- %s\n\n| | |\n| --- | --- |\n" % harness)
@@ -127,8 +134,8 @@ def render(merged, runs, out):
         return None if ns is None else ns / fixtures[fixture]["unique"]
 
     w("#### %s -- walk -- ns/node\n\n" % harness)
-    w("| Case | N | " + " | ".join("`%s`" % a for a in WALK_ARMS) +
-      " | `walk` vs `walk_old` | `walk` vs `walk_functor` |\n")
+    w("| Case | N | " + " | ".join(header(a) for a in WALK_ARMS) +
+      " | var<br>vs old | var<br>vs functor |\n")
     w("| --- | ---: |" + " ---: |" * (len(WALK_ARMS) + 2) + "\n")
     for name in results:
         row = [cell(name, "-", a) for a in WALK_ARMS]
@@ -139,16 +146,17 @@ def render(merged, runs, out):
     w("\n")
 
     w("#### %s -- map -- ns/node, both ownership variants\n\n" % harness)
-    w("| Case | ownership | N | " + " | ".join("`%s`" % a for a in MAP_ARMS) +
-      " | `map_replace` vs `map_old` | `map_replace` vs `map_functor` |\n")
-    w("| --- | --- | ---: |" + " ---: |" * (len(MAP_ARMS) + 2) + "\n")
+    w("| Case | ownership | N | " + " | ".join(header(a) for a in MAP_ARMS) +
+      " | replace<br>vs functor |\n")
+    w("| --- | --- | ---: |" + " ---: |" * (len(MAP_ARMS) + 1) + "\n")
     for name in results:
         for ownership in ["retained", "moved"]:
             row = [cell(name, ownership, a) for a in MAP_ARMS]
-            w("| %s | %s | %d | %s | %s | %s |\n"
+            comparable = fixtures[name]["kind"] == "all_vars"
+            w("| %s | %s | %d | %s | %s |\n"
               % (name, ownership, fixtures[name]["unique"],
                  " | ".join("%.2f" % v if v is not None else "" for v in row),
-                 pct(row[3], row[5]), pct(row[3], row[4])))
+                 pct(row[3], row[4]) if comparable and row[4] is not None else "--"))
     w("\n")
 
     # The sparse-update fixtures: ns/node amortizes one useful change over the whole
@@ -158,9 +166,8 @@ def render(merged, runs, out):
         w("#### %s -- sparse update: cost of changing one variable\n\n" % harness)
         # One variable occurrence changes, so ns/traversal is also ns per changed node:
         # the whole traversal buys one replacement. That is the cost ns/node would hide.
-        w("| Case | ownership | N | ns per traversal, and per changed node | rebuilt "
-          "| necessary | wasted |\n")
-        w("| --- | --- | ---: | ---: | ---: | ---: | ---: |\n")
+        w("| Case | ownership | N | ns per traversal | ns per changed element | rebuilt |\n")
+        w("| --- | --- | ---: | ---: | ---: | ---: |\n")
         for name in sparse:
             f = fixtures[name]
             for ownership in ["retained", "moved"]:
@@ -168,13 +175,41 @@ def render(merged, runs, out):
                 if ns is None:
                     continue
                 rebuilt = f["rebuilt_retained"] if ownership == "retained" else f["rebuilt_moved"]
-                # What an implementation confined to the changed path must rebuild: under
-                # copy-on-write the Mul, Add, Evaluate and SeqStmt above the changed variable
-                # plus the substituted-in variable; in place, only that variable.
-                necessary = 5 if ownership == "retained" else 1
-                w("| %s | %s | %d | %.0f | %d | %d | %s |\n"
-                  % (name, ownership, f["unique"], ns, rebuilt, necessary,
-                     "%.1fx" % (rebuilt / float(necessary))))
+                # Two elements change, so the traversal buys two swaps.
+                w("| %s | %s | %d | %.0f | %.0f | %d |\n"
+                  % (name, ownership, f["unique"], ns, ns / 2.0, rebuilt))
+        w("\n")
+
+
+def render_extras(merged, out):
+    w = out.write
+    density = sorted({k[0] for k in merged["results"] if k[0].startswith("density-")},
+                     key=lambda n: int(n.split("-")[1].split("of")[0]))
+    if density:
+        w("#### change-density sweep -- `map_replace` on seq-256, ns per traversal\n\n")
+        w("| changed of 256 | retained | moved | moved vs retained |\n")
+        w("| --- | ---: | ---: | ---: |\n")
+        for name in density:
+            r = merged["results"].get((name, "retained", "map_replace"))
+            m = merged["results"].get((name, "moved", "map_replace"))
+            if r is None or m is None:
+                continue
+            w("| %s | %.0f | %.0f | %s |\n"
+              % (name.split("-")[1].replace("of256", ""), r, m, pct(m, r)))
+        w("\n")
+    noremap = [k for k in merged["results"] if k[2] == "map_replace_noremap"]
+    if noremap:
+        w("#### remap probe -- `map_replace_noremap`, ns/node\n\n")
+        w("| Case | ownership | never | noremap | identity | replace |\n")
+        w("| --- | --- | ---: | ---: | ---: | ---: |\n")
+        for fixture, ownership, _ in sorted(noremap):
+            n = merged["fixtures"][fixture]["unique"]
+            def g(arm):
+                v = merged["results"].get((fixture, ownership, arm))
+                return "" if v is None else "%.2f" % (v / n)
+            w("| %s | %s | %s | %s | %s | %s |\n"
+              % (fixture, ownership, g("map_never"), g("map_replace_noremap"),
+                 g("map_identity"), g("map_replace")))
         w("\n")
 
 
@@ -190,7 +225,9 @@ def main():
     for binary in args.binary:
         binary = os.path.abspath(binary)
         runs = [parse(run_once(binary, args.cpu)) for _ in range(args.runs)]
-        render(median_runs(runs), runs, out)
+        merged = median_runs(runs)
+        render(merged, runs, out)
+        render_extras(merged, out)
     if out is not sys.stdout:
         out.close()
 

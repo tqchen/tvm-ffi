@@ -75,16 +75,16 @@ two deliberate divergences named at the top of `tvm_hook_override.h`.
 | arm | quantity | what it is |
 | --- | --- | --- |
 | `walk_floor` | walk | minimal hand-written vtable: type-attr lookup and hook dispatch, no callbacks |
-| `walk` | walk | `StructuralWalk<kPostOrder>` with a `Var` link and an `Expr` catch-all link |
+| `walk_var` | walk | `StructuralWalk<kPostOrder>` with a `Var` link and an `Expr` catch-all link |
 | `walk_never` | walk | the same shape whose first link can never match: prices link testing alone |
-| `walk_functor` | walk | the functor-era traversal: `ExprFunctor`/`StmtFunctor`'s vtable plus `IRApplyVisit`, which is what apache/tvm `main` still ships as `PostOrderVisit` |
-| `walk_old` | walk | what the pinned apache/tvm ships today: `StructuralWalk` plus a dedup set |
+| `walk_functor` | walk | `IRApplyVisit` over `StmtExprVisitor`: the functor machinery, which does not go through structural hooks at all |
+| `walk_old` | walk | `PostOrderVisit`, called directly |
 | `map_floor` | map | minimal hand-written vtable mutator: the engine's lower bound |
 | `map_never` | map | `StructuralMap<kPostOrder>` whose callback can never match |
 | `map_identity` | map | `StructuralMap<Var>` returning the same `Var`: matches, rebuilds nothing |
-| `map_replace` | map | `StructuralMap<Var>` performing the fixture's replacement |
-| `map_functor` | map | the functor-era mutation: `ExprMutator`/`StmtMutator` plus `IRSubstitute` |
-| `map_old` | map | what the pinned apache/tvm ships today: `Substitute`, a `StructuralMutatorObj` owning its own var remap |
+| `map_replace` | map | `StructuralMap` performing the fixture's replacement: all `Var`s on split/fuse, a two-`Evaluate` swap on seq |
+| `map_functor` | map | `IRSubstitute`'s shape over `StmtExprMutator`, minus the dtype check and buffer/attr handling TVM's own carries |
+| `map_old` | map | `Substitute`, called directly. One fixture only. |
 
 `*_functor` and `*_old` are both baselines, and they are different ones. `*_old` is the
 pinned TVM's current implementation, which is engine-based; `*_functor` is the pre-structural
@@ -110,21 +110,41 @@ untimed between passes.
 | --- | --- | --- |
 | `split-fuse-shared` | `floordiv(o*16+i, 32)*32 + floormod(o*16+i, 32)` with one pointer-shared intermediate | every `Var` |
 | `split-fuse-distinct` | the same with two structurally equal, pointer-distinct intermediates | every `Var` |
-| `seq-L` | `SeqStmt` of `L` statements `Evaluate(v*(i+2) + inner)`, `L` in 16, 256, 16384 | one `Var` occurrence |
+| `seq-L` | `SeqStmt` of `L` statements `Evaluate(o*(i+2) + inner)`, `L` in 16, 256, 16384 | a swap of two `Evaluate` nodes |
 
-The `seq` fixtures are a **sparse update**: element `L/2` uses a distinct variable and only
-that one occurrence changes. That is the shape a real substitution pass has — one or a few
-variables in a large body — and it is the shape where implementation quality shows. Replacing
-every `Var` down a long spine makes every node change, so a traversal that rebuilds only the
-changed path and one that rebuilds everything do the same work and the timing cannot separate
-them. **So the `map_replace` column means different things on `seq` and on split/fuse; do not
-read across the two.**
+The `seq` fixtures are a **sparse update**, and they match `Evaluate` rather than `Var`. That is
+deliberate: `Evaluate` is not a free variable, so no remap table is involved, and each element is
+exactly one `Evaluate`, so "swap k pairs" is a controlled input. A `Var` callback would have
+propagated through the remap to every element and the sparse update would silently have been a
+dense one. The swap is an involution, so the fixture is stationary under repetition and needs no
+pool. **The `map_replace` column therefore means different things on `seq` and on split/fuse; do
+not read across the two.**
+
+`build.sh` also emits `*_seqorig` binaries with the `SeqStmt` in-place hook in #20275's shape
+rather than the repaired one, and `real_tvm_bench` runs a change-density sweep on `seq-256`,
+swapping 1 to 64 pairs.
 
 The three `seq` lengths are one per cache level: 16 inside a 32 KiB L1d, 256 inside a 1 MiB
 L2, 16384 inside a 32 MiB L3. `report.py` names the level from that stated geometry.
 
 Both harnesses build the same shapes, so their rows are structural counterparts: the same
 node counts, the same occurrence counts, the same rebuild counts. Only the node sizes differ.
+
+## Checks
+
+Untimed, before any timing — nothing the harness verifies runs inside a timed loop.
+
+- **In-place actually fires.** Every `moved` number rests on it, so the harness captures the
+  input's raw node pointer (never an `ObjectRef`, which would itself be a reference and suppress
+  what is being tested), runs the arm, and requires the moved root to be the same object and the
+  retained root not to be.
+- **The swap does what it claims.** Exactly the targeted elements differ, every other is
+  pointer-identical to the input, and a second application restores the original pointers. This
+  caught a density point whose swap pairs collided.
+- **Hook coverage.** Every type a fixture dispatches on must have a harness hook, so a new
+  fixture that reaches a new type names it instead of silently falling through to TVM's.
+- **Port fidelity.** `./port_check.sh /path/to/tvm [sha]` re-extracts all fifteen ported hooks
+  from the recorded revision and diffs them against `tvm_hook_override.h`.
 
 ## Method
 

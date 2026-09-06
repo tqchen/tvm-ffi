@@ -241,10 +241,7 @@ class HBinOpObj : public HExprObj {
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimExpr, b, mutator->MutateExpected(self->b));
     if (a.same_as(self->a) && b.same_as(self->b)) return KeepValue(value);
     ObjectPtr<T> copy = make_object<T>(*static_cast<const T*>(self));
-    if (!a->ty.same_as(self->a->ty) || !b->ty.same_as(self->b->ty)) {
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimType, rty, ResultType(a, b));
-      copy->HExprObj::ty = std::move(rty);
-    }
+    // 20275 dropped result-type re-inference: StructuralMap preserves node types.
     copy->a = std::move(a);
     copy->b = std::move(b);
     return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
@@ -256,13 +253,9 @@ class HBinOpObj : public HExprObj {
                                       mutator->MaybeInplaceMutateIfUniqueExpected(self->a));
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimExpr, b,
                                       mutator->MaybeInplaceMutateIfUniqueExpected(self->b));
-    if (a.same_as(self->a) && b.same_as(self->b)) return KeepValue(value);
-    if (!a->ty.same_as(self->a->ty) || !b->ty.same_as(self->b->ty)) {
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimType, rty, ResultType(a, b));
-      self->HExprObj::ty = std::move(rty);
-    }
-    self->a = std::move(a);
-    self->b = std::move(b);
+    // 20275's BinaryMaybeInplaceMutate has no same_as early return and no re-inference.
+    if (!a.same_as(self->a)) self->a = std::move(a);
+    if (!b.same_as(self->b)) self->b = std::move(b);
     return KeepValue(value);
   }
   static void RegisterReflection();
@@ -336,32 +329,37 @@ class HSeqStmtObj : public HStmtObj {
   Array<HStmt> seq;
   explicit HSeqStmtObj(Array<HStmt> seq) : seq(std::move(seq)) {}
   explicit HSeqStmtObj(UnsafeInit) : HStmtObj(UnsafeInit{}) {}
+  // Mirrors 20275's SeqStmtVisit: the Array is visited as a value, so it is itself a node.
   static TVMFFIAny StructuralVisit(StructuralVisitorObj* visitor, AnyView value) noexcept {
     const auto* self = value.cast<const HSeqStmtObj*>();
-    Expected<Optional<VisitInterrupt>> result = std::nullopt;
-    for (const HStmt& statement : self->seq) {
-      result = visitor->VisitExpected(statement);
-      TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(result);
-    }
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(result);
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->seq));
+    return VisitDone();
   }
+  // Mirrors 20275's MutateSeqStmtRaw: lazy output allocation with prefix back-fill.
   static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
     const auto* self = value.cast<const HSeqStmtObj*>();
-    Array<HStmt> mapped = self->seq;
-    for (size_t i = 0; i < mapped.size(); ++i) {
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HStmt, statement, mutator->MutateExpected(mapped[i]));
-      if (!statement.same_as(mapped[i])) mapped.Set(i, std::move(statement));
+    Array<HStmt> output;
+    bool changed = false;
+    for (size_t i = 0; i < self->seq.size(); ++i) {
+      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HStmt, mapped, mutator->MutateExpected(self->seq[i]));
+      if (!changed && mapped.same_as(self->seq[i])) continue;
+      if (!changed) {
+        changed = true;
+        output.reserve(self->seq.size());
+        for (size_t j = 0; j < i; ++j) output.push_back(self->seq[j]);
+      }
+      output.push_back(std::move(mapped));
     }
-    if (mapped.same_as(self->seq)) return KeepValue(value);
+    if (!changed) return KeepValue(value);
     ObjectPtr<HSeqStmtObj> copy = make_object<HSeqStmtObj>(*self);
-    copy->seq = std::move(mapped);
+    copy->seq = std::move(output);
     return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
   }
-  // The same idiom as tvm::MaybeInplaceMutateSeqStmt, so the two harnesses stay comparable on
-  // this fixture -- including the fix.  Built with -DMINI_SEQSTMT_INPLACE_FIX=0 this is the
-  // original shape, whose handle copy of the sequence leaves no element uniquely owned and
-  // forces every one of them onto the copy-on-write path; with 1 it is the repaired shape.
+  // Mirrors 20275's MaybeInplaceMutateSeqStmtRaw. `self->seq[i]` returns HStmt by value, so
+  // the element gains a second reference for the duration of the call and is never unique:
+  // every element takes the copy-on-write path even though the array itself is now mutated in
+  // place by Set(). MINI_SEQSTMT_INPLACE_FIX selects the repaired variant, which moves each
+  // element out of a uniquely owned array first. Same switch as tvm_hook_override.h.
   static TVMFFIAny StructuralMaybeInplaceMutate(StructuralMutatorObj* mutator,
                                                 AnyView value) noexcept {
     auto* self = const_cast<HSeqStmtObj*>(value.cast<const HSeqStmtObj*>());
@@ -385,16 +383,14 @@ class HSeqStmtObj : public HStmtObj {
       return KeepValue(value);
     }
 #endif
-    Array<HStmt> mapped = self->seq;
-    for (size_t i = 0; i < mapped.size(); ++i) {
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HStmt, statement,
-                                        mutator->MaybeInplaceMutateIfUniqueExpected(mapped[i]));
-      if (!statement.same_as(mapped[i])) mapped.Set(i, std::move(statement));
+    for (size_t i = 0; i < self->seq.size(); ++i) {
+      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HStmt, mapped,
+                                        mutator->MaybeInplaceMutateIfUniqueExpected(self->seq[i]));
+      if (!mapped.same_as(self->seq[i])) self->seq.Set(i, std::move(mapped));
     }
-    if (mapped.same_as(self->seq)) return KeepValue(value);
-    self->seq = std::move(mapped);
     return KeepValue(value);
   }
+
   static void RegisterReflection();
   static constexpr uint32_t _type_child_slots = 0;
   static constexpr bool _type_final = true;

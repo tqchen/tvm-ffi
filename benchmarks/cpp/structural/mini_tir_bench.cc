@@ -26,6 +26,7 @@
 #include "mini_tir.h"
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace mini_tir {
@@ -56,17 +57,6 @@ HVar& Replacement() {
   static HVar v(make_object<HVarObj>(Ty(), 2));
   return v;
 }
-/*!
- * \brief The one variable a sparse `seq-L` update replaces.
- *
- * Element `L/2` uses this instead of `Outer()`, so a callback keyed on it changes exactly one
- * occurrence in the whole fixture.  The middle element deliberately, so neither the first nor
- * the last element's position can be what is being measured.
- */
-HVar& Target() {
-  static HVar v(make_object<HVarObj>(Ty(), 3));
-  return v;
-}
 
 template <typename T>
 HPrimExpr Bin(HPrimExpr a, HPrimExpr b) {
@@ -95,13 +85,32 @@ HPrimExpr SplitFuse(bool shared) {
  * the SeqStmt and three Vars, so `N = 4L + 4`; six occurrences per element plus the SeqStmt,
  * so `occurrences = 6L + 1`.  `i + 2` because a multiplier of one would fold the Mul away.
  */
-HStmt LongSeq(int length) {
+/*! \brief The `Evaluate` elements a `seq` replacement swaps, by position. See real_tvm_bench. */
+struct SwapPair {
+  int lo, hi;
+};
+std::vector<SwapPair> SwapPairs(int length, int density) {
+  std::vector<SwapPair> pairs;
+  for (int k = 0; k < density; ++k) pairs.push_back({length / 4 + k, 3 * length / 4 - k});
+  return pairs;
+}
+std::unordered_map<const Object*, HStmt>* SwapTable() {
+  static std::unordered_map<const Object*, HStmt> table;
+  return &table;
+}
+
+HStmt LongSeq(int length, int density) {
   Array<HStmt> body;
   body.reserve(length);
   for (int i = 0; i < length; ++i) {
-    HVar lhs = (i == length / 2) ? Target() : Outer();
     body.push_back(
-        HStmt(make_object<HEvaluateObj>(Bin<HAddObj>(Bin<HMulObj>(lhs, Imm(i + 2)), Inner()))));
+        HStmt(make_object<HEvaluateObj>(Bin<HAddObj>(Bin<HMulObj>(Outer(), Imm(i + 2)), Inner()))));
+  }
+  SwapTable()->clear();
+  for (const SwapPair& pair : SwapPairs(length, density)) {
+    HStmt lo = body[pair.lo], hi = body[pair.hi];
+    (*SwapTable())[lo.get()] = hi;
+    (*SwapTable())[hi.get()] = lo;
   }
   return HStmt(make_object<HSeqStmtObj>(body));
 }
@@ -124,7 +133,7 @@ constexpr int64_t kSplitFuseSharedBytes =
 constexpr int64_t kSplitFuseDistinctBytes =
     kSplitFuseSharedBytes + kMulBytes + kImmBytes + kAddBytes;
 constexpr int64_t kSeqWorkingSet(int64_t l) {
-  return l * (kMulBytes + kImmBytes + kAddBytes + kEvalBytes) + 3 * kVarBytes + kSeqBytes(l);
+  return l * (kMulBytes + kImmBytes + kAddBytes + kEvalBytes) + 2 * kVarBytes + kSeqBytes(l);
 }
 
 /*!
@@ -160,18 +169,14 @@ Any SwapAllVars(const HVar& var) {
   if (var->id == 2) return Any(Outer());
   return Any(var);
 }
-/*! \brief The sparse update: only `Target` moves, so exactly one occurrence changes. */
-Any SwapTargetVar(const HVar& var) {
-  if (var->id == 3) return Any(Replacement());
-  if (var->id == 2) return Any(Target());
-  return Any(var);
+/*! \brief The seq replacement: swap two `Evaluate` nodes; no remap is involved. */
+Any SwapEvaluates(const HStmt& stmt) {
+  auto it = SwapTable()->find(stmt.get());
+  if (it != SwapTable()->end()) return Any(it->second);
+  return Any(stmt);
 }
-Any SwapVars(ReplaceKind kind, const HVar& var) {
-  return kind == ReplaceKind::kAllVars ? SwapAllVars(var) : SwapTargetVar(var);
-}
-/*! \brief The same swap in the `Optional` shape `Substitute` and `IRSubstitute` take. */
-Optional<HPrimExpr> SwapVarsFn(ReplaceKind kind, const HVar& var) {
-  HPrimExpr mapped = SwapVars(kind, var).cast<HPrimExpr>();
+Optional<HPrimExpr> SwapVarsFn(const HVar& var) {
+  HPrimExpr mapped = SwapAllVars(var).cast<HPrimExpr>();
   if (mapped.same_as(HPrimExpr(var))) return std::nullopt;
   return Optional<HPrimExpr>(mapped);
 }
@@ -264,30 +269,38 @@ void MapNever(Ownership ownership, ReplaceKind, Any* slot) {
                                             [](const HPrimType& v) { return Any(v); }));
 }
 
-void MapIdentity(Ownership ownership, ReplaceKind, Any* slot) {
-  Give(ownership, slot,
-       StructuralMap<WalkOrder::kPostOrder>(Take(ownership, slot),
-                                            [](const HVar& var) { return Any(var); }));
+void MapIdentity(Ownership ownership, ReplaceKind kind, Any* slot) {
+  if (kind == ReplaceKind::kSingleVar) {
+    Give(ownership, slot,
+         StructuralMap<WalkOrder::kPostOrder>(Take(ownership, slot),
+                                              [](const HStmt& stmt) { return Any(stmt); }));
+  } else {
+    Give(ownership, slot,
+         StructuralMap<WalkOrder::kPostOrder>(Take(ownership, slot),
+                                              [](const HVar& var) { return Any(var); }));
+  }
 }
 
 void MapReplace(Ownership ownership, ReplaceKind kind, Any* slot) {
-  Give(ownership, slot,
-       StructuralMap<WalkOrder::kPostOrder>(
-           Take(ownership, slot), [kind](const HVar& var) { return SwapVars(kind, var); }));
+  if (kind == ReplaceKind::kSingleVar) {
+    Give(ownership, slot,
+         StructuralMap<WalkOrder::kPostOrder>(Take(ownership, slot), SwapEvaluates));
+  } else {
+    Give(ownership, slot,
+         StructuralMap<WalkOrder::kPostOrder>(Take(ownership, slot), SwapAllVars));
+  }
 }
 
 /*! \brief The functor-era Substitute: ExprMutator/StmtMutator vtable + IRSubstitute. */
-void MapFunctor(Ownership ownership, ReplaceKind kind, Any* slot) {
-  Give(ownership, slot,
-       FunctorSubstitute(Take(ownership, slot),
-                         [kind](const HVar& var) { return SwapVarsFn(kind, var); }));
+/*! \brief The functor-era Substitute: ExprMutator/StmtMutator vtable + IRSubstitute. */
+void MapFunctor(Ownership ownership, ReplaceKind, Any* slot) {
+  Give(ownership, slot, FunctorSubstitute(Take(ownership, slot), SwapVarsFn));
 }
 
 /*! \brief What the pinned TVM ships: a StructuralMutatorObj owning its own var remap. */
-void MapOld(Ownership ownership, ReplaceKind kind, Any* slot) {
-  Give(ownership, slot,
-       ShippingSubstitute(Take(ownership, slot),
-                          [kind](const HVar& var) { return SwapVarsFn(kind, var); }));
+/*! \brief What the pinned TVM ships: a StructuralMutatorObj owning its own var remap. */
+void MapOld(Ownership ownership, ReplaceKind, Any* slot) {
+  Give(ownership, slot, ShippingSubstitute(Take(ownership, slot), SwapVarsFn));
 }
 
 struct WalkArm {
@@ -295,7 +308,7 @@ struct WalkArm {
   void (*run)(AnyView);
 };
 constexpr WalkArm kWalkArms[] = {
-    {"walk_floor", &WalkFloor}, {"walk", &Walk},         {"walk_never", &WalkNever},
+    {"walk_floor", &WalkFloor},     {"walk_var", &Walk},    {"walk_never", &WalkNever},
     {"walk_functor", &WalkFunctor}, {"walk_old", &WalkOld},
 };
 
@@ -352,35 +365,33 @@ void RunFixture(const FixtureInfo& info, Any (*build)()) {
 int main() {
   using namespace mini_tir;  // NOLINT(build/namespaces)
   EmitStandardProvenance(kHarness);
+  EmitProvenance("structural_hooks",
+                 "mini-TIR's own (mini_tir.h), shaped after apache/tvm#20275 b51da96381");
   EmitProvenance("seqstmt_inplace_hook",
-                 MINI_SEQSTMT_INPLACE_FIX ? "repaired" : "original");
+                 MINI_SEQSTMT_INPLACE_FIX ? "repaired" : "20275 as shipped");
 
-  // split/fuse replaces every Var: on a twelve-node tree that is a reasonable shape.  Under
-  // moved ownership the only new identity is the substituted-in Var, except on the shared
-  // fixture, where the first parent to reach the shared subtree cannot mutate it in place and
-  // copies it and its own changed child.
-  RunFixture({"split-fuse-shared", 12, 17, kSplitFuseSharedBytes, 9, 3, kSplitFuseRepeats, true,
-              ReplaceKind::kAllVars},
-             [] { return Any(SplitFuse(true)); });
-  RunFixture({"split-fuse-distinct", 15, 17, kSplitFuseDistinctBytes, 9, 1, kSplitFuseRepeats,
-              false, ReplaceKind::kAllVars},
-             [] { return Any(SplitFuse(false)); });
+  auto build_shared = [] { return Any(SplitFuse(true)); };
+  auto build_distinct = [] { return Any(SplitFuse(false)); };
+  FixtureInfo shared{"split-fuse-shared", 12, 17, kSplitFuseSharedBytes, 9, 3, kSplitFuseRepeats,
+                     true, ReplaceKind::kAllVars};
+  shared.run_old = true;
+  FixtureInfo distinct{"split-fuse-distinct", 15, 17, kSplitFuseDistinctBytes, 9, 1,
+                       kSplitFuseRepeats, false, ReplaceKind::kAllVars};
+  RunFixture(shared, build_shared);
+  RunFixture(distinct, build_distinct);
 
-  // seq is a sparse update: one Var occurrence in the whole body.  Retained, the changed path
-  // is Mul, Add, Evaluate and the SeqStmt, plus the substituted-in Var, so five identities
-  // regardless of L.  Moved, the repaired SeqStmt hook mutates that path in place and only
-  // the substituted-in Var is new; the original hook's handle copy of the sequence forces the
-  // changed element's Mul, Add and Evaluate onto the copy-on-write path, so four.
-  constexpr int64_t kSeqRebuiltRetained = 5;
-  constexpr int64_t kSeqRebuiltMoved = MINI_SEQSTMT_INPLACE_FIX ? 1 : 4;
+  // seq swaps two Evaluate nodes, so nothing below the SeqStmt is rebuilt: retained copies the
+  // SeqStmt and its Array, moved mutates both in place.
+  constexpr int64_t kSeqRebuiltRetained = 2;
+  constexpr int64_t kSeqRebuiltMoved = 0;
   for (int length : kSeqLengths) {
     static int current_length = 0;
     current_length = length;
     std::string name = "seq-" + std::to_string(length);
-    RunFixture({name.c_str(), 4LL * length + 4, 6LL * length + 1, kSeqWorkingSet(length),
+    RunFixture({name.c_str(), 4LL * length + 4, 6LL * length + 2, kSeqWorkingSet(length),
                 kSeqRebuiltRetained, kSeqRebuiltMoved, SeqRepeats(length), false,
                 ReplaceKind::kSingleVar},
-               [] { return Any(LongSeq(current_length)); });
+               [] { return Any(LongSeq(current_length, 1)); });
   }
 
   Emit("#sink\t" + std::to_string(g_sink));
