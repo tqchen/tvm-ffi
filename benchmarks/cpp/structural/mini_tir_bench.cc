@@ -17,537 +17,16 @@
  * under the License.
  */
 
-// The mini-TIR half of the structural-traversal benchmark.  Builds a standalone mirror of
-// TVM's TIR node hierarchy out of tvm-ffi's own types, registers its own structural hooks,
-// and runs the same fixtures, arms, method and assertions as real_tvm_bench.cc.  It needs
-// no TVM checkout and no hook override.
+// mini-TIR half of the structural benchmark: fixtures, arms, main.
 //
-// Mirrored deliberately, because these are what the engine's per-node cost is made of:
-//
-//   * HExprObj is a non-final base with a `ty` field, TreeNode kind and 64 child slots;
-//   * HVarObj derives from it and is FreeVar kind, so every matched Var takes an identity
-//     remap get *and* set, the way tvm::Var does;
-//   * HPrimExpr is a *view* over any HExprObj whose `ty` holds an HPrimType, with the same
-//     TypeTraits shape as tvm::PrimExpr: checking a field costs an IsObjectInstance range
-//     test, a dereference to reach `ty`, and a second type check on that field;
-//   * binary ops are final with two HPrimExpr operands and MutateBinary's guard that skips
-//     result-type inference when neither operand's type changed;
-//   * HSeqStmtObj's in-place hook copies the sequence handle before mapping elements, the
-//     same idiom tvm::SeqStmtNode uses -- including its consequence for in-place mutation.
-//
-// It is a model of the shape, not a clone: no Span, result types compare a single `bits`
-// field rather than full dtype logic, and only four binary ops are mirrored.
+// The node types and their hooks are in `mini_tir.h`; the timing loops in `timer.h`.  This
+// file builds the fixtures, declares what it built, runs one function per arm and prints one
+// line per measurement.  It discovers nothing about itself at runtime.
 
-#include <tvm/ffi/container/array.h>
-#include <tvm/ffi/extra/structural_mutate.h>
-#include <tvm/ffi/extra/structural_visit.h>
-#include <tvm/ffi/reflection/registry.h>
+#include "mini_tir.h"
 
 #include <string>
-#include <unordered_set>
 #include <vector>
-
-#include "bench_common.h"
-
-namespace tvm {
-namespace ffi {
-namespace mini {
-
-// ---------------------------------------------------------------- PrimType
-class HPrimTypeObj : public Object {
- public:
-  int64_t bits = 32;
-  HPrimTypeObj() {}
-  explicit HPrimTypeObj(int64_t bits) : bits(bits) {}
-  explicit HPrimTypeObj(UnsafeInit) {}
-  static void RegisterReflection() {
-    reflection::ObjectDef<HPrimTypeObj>().def_ro("bits", &HPrimTypeObj::bits);
-  }
-  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("h.PrimType", HPrimTypeObj, Object);
-};
-class HPrimType : public ObjectRef {
- public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(HPrimType, ObjectRef, HPrimTypeObj);
-};
-
-// ---------------------------------------------------------------- Expr
-class HExprObj : public Object {
- public:
-  Any ty;
-  HExprObj() {}
-  explicit HExprObj(Any ty) : ty(std::move(ty)) {}
-  explicit HExprObj(UnsafeInit) {}
-  static void RegisterReflection() {
-    reflection::ObjectDef<HExprObj>().def_ro("ty", &HExprObj::ty);
-  }
-  static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindTreeNode;
-  static constexpr uint32_t _type_child_slots = 64;
-  TVM_FFI_DECLARE_OBJECT_INFO("h.Expr", HExprObj, Object);
-};
-class HExpr : public ObjectRef {
- public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(HExpr, ObjectRef, HExprObj);
-};
-
-/*! \brief A view over any HExprObj whose `ty` is an HPrimType. Mirrors tvm::PrimExpr. */
-class HPrimExpr : public HExpr {
- public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(HPrimExpr, HExpr, HExprObj);
-};
-
-}  // namespace mini
-
-template <>
-inline constexpr bool use_default_type_traits_v<mini::HPrimExpr> = false;
-
-template <>
-struct TypeTraits<mini::HPrimExpr> : public ObjectRefTypeTraitsBase<mini::HPrimExpr> {
-  using Base = ObjectRefTypeTraitsBase<mini::HPrimExpr>;
-  using Base::CopyFromAnyViewAfterCheck;
-  using Base::CopyToAnyView;
-  using Base::GetMismatchTypeInfo;
-  using Base::MoveFromAnyAfterCheck;
-  using Base::MoveToAny;
-  using Base::TypeStr;
-  TVM_FFI_INLINE static bool CheckAnyStrict(const TVMFFIAny* src) {
-    if (src->type_index == TypeIndex::kTVMFFINone) return mini::HPrimExpr::_type_is_nullable;
-    if (src->type_index < TypeIndex::kTVMFFIStaticObjectBegin ||
-        !details::IsObjectInstance<mini::HExprObj>(src->type_index)) {
-      return false;
-    }
-    const auto* e = details::ObjectUnsafe::RawObjectPtrFromUnowned<mini::HExprObj>(src->v_obj);
-    return details::AnyUnsafe::CheckAnyStrict<mini::HPrimType>(e->ty);
-  }
-  TVM_FFI_INLINE static std::optional<mini::HPrimExpr> TryCastFromAnyView(const TVMFFIAny* src) {
-    if (CheckAnyStrict(src)) return CopyFromAnyViewAfterCheck(src);
-    return std::nullopt;
-  }
-};
-
-namespace mini {
-
-/*! \brief `ObjectRef::as` for a raw Object pointer, which the model traversals work in. */
-template <typename T>
-TVM_FFI_INLINE const T* ObjAs(const Object* node) {
-  return (node != nullptr && details::IsObjectInstance<T>(node->type_index()))
-             ? static_cast<const T*>(node)
-             : nullptr;
-}
-
-// Helpers shared by every hook body.
-TVM_FFI_INLINE TVMFFIAny VisitDone() {
-  return details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<Optional<VisitInterrupt>>(std::nullopt));
-}
-TVM_FFI_INLINE TVMFFIAny KeepValue(AnyView value) {
-  return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
-}
-
-// ---------------------------------------------------------------- Var (FreeVar)
-class HVarObj : public HExprObj {
- public:
-  int64_t id = 0;
-  HVarObj(Any ty, int64_t id) : HExprObj(std::move(ty)), id(id) {}
-  explicit HVarObj(UnsafeInit) : HExprObj(UnsafeInit{}) {}
-
-  static TVMFFIAny StructuralVisit(StructuralVisitorObj*, AnyView) noexcept { return VisitDone(); }
-  /*! \brief Mirrors tvm::MutateVar: consult the remap first, record on the way out. */
-  static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
-    Expected<Any> cached = mutator->VarRemapGetExpected(value);
-    TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(cached);
-    if (details::ExpectedUnsafe::GetData(cached).type_index() != TypeIndex::kTVMFFINone) {
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(cached));
-    }
-    Expected<void> set_result = mutator->VarRemapSetExpected(value, AnyView(value));
-    if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
-      return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(set_result).error()));
-    }
-    return KeepValue(value);
-  }
-  static void RegisterReflection();
-  static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindFreeVar;
-  static constexpr uint32_t _type_child_slots = 0;
-  static constexpr bool _type_final = true;
-  static constexpr const char* _type_key = "h.Var";
-  TVM_FFI_DECLARE_OBJECT_INFO_PREDEFINED_TYPE_KEY(HVarObj, HExprObj);
-};
-class HVar : public HPrimExpr {
- public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(HVar, HPrimExpr, HVarObj);
-};
-
-// ---------------------------------------------------------------- IntImm
-class HIntImmObj : public HExprObj {
- public:
-  int64_t value_ = 0;
-  HIntImmObj(Any ty, int64_t v) : HExprObj(std::move(ty)), value_(v) {}
-  explicit HIntImmObj(UnsafeInit) : HExprObj(UnsafeInit{}) {}
-  static TVMFFIAny StructuralVisit(StructuralVisitorObj*, AnyView) noexcept { return VisitDone(); }
-  static TVMFFIAny StructuralMutate(StructuralMutatorObj*, AnyView value) noexcept {
-    return KeepValue(value);
-  }
-  static void RegisterReflection();
-  static constexpr uint32_t _type_child_slots = 0;
-  static constexpr bool _type_final = true;
-  static constexpr const char* _type_key = "h.IntImm";
-  TVM_FFI_DECLARE_OBJECT_INFO_PREDEFINED_TYPE_KEY(HIntImmObj, HExprObj);
-};
-
-// ------------------------------------------------- binary ops (Add/Mul/FloorDiv/FloorMod)
-template <typename T>
-class HBinOpObj : public HExprObj {
- public:
-  HPrimExpr a, b;
-  HBinOpObj(Any ty, HPrimExpr a, HPrimExpr b)
-      : HExprObj(std::move(ty)), a(std::move(a)), b(std::move(b)) {}
-  explicit HBinOpObj(UnsafeInit) : HExprObj(UnsafeInit{}) {}
-
-  /*! \brief Mirrors tvm::MutateBinary's guard: skip type inference when neither type moved. */
-  static Expected<HPrimType> ResultType(const HPrimExpr& a, const HPrimExpr& b) noexcept {
-    auto at = a->ty.as<HPrimType>();
-    auto bt = b->ty.as<HPrimType>();
-    if (!at.has_value() || !bt.has_value() || at.value()->bits != bt.value()->bits) {
-      return Unexpected(Error("TypeError", "mismatched types", ""));
-    }
-    return at.value();
-  }
-  static TVMFFIAny StructuralVisit(StructuralVisitorObj* visitor, AnyView value) noexcept {
-    const auto* self = value.cast<const T*>();
-    auto a_result = visitor->VisitExpected(self->a);
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(a_result);
-    auto b_result = visitor->VisitExpected(self->b);
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(b_result);
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(b_result));
-  }
-  static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
-    const auto* self = value.cast<const T*>();
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimExpr, a, mutator->MutateExpected(self->a));
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimExpr, b, mutator->MutateExpected(self->b));
-    if (a.same_as(self->a) && b.same_as(self->b)) return KeepValue(value);
-    ObjectPtr<T> copy = make_object<T>(*static_cast<const T*>(self));
-    if (!a->ty.same_as(self->a->ty) || !b->ty.same_as(self->b->ty)) {
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimType, rty, ResultType(a, b));
-      copy->HExprObj::ty = std::move(rty);
-    }
-    copy->a = std::move(a);
-    copy->b = std::move(b);
-    return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
-  }
-  static TVMFFIAny StructuralMaybeInplaceMutate(StructuralMutatorObj* mutator,
-                                                AnyView value) noexcept {
-    T* self = const_cast<T*>(value.cast<const T*>());
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimExpr, a,
-                                      mutator->MaybeInplaceMutateIfUniqueExpected(self->a));
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimExpr, b,
-                                      mutator->MaybeInplaceMutateIfUniqueExpected(self->b));
-    if (a.same_as(self->a) && b.same_as(self->b)) return KeepValue(value);
-    if (!a->ty.same_as(self->a->ty) || !b->ty.same_as(self->b->ty)) {
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimType, rty, ResultType(a, b));
-      self->HExprObj::ty = std::move(rty);
-    }
-    self->a = std::move(a);
-    self->b = std::move(b);
-    return KeepValue(value);
-  }
-  static void RegisterReflection();
-  static constexpr uint32_t _type_child_slots = 0;
-  static constexpr bool _type_final = true;
-};
-#define H_DECL_BINOP(Name, Key)                                      \
-  class Name : public HBinOpObj<Name> {                              \
-   public:                                                           \
-    using HBinOpObj<Name>::HBinOpObj;                                \
-    static constexpr const char* _type_key = Key;                    \
-    TVM_FFI_DECLARE_OBJECT_INFO_PREDEFINED_TYPE_KEY(Name, HExprObj); \
-  }
-H_DECL_BINOP(HAddObj, "h.Add");
-H_DECL_BINOP(HMulObj, "h.Mul");
-H_DECL_BINOP(HFloorDivObj, "h.FloorDiv");
-H_DECL_BINOP(HFloorModObj, "h.FloorMod");
-
-// ---------------------------------------------------------------- Stmt
-class HStmtObj : public Object {
- public:
-  HStmtObj() {}
-  explicit HStmtObj(UnsafeInit) {}
-  static void RegisterReflection() { reflection::ObjectDef<HStmtObj>(); }
-  static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindTreeNode;
-  static constexpr uint32_t _type_child_slots = 32;
-  TVM_FFI_DECLARE_OBJECT_INFO("h.Stmt", HStmtObj, Object);
-};
-class HStmt : public ObjectRef {
- public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(HStmt, ObjectRef, HStmtObj);
-};
-
-class HEvaluateObj : public HStmtObj {
- public:
-  HPrimExpr value;
-  explicit HEvaluateObj(HPrimExpr value) : value(std::move(value)) {}
-  explicit HEvaluateObj(UnsafeInit) : HStmtObj(UnsafeInit{}) {}
-  static TVMFFIAny StructuralVisit(StructuralVisitorObj* visitor, AnyView value) noexcept {
-    const auto* self = value.cast<const HEvaluateObj*>();
-    auto result = visitor->VisitExpected(self->value);
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(result);
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
-  }
-  static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
-    const auto* self = value.cast<const HEvaluateObj*>();
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimExpr, mapped, mutator->MutateExpected(self->value));
-    if (mapped.same_as(self->value)) return KeepValue(value);
-    ObjectPtr<HEvaluateObj> copy = make_object<HEvaluateObj>(*self);
-    copy->value = std::move(mapped);
-    return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
-  }
-  static TVMFFIAny StructuralMaybeInplaceMutate(StructuralMutatorObj* mutator,
-                                                AnyView value) noexcept {
-    auto* self = const_cast<HEvaluateObj*>(value.cast<const HEvaluateObj*>());
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HPrimExpr, mapped,
-                                      mutator->MaybeInplaceMutateIfUniqueExpected(self->value));
-    if (mapped.same_as(self->value)) return KeepValue(value);
-    self->value = std::move(mapped);
-    return KeepValue(value);
-  }
-  static void RegisterReflection();
-  static constexpr uint32_t _type_child_slots = 0;
-  static constexpr bool _type_final = true;
-  static constexpr const char* _type_key = "h.Evaluate";
-  TVM_FFI_DECLARE_OBJECT_INFO_PREDEFINED_TYPE_KEY(HEvaluateObj, HStmtObj);
-};
-
-class HSeqStmtObj : public HStmtObj {
- public:
-  Array<HStmt> seq;
-  explicit HSeqStmtObj(Array<HStmt> seq) : seq(std::move(seq)) {}
-  explicit HSeqStmtObj(UnsafeInit) : HStmtObj(UnsafeInit{}) {}
-  static TVMFFIAny StructuralVisit(StructuralVisitorObj* visitor, AnyView value) noexcept {
-    const auto* self = value.cast<const HSeqStmtObj*>();
-    Expected<Optional<VisitInterrupt>> result = std::nullopt;
-    for (const HStmt& statement : self->seq) {
-      result = visitor->VisitExpected(statement);
-      TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(result);
-    }
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(result);
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
-  }
-  static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
-    const auto* self = value.cast<const HSeqStmtObj*>();
-    Array<HStmt> mapped = self->seq;
-    for (size_t i = 0; i < mapped.size(); ++i) {
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HStmt, statement, mutator->MutateExpected(mapped[i]));
-      if (!statement.same_as(mapped[i])) mapped.Set(i, std::move(statement));
-    }
-    if (mapped.same_as(self->seq)) return KeepValue(value);
-    ObjectPtr<HSeqStmtObj> copy = make_object<HSeqStmtObj>(*self);
-    copy->seq = std::move(mapped);
-    return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
-  }
-  // Deliberately the same idiom as tvm::MaybeInplaceMutateSeqStmt, including its handle copy
-  // of the sequence: mirroring it is what makes the two harnesses comparable on this fixture.
-  static TVMFFIAny StructuralMaybeInplaceMutate(StructuralMutatorObj* mutator,
-                                                AnyView value) noexcept {
-    auto* self = const_cast<HSeqStmtObj*>(value.cast<const HSeqStmtObj*>());
-    Array<HStmt> mapped = self->seq;
-    for (size_t i = 0; i < mapped.size(); ++i) {
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(HStmt, statement,
-                                        mutator->MaybeInplaceMutateIfUniqueExpected(mapped[i]));
-      if (!statement.same_as(mapped[i])) mapped.Set(i, std::move(statement));
-    }
-    if (mapped.same_as(self->seq)) return KeepValue(value);
-    self->seq = std::move(mapped);
-    return KeepValue(value);
-  }
-  static void RegisterReflection();
-  static constexpr uint32_t _type_child_slots = 0;
-  static constexpr bool _type_final = true;
-  static constexpr const char* _type_key = "h.SeqStmt";
-  TVM_FFI_DECLARE_OBJECT_INFO_PREDEFINED_TYPE_KEY(HSeqStmtObj, HStmtObj);
-};
-
-// ---------------------------------------------------------------- registration
-template <typename T>
-void RegisterHooks() {
-  namespace refl = tvm::ffi::reflection;
-  refl::TypeAttrDef<T>()
-      .attr(refl::type_attr::kStructuralVisit,
-            reinterpret_cast<void*>(static_cast<FStructuralVisit>(&T::StructuralVisit)))
-      .attr(refl::type_attr::kStructuralMutate,
-            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&T::StructuralMutate)));
-}
-template <typename T>
-void RegisterInplaceHook() {
-  namespace refl = tvm::ffi::reflection;
-  refl::TypeAttrDef<T>().attr(
-      refl::type_attr::kStructuralMaybeInplaceMutate,
-      reinterpret_cast<void*>(static_cast<FStructuralMutate>(&T::StructuralMaybeInplaceMutate)));
-}
-
-void HVarObj::RegisterReflection() {
-  reflection::ObjectDef<HVarObj>().def_ro("id", &HVarObj::id);
-  RegisterHooks<HVarObj>();
-  // A Var has no children, so its in-place hook is its ordinary hook.
-  reflection::TypeAttrDef<HVarObj>().attr(
-      reflection::type_attr::kStructuralMaybeInplaceMutate,
-      reinterpret_cast<void*>(static_cast<FStructuralMutate>(&HVarObj::StructuralMutate)));
-}
-void HIntImmObj::RegisterReflection() {
-  reflection::ObjectDef<HIntImmObj>().def_ro("value_", &HIntImmObj::value_);
-  RegisterHooks<HIntImmObj>();
-  reflection::TypeAttrDef<HIntImmObj>().attr(
-      reflection::type_attr::kStructuralMaybeInplaceMutate,
-      reinterpret_cast<void*>(static_cast<FStructuralMutate>(&HIntImmObj::StructuralMutate)));
-}
-template <typename T>
-void HBinOpObj<T>::RegisterReflection() {
-  reflection::ObjectDef<T>().def_ro("a", &T::a).def_ro("b", &T::b);
-  RegisterHooks<T>();
-  RegisterInplaceHook<T>();
-}
-void HEvaluateObj::RegisterReflection() {
-  reflection::ObjectDef<HEvaluateObj>().def_ro("value", &HEvaluateObj::value);
-  RegisterHooks<HEvaluateObj>();
-  RegisterInplaceHook<HEvaluateObj>();
-}
-void HSeqStmtObj::RegisterReflection() {
-  reflection::ObjectDef<HSeqStmtObj>().def_ro("seq", &HSeqStmtObj::seq);
-  RegisterHooks<HSeqStmtObj>();
-  RegisterInplaceHook<HSeqStmtObj>();
-}
-
-TVM_FFI_STATIC_INIT_BLOCK() {
-  namespace refl = tvm::ffi::reflection;
-  refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralVisit);
-  refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMutate);
-  refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMaybeInplaceMutate);
-  HPrimTypeObj::RegisterReflection();
-  HExprObj::RegisterReflection();
-  HStmtObj::RegisterReflection();
-  HVarObj::RegisterReflection();
-  HIntImmObj::RegisterReflection();
-  HBinOpObj<HAddObj>::RegisterReflection();
-  HBinOpObj<HMulObj>::RegisterReflection();
-  HBinOpObj<HFloorDivObj>::RegisterReflection();
-  HBinOpObj<HFloorModObj>::RegisterReflection();
-  HEvaluateObj::RegisterReflection();
-  HSeqStmtObj::RegisterReflection();
-}
-
-// ---------------------------------------------------------------------------
-// The shipping-API models: what `walk_old` and `map_old` stand in for here.
-// ---------------------------------------------------------------------------
-
-/*! \brief Mirrors tvm::PostOrderVisit: recursive, deduplicated by identity, post-order. */
-class MinimalPostOrderModel {
- public:
-  template <typename F>
-  void Run(const ObjectRef& root, F&& callback) {
-    Visit(root.get(), callback);
-  }
-
- private:
-  template <typename F>
-  void Visit(const Object* node, F& callback) {
-    if (node == nullptr || !visited_.insert(node).second) return;
-    if (const auto* bin = TryBinary(node)) {
-      Visit(bin->first, callback);
-      Visit(bin->second, callback);
-    } else if (const auto* eval = ObjAs<HEvaluateObj>(node)) {
-      Visit(eval->value.get(), callback);
-    } else if (const auto* seq = ObjAs<HSeqStmtObj>(node)) {
-      for (const HStmt& statement : seq->seq) Visit(statement.get(), callback);
-    }
-    callback(node);
-  }
-  struct Pair {
-    const Object* first;
-    const Object* second;
-  };
-  const Pair* TryBinary(const Object* node) {
-    if (const auto* v = ObjAs<HAddObj>(node)) return Store(v);
-    if (const auto* v = ObjAs<HMulObj>(node)) return Store(v);
-    if (const auto* v = ObjAs<HFloorDivObj>(node)) return Store(v);
-    if (const auto* v = ObjAs<HFloorModObj>(node)) return Store(v);
-    return nullptr;
-  }
-  template <typename T>
-  const Pair* Store(const T* v) {
-    scratch_.first = v->a.get();
-    scratch_.second = v->b.get();
-    return &scratch_;
-  }
-  Pair scratch_{nullptr, nullptr};
-  std::unordered_set<const Object*> visited_;
-};
-
-/*!
- * \brief Mirrors the pre-structural tvm::Substitute shape: a recursive, non-memoizing
- *        mutator with no variable remapping.
- *
- * As in the earlier reports, this is deliberately leaner than what the engine has to do,
- * which is why the mini-TIR map delta reads as a regression against it while the real-TVM
- * map delta reads as an improvement against `Substitute`.  The two answer different
- * questions and must not be read as contradicting each other.
- */
-class MinimalSubstituteModel {
- public:
-  explicit MinimalSubstituteModel(std::function<Optional<HPrimExpr>(const HVarObj*)> vmap)
-      : vmap_(std::move(vmap)) {}
-
-  Any Run(const Any& root) {
-    if (auto stmt = root.as<HStmt>()) return Any(MutateStmt(*stmt));
-    return Any(MutateExpr(root.cast<HPrimExpr>()));
-  }
-
- private:
-  HPrimExpr MutateExpr(const HPrimExpr& expr) {
-    if (const auto* var = expr.as<HVarObj>()) {
-      Optional<HPrimExpr> replaced = vmap_(var);
-      return replaced.has_value() ? replaced.value() : expr;
-    }
-    if (const auto* v = expr.as<HAddObj>()) return MutateBinary<HAddObj>(expr, v);
-    if (const auto* v = expr.as<HMulObj>()) return MutateBinary<HMulObj>(expr, v);
-    if (const auto* v = expr.as<HFloorDivObj>()) return MutateBinary<HFloorDivObj>(expr, v);
-    if (const auto* v = expr.as<HFloorModObj>()) return MutateBinary<HFloorModObj>(expr, v);
-    return expr;
-  }
-  template <typename T>
-  HPrimExpr MutateBinary(const HPrimExpr& expr, const T* self) {
-    HPrimExpr a = MutateExpr(self->a);
-    HPrimExpr b = MutateExpr(self->b);
-    if (a.same_as(self->a) && b.same_as(self->b)) return expr;
-    ObjectPtr<T> copy = make_object<T>(*self);
-    copy->a = std::move(a);
-    copy->b = std::move(b);
-    return HPrimExpr(std::move(copy));
-  }
-  HStmt MutateStmt(const HStmt& stmt) {
-    if (const auto* eval = stmt.as<HEvaluateObj>()) {
-      HPrimExpr mapped = MutateExpr(eval->value);
-      if (mapped.same_as(eval->value)) return stmt;
-      ObjectPtr<HEvaluateObj> copy = make_object<HEvaluateObj>(*eval);
-      copy->value = std::move(mapped);
-      return HStmt(std::move(copy));
-    }
-    if (const auto* seq = stmt.as<HSeqStmtObj>()) {
-      Array<HStmt> mapped = seq->seq;
-      for (size_t i = 0; i < mapped.size(); ++i) {
-        HStmt statement = MutateStmt(mapped[i]);
-        if (!statement.same_as(mapped[i])) mapped.Set(i, std::move(statement));
-      }
-      if (mapped.same_as(seq->seq)) return stmt;
-      ObjectPtr<HSeqStmtObj> copy = make_object<HSeqStmtObj>(*seq);
-      copy->seq = std::move(mapped);
-      return HStmt(std::move(copy));
-    }
-    return stmt;
-  }
-  std::function<Optional<HPrimExpr>(const HVarObj*)> vmap_;
-};
-
-}  // namespace mini
-}  // namespace ffi
-}  // namespace tvm
-
-// ---------------------------------------------------------------------------
 
 namespace mini_tir {
 
@@ -557,36 +36,10 @@ using namespace tvm::ffi::bench;  // NOLINT(build/namespaces)
 
 constexpr const char* kHarness = "mini-tir";
 
-// ---- node sizes -----------------------------------------------------------
-std::unordered_map<int32_t, int64_t>* NodeSizeTable() {
-  static std::unordered_map<int32_t, int64_t> table;
-  return &table;
-}
-template <typename T>
-void RegisterNodeSize() {
-  (*NodeSizeTable())[T::RuntimeTypeIndex()] = static_cast<int64_t>(sizeof(T));
-}
-int64_t NodeSize(int32_t type_index, const Object* obj) {
-  if (type_index == TypeIndex::kTVMFFIArray) {
-    const auto* array = static_cast<const ArrayObj*>(obj);
-    return static_cast<int64_t>(sizeof(ArrayObj) + array->size() * sizeof(Any));
-  }
-  auto it = NodeSizeTable()->find(type_index);
-  return it == NodeSizeTable()->end() ? 0 : it->second;
-}
-void RegisterNodeSizes() {
-  RegisterNodeSize<HPrimTypeObj>();
-  RegisterNodeSize<HVarObj>();
-  RegisterNodeSize<HIntImmObj>();
-  RegisterNodeSize<HAddObj>();
-  RegisterNodeSize<HMulObj>();
-  RegisterNodeSize<HFloorDivObj>();
-  RegisterNodeSize<HFloorModObj>();
-  RegisterNodeSize<HEvaluateObj>();
-  RegisterNodeSize<HSeqStmtObj>();
-}
+// ---------------------------------------------------------------------------
+// Fixtures.
+// ---------------------------------------------------------------------------
 
-// ---- fixtures -------------------------------------------------------------
 Any& Ty() {
   static Any ty = Any(HPrimType(make_object<HPrimTypeObj>(32)));
   return ty;
@@ -603,6 +56,17 @@ HVar& Replacement() {
   static HVar v(make_object<HVarObj>(Ty(), 2));
   return v;
 }
+/*!
+ * \brief The one variable a sparse `seq-L` update replaces.
+ *
+ * Element `L/2` uses this instead of `Outer()`, so a callback keyed on it changes exactly one
+ * occurrence in the whole fixture.  The middle element deliberately, so neither the first nor
+ * the last element's position can be what is being measured.
+ */
+HVar& Target() {
+  static HVar v(make_object<HVarObj>(Ty(), 3));
+  return v;
+}
 
 template <typename T>
 HPrimExpr Bin(HPrimExpr a, HPrimExpr b) {
@@ -610,15 +74,13 @@ HPrimExpr Bin(HPrimExpr a, HPrimExpr b) {
 }
 HPrimExpr Imm(int64_t v) { return HPrimExpr(make_object<HIntImmObj>(Ty(), v)); }
 
-// Composition of the `seq-L` fixture, identical in shape to the real-TVM one.
-constexpr int64_t kSeqSharedNodes = 3;
-constexpr int64_t kSeqRebuiltTail = 2;
-constexpr int64_t kSeqUniqueNodes(int length) { return 4LL * length + kSeqSharedNodes; }
-constexpr int64_t kSeqRebuiltRetained(int length) { return 3LL * length + kSeqRebuiltTail; }
-constexpr int64_t kSeqChanged(int length) { return 3LL * length + 1; }
-constexpr int64_t kSeqRebuiltMoved(int length) { return 3LL * length + 1; }
-
-/*! \brief floordiv(o*16+i, 32)*32 + floormod(o*16+i, 32) -- the split/fuse index expression. */
+/*!
+ * \brief `floordiv(o*16+i, 32)*32 + floormod(o*16+i, 32)` -- the split/fuse index expression.
+ *
+ * `shared == true` reuses one pointer for both occurrences of `o*16+i`, so the fixture is a
+ * DAG; `false` builds two structurally equal, pointer-distinct copies.  Twelve unique nodes
+ * shared, fifteen distinct, seventeen occurrences either way.
+ */
 HPrimExpr SplitFuse(bool shared) {
   HPrimExpr q = Bin<HAddObj>(Bin<HMulObj>(Outer(), Imm(16)), Inner());
   HPrimExpr r = shared ? q : Bin<HAddObj>(Bin<HMulObj>(Outer(), Imm(16)), Inner());
@@ -626,195 +88,301 @@ HPrimExpr SplitFuse(bool shared) {
                       Bin<HFloorModObj>(r, Imm(32)));
 }
 
+/*!
+ * \brief `SeqStmt` of `L` statements `Evaluate(v * (i+2) + inner)`.
+ *
+ * Four unique nodes per element -- Mul, IntImm, Add, Evaluate -- plus a shared preamble of
+ * the SeqStmt and three Vars, so `N = 4L + 4`; six occurrences per element plus the SeqStmt,
+ * so `occurrences = 6L + 1`.  `i + 2` because a multiplier of one would fold the Mul away.
+ */
 HStmt LongSeq(int length) {
   Array<HStmt> body;
   body.reserve(length);
   for (int i = 0; i < length; ++i) {
-    body.push_back(HStmt(make_object<HEvaluateObj>(
-        Bin<HAddObj>(Bin<HMulObj>(Outer(), Imm(i + 2)), Inner()))));
+    HVar lhs = (i == length / 2) ? Target() : Outer();
+    body.push_back(
+        HStmt(make_object<HEvaluateObj>(Bin<HAddObj>(Bin<HMulObj>(lhs, Imm(i + 2)), Inner()))));
   }
   return HStmt(make_object<HSeqStmtObj>(body));
 }
 
-// ---- arms -----------------------------------------------------------------
+// Working sets, as sizeof sums over what the builders above construct.
+constexpr int64_t kVarBytes = sizeof(HVarObj);
+constexpr int64_t kImmBytes = sizeof(HIntImmObj);
+constexpr int64_t kAddBytes = sizeof(HAddObj);
+constexpr int64_t kMulBytes = sizeof(HMulObj);
+constexpr int64_t kEvalBytes = sizeof(HEvaluateObj);
+// A SeqStmt of L elements owns an Array whose payload is inline.
+constexpr int64_t kSeqBytes(int64_t l) {
+  return sizeof(HSeqStmtObj) + sizeof(ArrayObj) + l * static_cast<int64_t>(sizeof(Any));
+}
+// split/fuse: 2 Var, 4 IntImm, 2 Mul, 2 Add, 1 FloorDiv, 1 FloorMod (shared); the distinct
+// variant adds one more Mul, IntImm and Add.
+constexpr int64_t kSplitFuseSharedBytes =
+    2 * kVarBytes + 4 * kImmBytes + 2 * kMulBytes + 2 * kAddBytes +
+    static_cast<int64_t>(sizeof(HFloorDivObj)) + static_cast<int64_t>(sizeof(HFloorModObj));
+constexpr int64_t kSplitFuseDistinctBytes =
+    kSplitFuseSharedBytes + kMulBytes + kImmBytes + kAddBytes;
+constexpr int64_t kSeqWorkingSet(int64_t l) {
+  return l * (kMulBytes + kImmBytes + kAddBytes + kEvalBytes) + 3 * kVarBytes + kSeqBytes(l);
+}
+
+/*!
+ * \brief The three `seq` lengths, one per cache level on the benchmark machine.
+ *
+ * 16 lands inside a 32 KiB L1d, 256 inside a 1 MiB L2, 16384 inside a 32 MiB L3.  The report
+ * states the machine's geometry and names the level; the binary does not probe for it.
+ */
+constexpr int kSeqLengths[] = {16, 256, 16384};
+
+/*!
+ * \brief Traversals per timed sample, per fixture.
+ *
+ * Chosen so a sample lands in the milliseconds, far above the two clock reads bracketing it,
+ * without making the large fixtures take minutes.  Plain constants rather than a calibration
+ * loop: #367 ran a fixed 20,000 traversals and this harness reproduces its numbers.
+ */
+constexpr int kSplitFuseRepeats = 20000;
+constexpr int SeqRepeats(int length) {
+  return length == 16 ? 5000 : (length == 256 ? 500 : 10);
+}
+
+// ---------------------------------------------------------------------------
+// Arms.  One plain function each; the tables below are what main() iterates.
+// ---------------------------------------------------------------------------
+
 size_t g_sink = 0;
 
-Any SwapVars(const HVar& var) {
+// The replacement callbacks swap rather than replace one-way, so repeating an arm in place is
+// stationary and the timed loop never drifts into a different workload.
+Any SwapAllVars(const HVar& var) {
   if (var->id == 0) return Any(Replacement());
   if (var->id == 2) return Any(Outer());
   return Any(var);
 }
-Optional<HPrimExpr> SwapVarsOld(const HVarObj* var) {
-  if (var->id == 0) return Optional<HPrimExpr>(Replacement());
-  if (var->id == 2) return Optional<HPrimExpr>(Outer());
-  return std::nullopt;
+/*! \brief The sparse update: only `Target` moves, so exactly one occurrence changes. */
+Any SwapTargetVar(const HVar& var) {
+  if (var->id == 3) return Any(Replacement());
+  if (var->id == 2) return Any(Target());
+  return Any(var);
+}
+Any SwapVars(ReplaceKind kind, const HVar& var) {
+  return kind == ReplaceKind::kAllVars ? SwapAllVars(var) : SwapTargetVar(var);
+}
+/*! \brief The same swap in the `Optional` shape `Substitute` and `IRSubstitute` take. */
+Optional<HPrimExpr> SwapVarsFn(ReplaceKind kind, const HVar& var) {
+  HPrimExpr mapped = SwapVars(kind, var).cast<HPrimExpr>();
+  if (mapped.same_as(HPrimExpr(var))) return std::nullopt;
+  return Optional<HPrimExpr>(mapped);
 }
 
-void RunWalkArm(ArmId id, AnyView root) {
-  switch (id) {
-    case ArmId::kWalkFloor: {
-      MinimalVisitorObj visitor;
-      g_sink += visitor.VisitExpected(root).is_err();
-      break;
-    }
-    case ArmId::kWalk: {
-      size_t matched = 0;
-      StructuralWalk<WalkOrder::kPostOrder>(
-          root,
-          [&](const HVar&) -> Expected<WalkResult> {
-            ++matched;
-            return WalkResult::Advance();
-          },
-          [&](const HExpr&) -> Expected<WalkResult> {
-            ++matched;
-            return WalkResult::Advance();
-          });
-      g_sink += matched;
-      break;
-    }
-    case ArmId::kWalkNever: {
-      size_t matched = 0;
-      StructuralWalk<WalkOrder::kPostOrder>(
-          root,
-          [&](const HPrimType&) -> Expected<WalkResult> {
-            ++matched;
-            return WalkResult::Advance();
-          },
-          [&](const HExpr&) -> Expected<WalkResult> {
-            ++matched;
-            return WalkResult::Advance();
-          });
-      g_sink += matched;
-      break;
-    }
-    case ArmId::kWalkOld: {
-      size_t matched = 0;
-      MinimalPostOrderModel model;
-      model.Run(root.cast<ObjectRef>(),
-                [&](const Object* node) { matched += ObjAs<HVarObj>(node) != nullptr; });
-      g_sink += matched;
-      break;
-    }
-    default:
-      std::abort();
-  }
+void WalkFloor(AnyView root) {
+  MinimalVisitorObj visitor;
+  g_sink += visitor.VisitExpected(root).is_err();
 }
 
-Any MapOldOnce(Any root) {
-  MinimalSubstituteModel model(SwapVarsOld);
-  return model.Run(root);
+void Walk(AnyView root) {
+  size_t matched = 0;
+  StructuralWalk<WalkOrder::kPostOrder>(
+      root,
+      [&](const HVar&) -> Expected<WalkResult> {
+        ++matched;
+        return WalkResult::Advance();
+      },
+      [&](const HExpr&) -> Expected<WalkResult> {
+        ++matched;
+        return WalkResult::Advance();
+      });
+  g_sink += matched;
 }
 
-void RunMapArm(ArmId id, Ownership ownership, Any* slot) {
-  auto take = [&]() -> Any { return ownership == Ownership::kMoved ? std::move(*slot) : Any(*slot); };
-  auto give = [&](Any result) {
-    if (ownership == Ownership::kMoved) {
-      *slot = std::move(result);
-    } else {
-      g_sink += result.type_index();
-    }
-  };
-  switch (id) {
-    case ArmId::kMapFloor: {
-      MinimalMutatorObj mutator;
-      Any input = take();
-      Expected<Any> result = ownership == Ownership::kMoved
-                                 ? mutator.MaybeInplaceMutateIfUniqueExpected(input)
-                                 : mutator.MutateExpected(input);
-      g_sink += result.is_err();
-      give(result.value());
-      break;
-    }
-    case ArmId::kMapNever:
-      give(StructuralMap<WalkOrder::kPostOrder>(
-          take(), [](const HPrimType& value) { return Any(value); }));
-      break;
-    case ArmId::kMapIdentity:
-      give(StructuralMap<WalkOrder::kPostOrder>(take(), [](const HVar& var) { return Any(var); }));
-      break;
-    case ArmId::kMapReplace:
-      give(StructuralMap<WalkOrder::kPostOrder>(take(), SwapVars));
-      break;
-    case ArmId::kMapOld:
-      give(MapOldOnce(take()));
-      break;
-    default:
-      std::abort();
+/*! \brief The same shape whose first link can never match: prices link testing alone. */
+void WalkNever(AnyView root) {
+  size_t matched = 0;
+  StructuralWalk<WalkOrder::kPostOrder>(
+      root,
+      [&](const HPrimType&) -> Expected<WalkResult> {
+        ++matched;
+        return WalkResult::Advance();
+      },
+      [&](const HExpr&) -> Expected<WalkResult> {
+        ++matched;
+        return WalkResult::Advance();
+      });
+  g_sink += matched;
+}
+
+/*! \brief The functor-era PostOrderVisit: ExprFunctor/StmtFunctor vtable + IRApplyVisit. */
+void WalkFunctor(AnyView root) {
+  size_t matched = 0;
+  FunctorPostOrderVisit(root.cast<ObjectRef>(),
+                        [&](const ObjectRef& node) { matched += node.as<HVarObj>() != nullptr; });
+  g_sink += matched;
+}
+
+/*! \brief What the pinned TVM ships: StructuralWalk plus a dedup set. */
+void WalkOld(AnyView root) {
+  size_t matched = 0;
+  ShippingPostOrderVisit(
+      root, [&](const ObjectRef& node) { matched += node.as<HVarObj>() != nullptr; });
+  g_sink += matched;
+}
+
+/*!
+ * \brief Take the root the way this ownership variant means.
+ *
+ * `retained` keeps the caller's handle alive, so the root's refcount is at least two and the
+ * engine takes the copy-on-write path.  `moved` hands the sole reference over, so the engine
+ * takes the in-place path; the result goes back into the slot, which keeps the next
+ * repetition uniquely owned and the working set fixed at one fixture.  The difference between
+ * a whole column of this report and the next is this one `std::move`.
+ */
+Any Take(Ownership ownership, Any* slot) {
+  return ownership == Ownership::kMoved ? std::move(*slot) : Any(*slot);
+}
+void Give(Ownership ownership, Any* slot, Any result) {
+  if (ownership == Ownership::kMoved) {
+    *slot = std::move(result);
+  } else {
+    g_sink += result.type_index();
   }
 }
 
-/*! \brief The harness policy the shared driver in bench_common.h is instantiated on. */
-struct MiniTirPolicy {
-  static constexpr const char* kName = kHarness;
-  static constexpr bool kOldGoesThroughEngine = false;
-  static int64_t NodeSize(int32_t type_index, const Object* obj) {
-    return mini_tir::NodeSize(type_index, obj);
-  }
-  static void RunWalkArm(ArmId id, AnyView root) { mini_tir::RunWalkArm(id, root); }
-  static void RunMapArm(ArmId id, Ownership ownership, Any* slot) {
-    mini_tir::RunMapArm(id, ownership, slot);
-  }
-  static Any MapReplace(Any root) {
-    return StructuralMap<WalkOrder::kPostOrder>(std::move(root), SwapVars);
-  }
-  static Any MapIdentity(Any root) {
-    return StructuralMap<WalkOrder::kPostOrder>(std::move(root),
-                                                [](const HVar& var) { return Any(var); });
-  }
-  static Any MapNever(Any root) {
-    return StructuralMap<WalkOrder::kPostOrder>(std::move(root),
-                                                [](const HPrimType& value) { return Any(value); });
-  }
-  static Any MapOld(Any root) { return MapOldOnce(std::move(root)); }
+void MapFloor(Ownership ownership, ReplaceKind, Any* slot) {
+  MinimalMutatorObj mutator;
+  Any input = Take(ownership, slot);
+  Expected<Any> result = ownership == Ownership::kMoved
+                             ? mutator.MaybeInplaceMutateIfUniqueExpected(input)
+                             : mutator.MutateExpected(input);
+  g_sink += result.is_err();
+  Give(ownership, slot, result.value());
+}
+
+void MapNever(Ownership ownership, ReplaceKind, Any* slot) {
+  Give(ownership, slot,
+       StructuralMap<WalkOrder::kPostOrder>(Take(ownership, slot),
+                                            [](const HPrimType& v) { return Any(v); }));
+}
+
+void MapIdentity(Ownership ownership, ReplaceKind, Any* slot) {
+  Give(ownership, slot,
+       StructuralMap<WalkOrder::kPostOrder>(Take(ownership, slot),
+                                            [](const HVar& var) { return Any(var); }));
+}
+
+void MapReplace(Ownership ownership, ReplaceKind kind, Any* slot) {
+  Give(ownership, slot,
+       StructuralMap<WalkOrder::kPostOrder>(
+           Take(ownership, slot), [kind](const HVar& var) { return SwapVars(kind, var); }));
+}
+
+/*! \brief The functor-era Substitute: ExprMutator/StmtMutator vtable + IRSubstitute. */
+void MapFunctor(Ownership ownership, ReplaceKind kind, Any* slot) {
+  Give(ownership, slot,
+       FunctorSubstitute(Take(ownership, slot),
+                         [kind](const HVar& var) { return SwapVarsFn(kind, var); }));
+}
+
+/*! \brief What the pinned TVM ships: a StructuralMutatorObj owning its own var remap. */
+void MapOld(Ownership ownership, ReplaceKind kind, Any* slot) {
+  Give(ownership, slot,
+       ShippingSubstitute(Take(ownership, slot),
+                          [kind](const HVar& var) { return SwapVarsFn(kind, var); }));
+}
+
+struct WalkArm {
+  const char* name;
+  void (*run)(AnyView);
 };
+constexpr WalkArm kWalkArms[] = {
+    {"walk_floor", &WalkFloor}, {"walk", &Walk},         {"walk_never", &WalkNever},
+    {"walk_functor", &WalkFunctor}, {"walk_old", &WalkOld},
+};
+
+struct MapArm {
+  const char* name;
+  void (*run)(Ownership, ReplaceKind, Any*);
+  /*! \brief Whether the arm changes the graph, which is what makes it consume a shared DAG. */
+  bool rebuilds;
+};
+constexpr MapArm kMapArms[] = {
+    {"map_floor", &MapFloor, false},     {"map_never", &MapNever, false},
+    {"map_identity", &MapIdentity, false}, {"map_replace", &MapReplace, true},
+    {"map_functor", &MapFunctor, true},  {"map_old", &MapOld, true},
+};
+
+// ---------------------------------------------------------------------------
+// main: build, declare, time, print.
+// ---------------------------------------------------------------------------
+
+void RunFixture(const FixtureInfo& info, Any (*build)()) {
+  EmitFixture(kHarness, info);
+
+  for (const WalkArm& arm : kWalkArms) {
+    Any root = build();
+    double ns = MeasureStationary(info.repeats, [&] { arm.run(root); });
+    EmitResult(kHarness, info.name, "-", arm.name, ns);
+  }
+
+  for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
+    for (const MapArm& arm : kMapArms) {
+      double ns = 0;
+      // An in-place rebuilding arm on a fixture with a pointer-shared subtree un-shares it,
+      // so the fixture is not stationary: it runs over a pool of independent copies rebuilt
+      // untimed between passes.
+      if (ownership == Ownership::kMoved && arm.rebuilds && info.has_sharing) {
+        std::vector<Any> pool(kPoolSize);
+        int passes = info.repeats / kPoolSize;
+        if (passes < 1) passes = 1;
+        ns = MeasurePooled(
+            passes, [&] { for (Any& slot : pool) slot = build(); },
+            [&](int i) { arm.run(ownership, info.replace_kind, &pool[i]); });
+      } else {
+        Any slot = build();
+        ns = MeasureStationary(info.repeats,
+                               [&] { arm.run(ownership, info.replace_kind, &slot); });
+      }
+      EmitResult(kHarness, info.name, OwnershipName(ownership), arm.name, ns);
+    }
+  }
+}
 
 }  // namespace mini_tir
 
 int main() {
   using namespace mini_tir;  // NOLINT(build/namespaces)
   EmitStandardProvenance(kHarness);
-  RegisterNodeSizes();
+  EmitProvenance("seqstmt_inplace_hook",
+                 MINI_SEQSTMT_INPLACE_FIX ? "repaired" : "original");
 
-  std::vector<Fixture> fixtures;
-  {
-    Fixture f;
-    f.name = "split-fuse-shared";
-    f.build = [] { return Any(SplitFuse(true)); };
-    f.has_sharing = true;
-    fixtures.push_back(f);
-  }
-  {
-    Fixture f;
-    f.name = "split-fuse-distinct";
-    f.build = [] { return Any(SplitFuse(false)); };
-    fixtures.push_back(f);
-  }
-  for (int length : SeqSweepLengths()) {
-    Fixture f;
-    f.name = "seq-" + std::to_string(length);
-    f.build = [length] { return Any(LongSeq(length)); };
-    fixtures.push_back(f);
-  }
+  // split/fuse replaces every Var: on a twelve-node tree that is a reasonable shape.  Under
+  // moved ownership the only new identity is the substituted-in Var, except on the shared
+  // fixture, where the first parent to reach the shared subtree cannot mutate it in place and
+  // copies it and its own changed child.
+  RunFixture({"split-fuse-shared", 12, 17, kSplitFuseSharedBytes, 9, 3, kSplitFuseRepeats, true,
+              ReplaceKind::kAllVars},
+             [] { return Any(SplitFuse(true)); });
+  RunFixture({"split-fuse-distinct", 15, 17, kSplitFuseDistinctBytes, 9, 1, kSplitFuseRepeats,
+              false, ReplaceKind::kAllVars},
+             [] { return Any(SplitFuse(false)); });
 
-  auto declare = [&](const std::string& name, int64_t unique, int64_t rebuilt_retained,
-                     int64_t rebuilt_moved, int64_t changed, int64_t remap_hits) {
-    for (Fixture& fixture : fixtures) {
-      if (fixture.name != name) continue;
-      fixture.expect_unique_nodes = unique;
-      fixture.expect_rebuilt_retained = rebuilt_retained;
-      fixture.expect_rebuilt_moved = rebuilt_moved;
-      fixture.expect_changed = changed;
-      fixture.expect_remap_hits = remap_hits;
-    }
-  };
-  declare("split-fuse-shared", 12, 9, 3, 6, 2);
-  declare("split-fuse-distinct", 15, 9, 1, 8, 2);
-  for (int length : SeqSweepLengths()) {
-    declare("seq-" + std::to_string(length), kSeqUniqueNodes(length), kSeqRebuiltRetained(length),
-            kSeqRebuiltMoved(length), kSeqChanged(length), 2LL * (length - 1));
+  // seq is a sparse update: one Var occurrence in the whole body.  Retained, the changed path
+  // is Mul, Add, Evaluate and the SeqStmt, plus the substituted-in Var, so five identities
+  // regardless of L.  Moved, the repaired SeqStmt hook mutates that path in place and only
+  // the substituted-in Var is new; the original hook's handle copy of the sequence forces the
+  // changed element's Mul, Add and Evaluate onto the copy-on-write path, so four.
+  constexpr int64_t kSeqRebuiltRetained = 5;
+  constexpr int64_t kSeqRebuiltMoved = MINI_SEQSTMT_INPLACE_FIX ? 1 : 4;
+  for (int length : kSeqLengths) {
+    static int current_length = 0;
+    current_length = length;
+    std::string name = "seq-" + std::to_string(length);
+    RunFixture({name.c_str(), 4LL * length + 4, 6LL * length + 1, kSeqWorkingSet(length),
+                kSeqRebuiltRetained, kSeqRebuiltMoved, SeqRepeats(length), false,
+                ReplaceKind::kSingleVar},
+               [] { return Any(LongSeq(current_length)); });
   }
 
-  for (const Fixture& fixture : fixtures) RunFixture<MiniTirPolicy>(fixture);
   Emit("#sink\t" + std::to_string(g_sink));
   return 0;
 }

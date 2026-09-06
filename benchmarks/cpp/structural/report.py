@@ -15,18 +15,15 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-"""Run the structural-traversal harnesses and render the fixed report.
+"""Run the structural harnesses and render the report.
 
-The reporting format lives here, not in a task record: rows are cases, columns are arms,
-one quantity per table, `ns/node` on the fixture's unique-node count with the same divisor
-for every arm in a row, and deltas always against the same baseline.
+The reporting format lives here, not in a task record: rows are cases, columns are arms, one
+quantity per table, `ns/node` on the fixture's declared unique-node count with the same
+divisor for every arm in a row, and every delta column says in its own header what it
+compares.  Each binary is run `--runs` times pinned to one CPU; the reported value is the
+median of the process medians.
 
-    ./report.py --binary ../../../build_bench/mini_tir_bench \
-                --binary ../../../build_bench/real_tvm_bench --cpu 0
-
-Each binary is run `--runs` times pinned to one CPU; the reported value is the median of the
-process medians.  A process whose assertions fail exits non-zero and aborts the report --
-that is the point of the assertions.
+    ./report.py --binary ../../../build_bench/mini_tir_bench --cpu 0
 """
 import argparse
 import os
@@ -34,9 +31,18 @@ import statistics
 import subprocess
 import sys
 
-# The order arms appear in a table. Defined once here, matching bench_common.h's vocabulary.
-WALK_ARMS = ["walk_floor", "walk", "walk_never", "walk_old"]
-MAP_ARMS = ["map_floor", "map_never", "map_identity", "map_replace", "map_old"]
+WALK_ARMS = ["walk_floor", "walk", "walk_never", "walk_functor", "walk_old"]
+MAP_ARMS = ["map_floor", "map_never", "map_identity", "map_replace", "map_functor", "map_old"]
+
+# The benchmark machine's data-cache geometry, stated rather than probed.
+CACHE = [("L1d", 32 * 1024), ("L2", 1024 * 1024), ("L3", 32 * 1024 * 1024)]
+
+
+def fits(working_set):
+    for name, size in CACHE:
+        if working_set <= size:
+            return name
+    return "DRAM"
 
 
 def run_once(binary, cpu):
@@ -45,149 +51,35 @@ def run_once(binary, cpu):
     if proc.returncode != 0:
         sys.stderr.write(proc.stdout)
         sys.stderr.write(proc.stderr)
-        raise SystemExit(
-            "%s exited %d: an assertion failed, so this run is invalid" % (binary, proc.returncode)
-        )
+        raise SystemExit("%s exited %d, so this run is invalid" % (binary, proc.returncode))
     return proc.stdout
 
 
 def parse(text):
-    out = {"provenance": {}, "fixtures": {}, "results": {}, "counters": {}, "asserts": []}
+    out = {"provenance": {}, "fixtures": {}, "order": [], "results": {}}
     for line in text.splitlines():
         if not line.startswith("#"):
             continue
         parts = line.split("\t")
-        tag = parts[0]
-        if tag == "#provenance":
+        if parts[0] == "#provenance":
             out["provenance"][parts[1]] = parts[2]
-        elif tag == "#fixture":
-            _, harness, fixture, ownership, unique, occ, ws, fits, changed, unchanged = parts
-            out["fixtures"][(harness, fixture, ownership)] = dict(
-                unique=int(unique), occurrences=int(occ), working_set=int(ws), fits=fits,
-                changed=int(changed), unchanged=int(unchanged))
-        elif tag == "#result":
-            _, harness, fixture, ownership, arm, unique, ns = parts
-            out["results"][(harness, fixture, ownership, arm)] = (int(unique), float(ns))
-        elif tag == "#counter":
-            _, harness, fixture, ownership, arm, name, value = parts
-            out["counters"][(harness, fixture, ownership, arm, name)] = int(value)
-        elif tag == "#assert":
-            out["asserts"].append((parts[1], parts[2], parts[3], parts[4]))
+        elif parts[0] == "#fixture":
+            _, harness, name, unique, occ, ws, reb_r, reb_m, kind = parts
+            out["fixtures"][name] = dict(unique=int(unique), occurrences=int(occ),
+                                         working_set=int(ws), rebuilt_retained=int(reb_r),
+                                         rebuilt_moved=int(reb_m), kind=kind)
+            out["order"].append(name)
+        elif parts[0] == "#result":
+            _, harness, fixture, ownership, arm, ns = parts
+            out["results"][(fixture, ownership, arm)] = float(ns)
     return out
 
 
 def median_runs(runs):
     merged = dict(runs[0])
-    merged["results"] = {}
-    for key in runs[0]["results"]:
-        unique = runs[0]["results"][key][0]
-        values = [r["results"][key][1] for r in runs if key in r["results"]]
-        merged["results"][key] = (unique, statistics.median(values))
+    merged["results"] = {k: statistics.median([r["results"][k] for r in runs])
+                         for k in runs[0]["results"]}
     return merged
-
-
-def fmt(value):
-    return "%.2f" % value
-
-
-def render(merged, runs, out):
-    prov = merged["provenance"]
-    harness = prov["harness"]
-    w = out.write
-
-    w("### Provenance -- %s\n\n" % harness)
-    w("| | |\n| --- | --- |\n")
-    for key, label in [
-        ("harness_branch_commit", "harness branch commit"),
-        ("tvm_ffi_engine_sha", "tvm-ffi engine sha"),
-        ("tvm_sha", "apache/tvm sha"),
-        ("tvm_ffi_submodule_pin", "tvm-ffi submodule pin"),
-        ("machine", "machine"),
-        ("compiler", "compiler"),
-        ("flags", "flags"),
-        ("pinning", "pinning"),
-        ("write_once_attr_guard", "write-once attr guard"),
-    ]:
-        w("| %s | `%s` |\n" % (label, prov.get(key, "")))
-    w("| cache | L1d %s B, L2 %s B, L3 %s B |\n" % (
-        prov.get("cache_l1d_bytes"), prov.get("cache_l2_bytes"), prov.get("cache_l3_bytes")))
-    w("| method | %s |\n" % prov["method"])
-    w("| processes | %d |\n\n" % len(runs))
-
-    w("### Fixtures -- %s\n\n" % harness)
-    w("| fixture | ownership | unique nodes | occurrences | working set | fits | changed | unchanged |\n")
-    w("| --- | --- | ---: | ---: | ---: | --- | ---: | ---: |\n")
-    seen = []
-    for (h, fixture, ownership), info in merged["fixtures"].items():
-        if h != harness:
-            continue
-        seen.append((fixture, ownership, info))
-    for fixture, ownership, info in seen:
-        w("| `%s` | %s | %d | %d | %s | %s | %d | %d |\n" % (
-            fixture, ownership, info["unique"], info["occurrences"],
-            human(info["working_set"]), info["fits"], info["changed"], info["unchanged"]))
-    w("\n")
-
-    fixtures = []
-    for (h, fixture, ownership) in merged["fixtures"]:
-        if h == harness and fixture not in fixtures:
-            fixtures.append(fixture)
-
-    w("### %s -- walk -- ns/node\n\n" % harness)
-    w("| Case | N | " + " | ".join("`%s`" % a for a in WALK_ARMS) + " | delta vs `walk_old` |\n")
-    w("| --- | ---: |" + " ---: |" * (len(WALK_ARMS) + 1) + "\n")
-    for fixture in fixtures:
-        row = []
-        n = None
-        for arm in WALK_ARMS:
-            key = (harness, fixture, "-", arm)
-            if key not in merged["results"]:
-                row.append(None)
-                continue
-            n, ns = merged["results"][key]
-            row.append(ns / n)
-        if n is None:
-            continue
-        delta = "" if row[1] is None or row[3] is None else "**%+.1f%%**" % (
-            100.0 * (row[1] - row[3]) / row[3])
-        w("| %s | %d | %s | %s |\n" % (
-            fixture, n, " | ".join(fmt(v) if v is not None else "" for v in row), delta))
-    w("\n")
-
-    for ownership in ["retained", "moved"]:
-        w("### %s -- map, %s -- ns/node\n\n" % (harness, ownership))
-        w("| Case | N | " + " | ".join("`%s`" % a for a in MAP_ARMS) + " | delta vs `map_old` |\n")
-        w("| --- | ---: |" + " ---: |" * (len(MAP_ARMS) + 1) + "\n")
-        for fixture in fixtures:
-            row = []
-            n = None
-            for arm in MAP_ARMS:
-                key = (harness, fixture, ownership, arm)
-                if key not in merged["results"]:
-                    row.append(None)
-                    continue
-                n, ns = merged["results"][key]
-                row.append(ns / n)
-            if n is None:
-                continue
-            delta = "" if row[3] is None or row[4] is None else "**%+.1f%%**" % (
-                100.0 * (row[3] - row[4]) / row[4])
-            w("| %s, %s | %d | %s | %s |\n" % (
-                fixture, ownership, n,
-                " | ".join(fmt(v) if v is not None else "" for v in row), delta))
-        w("\n")
-
-    w("### %s -- dispatch and rebuild counts\n\n" % harness)
-    w("| fixture | ownership | arm | counter | value |\n| --- | --- | --- | --- | ---: |\n")
-    for (h, fixture, ownership, arm, name), value in merged["counters"].items():
-        if h != harness or name == "occurrences" or (name == "unique_nodes"):
-            continue
-        w("| `%s` | %s | `%s` | %s | %d |\n" % (fixture, ownership, arm, name, value))
-    w("\n")
-
-    names = [a[1] for a in merged["asserts"] if a[0] == harness]
-    w("### %s -- assertions\n\n" % harness)
-    w("%d assertions, all passing in every one of the %d processes.\n\n" % (len(names), len(runs)))
 
 
 def human(n):
@@ -195,6 +87,95 @@ def human(n):
         if n < 1024 or unit == "MiB":
             return "%.1f %s" % (n, unit)
         n /= 1024.0
+
+
+def pct(new, base):
+    return "**%+.1f%%**" % (100.0 * (new - base) / base)
+
+
+def render(merged, runs, out):
+    prov = merged["provenance"]
+    harness = prov["harness"]
+    fixtures, results = merged["fixtures"], merged["order"]
+    w = out.write
+
+    w("### Provenance -- %s\n\n| | |\n| --- | --- |\n" % harness)
+    for key, label in [("harness_branch_commit", "harness branch commit"),
+                       ("tvm_ffi_engine_sha", "tvm-ffi engine sha"),
+                       ("tvm_sha", "apache/tvm sha"),
+                       ("compiler", "compiler"), ("flags", "flags"),
+                       ("structural_hooks", "structural hooks"),
+                       ("seqstmt_inplace_hook", "SeqStmt in-place hook")]:
+        if key in prov:
+            w("| %s | `%s` |\n" % (label, prov[key]))
+    w("| method | %s |\n| processes | %d |\n\n" % (prov["method"], len(runs)))
+
+    w("### Fixtures -- %s\n\n" % harness)
+    w("| fixture | N | occurrences | working set | fits | replaces | rebuilt retained "
+      "| rebuilt moved |\n")
+    w("| --- | ---: | ---: | ---: | --- | --- | ---: | ---: |\n")
+    for name in results:
+        f = fixtures[name]
+        w("| `%s` | %d | %d | %s | %s | %s | %d | %d |\n"
+          % (name, f["unique"], f["occurrences"], human(f["working_set"]),
+             fits(f["working_set"]), f["kind"].replace("_", " "),
+             f["rebuilt_retained"], f["rebuilt_moved"]))
+    w("\n")
+
+    def cell(fixture, ownership, arm):
+        ns = merged["results"].get((fixture, ownership, arm))
+        return None if ns is None else ns / fixtures[fixture]["unique"]
+
+    w("#### %s -- walk -- ns/node\n\n" % harness)
+    w("| Case | N | " + " | ".join("`%s`" % a for a in WALK_ARMS) +
+      " | `walk` vs `walk_old` | `walk` vs `walk_functor` |\n")
+    w("| --- | ---: |" + " ---: |" * (len(WALK_ARMS) + 2) + "\n")
+    for name in results:
+        row = [cell(name, "-", a) for a in WALK_ARMS]
+        w("| %s | %d | %s | %s | %s |\n"
+          % (name, fixtures[name]["unique"],
+             " | ".join("%.2f" % v if v is not None else "" for v in row),
+             pct(row[1], row[4]), pct(row[1], row[3])))
+    w("\n")
+
+    w("#### %s -- map -- ns/node, both ownership variants\n\n" % harness)
+    w("| Case | ownership | N | " + " | ".join("`%s`" % a for a in MAP_ARMS) +
+      " | `map_replace` vs `map_old` | `map_replace` vs `map_functor` |\n")
+    w("| --- | --- | ---: |" + " ---: |" * (len(MAP_ARMS) + 2) + "\n")
+    for name in results:
+        for ownership in ["retained", "moved"]:
+            row = [cell(name, ownership, a) for a in MAP_ARMS]
+            w("| %s | %s | %d | %s | %s | %s |\n"
+              % (name, ownership, fixtures[name]["unique"],
+                 " | ".join("%.2f" % v if v is not None else "" for v in row),
+                 pct(row[3], row[5]), pct(row[3], row[4])))
+    w("\n")
+
+    # The sparse-update fixtures: ns/node amortizes one useful change over the whole
+    # traversal, which is exactly the cost that should be visible rather than hidden.
+    sparse = [n for n in results if fixtures[n]["kind"] == "single_var"]
+    if sparse:
+        w("#### %s -- sparse update: cost of changing one variable\n\n" % harness)
+        # One variable occurrence changes, so ns/traversal is also ns per changed node:
+        # the whole traversal buys one replacement. That is the cost ns/node would hide.
+        w("| Case | ownership | N | ns per traversal, and per changed node | rebuilt "
+          "| necessary | wasted |\n")
+        w("| --- | --- | ---: | ---: | ---: | ---: | ---: |\n")
+        for name in sparse:
+            f = fixtures[name]
+            for ownership in ["retained", "moved"]:
+                ns = merged["results"].get((name, ownership, "map_replace"))
+                if ns is None:
+                    continue
+                rebuilt = f["rebuilt_retained"] if ownership == "retained" else f["rebuilt_moved"]
+                # What an implementation confined to the changed path must rebuild: under
+                # copy-on-write the Mul, Add, Evaluate and SeqStmt above the changed variable
+                # plus the substituted-in variable; in place, only that variable.
+                necessary = 5 if ownership == "retained" else 1
+                w("| %s | %s | %d | %.0f | %d | %d | %s |\n"
+                  % (name, ownership, f["unique"], ns, rebuilt, necessary,
+                     "%.1fx" % (rebuilt / float(necessary))))
+        w("\n")
 
 
 def main():
@@ -209,10 +190,6 @@ def main():
     for binary in args.binary:
         binary = os.path.abspath(binary)
         runs = [parse(run_once(binary, args.cpu)) for _ in range(args.runs)]
-        for run in runs:
-            bad = [a for a in run["asserts"] if a[2] != "pass"]
-            if bad:
-                raise SystemExit("assertion failed: %s" % bad)
         render(median_runs(runs), runs, out)
     if out is not sys.stdout:
         out.close()
