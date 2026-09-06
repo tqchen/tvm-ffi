@@ -301,3 +301,4 @@ build/
 *.cubin
 *.fatbin
 build_cpp/
+build_bench/
