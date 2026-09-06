@@ -42,7 +42,7 @@ STMT_MAP_ARMS = ["map_floor", "map_never", "map_identity_stmt", "map_replace_stm
 
 # A cell is never blank. Where an arm cannot run on a row, it says so in a word and the
 # footnote under the table gives the reason.
-NA = "n/a[^1]"
+NA_LABEL = "stmt-%s"  # per-harness, so two harnesses in one document do not collide
 
 # The benchmark machine's data-cache geometry, stated rather than probed.
 CACHE = [("L1d", 32 * 1024), ("L2", 1024 * 1024), ("L3", 32 * 1024 * 1024)]
@@ -169,8 +169,10 @@ def render(merged, runs, out):
              pct(row[1], row[4]), pct(row[1], row[3])))
     w("\n")
 
+    na = "n/a[^%s]" % (NA_LABEL % harness)
+
     def fmt(v):
-        return NA if v is None else "%.2f" % v
+        return na if v is None else "%.2f" % v
 
     w("#### %s -- map, Var substitution -- ns/node, both ownership variants\n\n" % harness)
     w("Every column substitutes `Var`s, which is the operation `Substitute` and\n"
@@ -185,8 +187,8 @@ def render(merged, runs, out):
             w("| %s | %s | %d | %s | %s | %s |\n"
               % (name, ownership, fixtures[name]["unique"],
                  " | ".join(fmt(v) for v in row),
-                 pct(row[3], row[4]) if row[3] and row[4] else NA,
-                 pct(row[3], row[5]) if row[3] and row[5] else NA))
+                 pct(row[3], row[4]) if row[3] and row[4] else na,
+                 pct(row[3], row[5]) if row[3] and row[5] else na))
     w("\n")
 
     w("#### %s -- map, Stmt-level element swap -- ns/node\n\n" % harness)
@@ -201,7 +203,8 @@ def render(merged, runs, out):
             row = [cell(name, ownership, a) for a in STMT_MAP_ARMS]
             w("| %s | %s | %d | %s |\n"
               % (name, ownership, fixtures[name]["unique"], " | ".join(fmt(v) for v in row)))
-    w("\n[^1]: `split-fuse` is an `Expr` tree with no `Stmt` nodes in it, so a Stmt-level arm\n"
+    w("\n[^%s]: `split-fuse` is an `Expr` tree with no `Stmt` nodes in it, so a Stmt-level arm\n"
+      % (NA_LABEL % harness) +
       "has nothing to match and is not run on those rows.\n\n")
 
     # The sparse-update fixtures: ns/node amortizes one useful change over the whole
