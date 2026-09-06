@@ -560,6 +560,43 @@ TEST(StructuralMap, PreservesSharedArrayAndMapInputs) {
   }
 }
 
+TEST(StructuralMap, CopyOnWriteProcessesSuffixAfterFirstChange) {
+  AnyArray array_root{String("prefix"), int64_t{1}, String("middle"), int64_t{2}};
+  AnyArray array_owner = array_root;  // NOLINT(performance-unnecessary-copy-initialization)
+  AnyArray mapped_array =
+      StructuralMap<WalkOrder::kPostOrder>(array_root, Increment).cast<AnyArray>();
+
+  EXPECT_TRUE(mapped_array[0].same_as(array_root[0]));
+  EXPECT_EQ(mapped_array[1].cast<int64_t>(), 2);
+  EXPECT_TRUE(mapped_array[2].same_as(array_root[2]));
+  EXPECT_EQ(mapped_array[3].cast<int64_t>(), 3);
+  EXPECT_TRUE(array_owner.same_as(array_root));
+
+  StringMap map_root{{"prefix", String("unchanged")},
+                     {"first", int64_t{1}},
+                     {"middle", String("also-unchanged")},
+                     {"second", int64_t{2}}};
+  StringMap map_owner = map_root;  // NOLINT(performance-unnecessary-copy-initialization)
+  StringMap mapped_map =
+      StructuralMap<WalkOrder::kPostOrder>(map_root, Increment).cast<StringMap>();
+
+  EXPECT_TRUE(mapped_map["prefix"].same_as(map_root["prefix"]));
+  EXPECT_EQ(mapped_map["first"].cast<int64_t>(), 2);
+  EXPECT_TRUE(mapped_map["middle"].same_as(map_root["middle"]));
+  EXPECT_EQ(mapped_map["second"].cast<int64_t>(), 3);
+  EXPECT_TRUE(map_owner.same_as(map_root));
+
+  Expected<Any> suffix_error = StructuralMapExpected<WalkOrder::kPostOrder>(
+      AnyArray{int64_t{1}, int64_t{2}}, [](int64_t value) -> Expected<Any> {
+        if (value == 2) {
+          return Unexpected(Error("ValueError", "suffix mutate failed", ""));
+        }
+        return Any(value + 1);
+      });
+  ASSERT_TRUE(suffix_error.is_err());
+  EXPECT_EQ(suffix_error.error().message(), "suffix mutate failed");
+}
+
 TEST(StructuralMap, PreOrderRecursivelyMapsCallbackResult) {
   StringMap root{{"value", AnyArray{int64_t{1}}}};
   AnyArray replacement{int64_t{10}};

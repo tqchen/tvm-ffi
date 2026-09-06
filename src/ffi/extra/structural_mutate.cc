@@ -164,23 +164,30 @@ TVMFFIAny MutateSeqContainerRaw(StructuralMutatorObj* mutator, AnyView value,
   int64_t size = static_cast<int64_t>(self->size());
   const Any* items = self->begin();
   ObjectPtr<SeqObj> output = nullptr;
+  int64_t i = 0;
 
-  for (int64_t i = 0; i < size; ++i) {
+  for (; i < size; ++i) {
     const Any& item = items[i];
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value, mutator->MutateExpected(item));
 
-    if (output == nullptr) {
-      if (item.same_as(mapped_value)) {
-        continue;
-      }
-      output = SeqObj::CreateRepeated(size, Any());
-      output->InitRange(0, items, items + i);
+    if (item.same_as(mapped_value)) {
+      continue;
     }
+    output = SeqObj::CreateRepeated(size, Any());
+    output->InitRange(0, items, items + i);
     output->SetItemAfterCheck(i, std::move(mapped_value));
+    ++i;
+    break;
   }
 
   if (output == nullptr) {
     return AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
+  }
+
+  for (; i < size; ++i) {
+    const Any& item = items[i];
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value, mutator->MutateExpected(item));
+    output->SetItemAfterCheck(i, std::move(mapped_value));
   }
   return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
 }
@@ -224,29 +231,35 @@ TVMFFIAny MutateMapValuesRaw(StructuralMutatorObj* mutator, AnyView value,
   ObjectPtr<Object> output = nullptr;
   MapBaseObj::iterator output_it;
   size_t index = 0;
+  auto source_it = self->begin();
 
-  for (auto source_it = self->begin(); source_it != self->end(); ++source_it, ++index) {
+  for (; source_it != self->end(); ++source_it, ++index) {
     const Any& old_value = source_it->second;
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value, mutator->MutateExpected(old_value));
-    bool changed = !old_value.same_as(new_value);
-    if (output == nullptr) {
-      if (!changed) {
-        continue;
-      }
-      output = MapObjType::ShallowCopy(self);
-      output_it = static_cast<MapBaseObj*>(output.get())->begin();
-      for (size_t i = 0; i < index; ++i) {
-        ++output_it;
-      }
+    if (old_value.same_as(new_value)) {
+      continue;
     }
-    if (changed) {
-      output_it->second = std::move(new_value);
+    output = MapObjType::ShallowCopy(self);
+    output_it = static_cast<MapBaseObj*>(output.get())->begin();
+    for (size_t i = 0; i < index; ++i) {
+      ++output_it;
     }
+    output_it->second = std::move(new_value);
+    ++source_it;
     ++output_it;
+    break;
   }
 
   if (output == nullptr) {
     return AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
+  }
+
+  for (; source_it != self->end(); ++source_it, ++output_it) {
+    const Any& old_value = source_it->second;
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value, mutator->MutateExpected(old_value));
+    if (!old_value.same_as(new_value)) {
+      output_it->second = std::move(new_value);
+    }
   }
   return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
 }
