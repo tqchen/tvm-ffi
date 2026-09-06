@@ -150,6 +150,34 @@ Expected<Any> StructuralMutateExpected(
 // ---------------------------------------------------------------------------
 
 /*!
+ * \brief Finish mutating a sequence after its first changed element.
+ *
+ * \tparam SeqObj The underlying sequence object type.
+ * \param mutator The active structural mutator.
+ * \param self The source sequence object.
+ * \param index The index of the first changed element.
+ * \param first The mapped value for the first changed element.
+ * \return The mutated sequence, or an Error.
+ */
+template <typename SeqObj>
+TVM_FFI_INLINE TVMFFIAny MutateSeqContainerChanged(StructuralMutatorObj* mutator,
+                                                   const SeqObj* self, int64_t index,
+                                                   Any first) noexcept {
+  int64_t size = static_cast<int64_t>(self->size());
+  const Any* items = self->begin();
+  ObjectPtr<SeqObj> output = SeqObj::CreateRepeated(size, Any());
+  output->InitRange(0, items, items + index);
+  output->SetItemAfterCheck(index, std::move(first));
+
+  for (int64_t i = index + 1; i < size; ++i) {
+    const Any& item = items[i];
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value, mutator->MutateExpected(item));
+    output->SetItemAfterCheck(i, std::move(mapped_value));
+  }
+  return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
+}
+
+/*!
  * \brief Structurally mutate the elements of a sequence container.
  *
  * \tparam SeqObj The underlying sequence object type.
@@ -163,33 +191,15 @@ TVMFFIAny MutateSeqContainerRaw(StructuralMutatorObj* mutator, AnyView value,
                                 const SeqObj* self) noexcept {
   int64_t size = static_cast<int64_t>(self->size());
   const Any* items = self->begin();
-  ObjectPtr<SeqObj> output = nullptr;
-  int64_t i = 0;
 
-  for (; i < size; ++i) {
+  for (int64_t i = 0; i < size; ++i) {
     const Any& item = items[i];
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value, mutator->MutateExpected(item));
-
-    if (item.same_as(mapped_value)) {
-      continue;
+    if (!item.same_as(mapped_value)) {
+      return MutateSeqContainerChanged(mutator, self, i, std::move(mapped_value));
     }
-    output = SeqObj::CreateRepeated(size, Any());
-    output->InitRange(0, items, items + i);
-    output->SetItemAfterCheck(i, std::move(mapped_value));
-    ++i;
-    break;
   }
-
-  if (output == nullptr) {
-    return AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
-  }
-
-  for (; i < size; ++i) {
-    const Any& item = items[i];
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value, mutator->MutateExpected(item));
-    output->SetItemAfterCheck(i, std::move(mapped_value));
-  }
-  return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
+  return AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
 }
 
 /*!
@@ -217,6 +227,41 @@ TVMFFIAny MaybeInplaceMutateSeqContainerRaw(StructuralMutatorObj* mutator, AnyVi
 }
 
 /*!
+ * \brief Finish mutating map values after the first changed value.
+ *
+ * \tparam MapObjType The underlying map object type.
+ * \param mutator The active structural mutator.
+ * \param self The source map object.
+ * \param source_it Iterator at the first changed value.
+ * \param index Iteration index of the first changed value.
+ * \param first The mapped value for the first changed entry.
+ * \return The mutated map, or an Error.
+ */
+template <typename MapObjType>
+TVM_FFI_INLINE TVMFFIAny MutateMapValuesChanged(StructuralMutatorObj* mutator,
+                                                const MapObjType* self,
+                                                MapBaseObj::iterator source_it, size_t index,
+                                                Any first) noexcept {
+  ObjectPtr<Object> output = MapObjType::ShallowCopy(self);
+  auto output_it = static_cast<MapBaseObj*>(output.get())->begin();
+  for (size_t i = 0; i < index; ++i) {
+    ++output_it;
+  }
+  output_it->second = std::move(first);
+  ++source_it;
+  ++output_it;
+
+  for (; source_it != self->end(); ++source_it, ++output_it) {
+    const Any& old_value = source_it->second;
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value, mutator->MutateExpected(old_value));
+    if (!old_value.same_as(new_value)) {
+      output_it->second = std::move(new_value);
+    }
+  }
+  return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
+}
+
+/*!
  * \brief Structurally mutate the values of a map container.
  *
  * \tparam MapObjType The underlying map object type.
@@ -228,40 +273,15 @@ TVMFFIAny MaybeInplaceMutateSeqContainerRaw(StructuralMutatorObj* mutator, AnyVi
 template <typename MapObjType>
 TVMFFIAny MutateMapValuesRaw(StructuralMutatorObj* mutator, AnyView value,
                              const MapObjType* self) noexcept {
-  ObjectPtr<Object> output = nullptr;
-  MapBaseObj::iterator output_it;
   size_t index = 0;
-  auto source_it = self->begin();
-
-  for (; source_it != self->end(); ++source_it, ++index) {
-    const Any& old_value = source_it->second;
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value, mutator->MutateExpected(old_value));
-    if (old_value.same_as(new_value)) {
-      continue;
-    }
-    output = MapObjType::ShallowCopy(self);
-    output_it = static_cast<MapBaseObj*>(output.get())->begin();
-    for (size_t i = 0; i < index; ++i) {
-      ++output_it;
-    }
-    output_it->second = std::move(new_value);
-    ++source_it;
-    ++output_it;
-    break;
-  }
-
-  if (output == nullptr) {
-    return AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
-  }
-
-  for (; source_it != self->end(); ++source_it, ++output_it) {
+  for (auto source_it = self->begin(); source_it != self->end(); ++source_it, ++index) {
     const Any& old_value = source_it->second;
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value, mutator->MutateExpected(old_value));
     if (!old_value.same_as(new_value)) {
-      output_it->second = std::move(new_value);
+      return MutateMapValuesChanged(mutator, self, source_it, index, std::move(new_value));
     }
   }
-  return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
+  return AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
 }
 
 /*!
