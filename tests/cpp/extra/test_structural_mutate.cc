@@ -306,14 +306,16 @@ TEST(StructuralMutate, RootByValueProtectsSharedParentSubvalue) {
   EXPECT_EQ(mapped[0].cast<int64_t>(), 2);
 }
 
-TEST(StructuralMutate, ThreeArgumentCallbackPreservesUniqueContainerIdentity) {
-  AnyArray root{int64_t{1}};
-  const Object* root_address = root.get();
+TEST(StructuralMutate, CallbackArityControlsInplaceMutation) {
+  AnyArray inplace_root{int64_t{1}};
+  AnyArray copy_on_write_root{int64_t{1}};
+  const Object* inplace_root_address = inplace_root.get();
+  const Object* copy_on_write_root_address = copy_on_write_root.get();
   std::vector<bool> allow_inplace_trace;
 
-  AnyArray mapped =
+  AnyArray inplace_mapped =
       StructuralMutate(
-          std::move(root),
+          std::move(inplace_root),
           [&](const AnyArray& value, StructuralMutatorObj* mutator,
               bool allow_inplace) -> Expected<Any> {
             allow_inplace_trace.push_back(allow_inplace);
@@ -326,26 +328,20 @@ TEST(StructuralMutate, ThreeArgumentCallbackPreservesUniqueContainerIdentity) {
           })
           .cast<AnyArray>();
 
-  EXPECT_EQ(mapped.get(), root_address);
-  EXPECT_EQ(mapped[0].cast<int64_t>(), 2);
-  EXPECT_EQ(allow_inplace_trace, (std::vector<bool>{true, false}));
-}
-
-TEST(StructuralMutate, TwoArgumentCallbackDefaultsToCopyOnWrite) {
-  AnyArray root{int64_t{1}};
-  const Object* root_address = root.get();
-
-  AnyArray mapped =
+  AnyArray copy_on_write_mapped =
       StructuralMutate(
-          std::move(root),
+          std::move(copy_on_write_root),
           [](const AnyArray& value, StructuralMutatorObj* mutator) -> Expected<Any> {
             return mutator->DefaultMutateExpected(value);
           },
           [](int64_t value, StructuralMutatorObj*) -> Expected<Any> { return Any(value + 1); })
           .cast<AnyArray>();
 
-  EXPECT_NE(mapped.get(), root_address);
-  EXPECT_EQ(mapped[0].cast<int64_t>(), 2);
+  EXPECT_EQ(inplace_mapped.get(), inplace_root_address);
+  EXPECT_NE(copy_on_write_mapped.get(), copy_on_write_root_address);
+  EXPECT_EQ(inplace_mapped[0].cast<int64_t>(), 2);
+  EXPECT_EQ(copy_on_write_mapped[0].cast<int64_t>(), 2);
+  EXPECT_EQ(allow_inplace_trace, (std::vector<bool>{true, false}));
 }
 
 TEST(StructuralMutate, MatchedVarOwnsRemapConsistency) {

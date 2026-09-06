@@ -356,15 +356,6 @@ class StructuralMutatorObj : public Object {
     return result;
   }
 
-  /*!
-   * \brief Whether a structural equality/hash kind uses identity remapping.
-   * \param kind The structural equality/hash kind to inspect.
-   * \return True for a FreeVar or DAG node.
-   */
-  TVM_FFI_INLINE static constexpr bool IsVarOrDag(TVMFFISEqHashKind kind) noexcept {
-    return kind == kTVMFFISEqHashKindFreeVar || kind == kTVMFFISEqHashKindDAGNode;
-  }
-
   // The cold remainder of DefaultMutateRaw, out of line so that always-inlined caller stays
   // small at every inlining site. `attr` is the attribute the caller already read, so the
   // column is never looked up twice.
@@ -377,7 +368,8 @@ class StructuralMutatorObj : public Object {
     if (type_index < TypeIndex::kTVMFFIStaticObjectBegin) return false;
     const TVMFFITypeInfo* type_info = TVMFFIGetTypeInfo(type_index);
     return type_info->metadata != nullptr &&
-           IsVarOrDag(type_info->metadata->structural_eq_hash_kind);
+           (type_info->metadata->structural_eq_hash_kind == kTVMFFISEqHashKindFreeVar ||
+            type_info->metadata->structural_eq_hash_kind == kTVMFFISEqHashKindDAGNode);
   }
 
   /*! \brief The cold remainder of DefaultMutateRaw: an ffi.Function hook, or no hook at all. */
@@ -965,18 +957,20 @@ class StructuralMapEngine : public Parent {
     const bool remappable = [&]() {
       if constexpr (std::is_base_of_v<ObjectRef, TSub>) {
         using TNode = typename TSub::ContainerType;
-        constexpr bool kNeverRemappable =
-            (TNode::_type_final || TNode::_type_s_eq_hash_subclass_kind_fixed) &&
-            !Parent::IsVarOrDag(TNode::_type_s_eq_hash_kind);
-        if constexpr (kNeverRemappable) return false;
+        if constexpr ((TNode::_type_final || TNode::_type_s_eq_hash_subclass_kind_fixed) &&
+                      TNode::_type_s_eq_hash_kind != kTVMFFISEqHashKindFreeVar &&
+                      TNode::_type_s_eq_hash_kind != kTVMFFISEqHashKindDAGNode) {
+          return false;
+        }
       }
       if constexpr (std::is_pointer_v<TSub> &&
                     std::is_base_of_v<Object, std::remove_cv_t<std::remove_pointer_t<TSub>>>) {
         using TNode = std::remove_cv_t<std::remove_pointer_t<TSub>>;
-        constexpr bool kNeverRemappable =
-            (TNode::_type_final || TNode::_type_s_eq_hash_subclass_kind_fixed) &&
-            !Parent::IsVarOrDag(TNode::_type_s_eq_hash_kind);
-        if constexpr (kNeverRemappable) return false;
+        if constexpr ((TNode::_type_final || TNode::_type_s_eq_hash_subclass_kind_fixed) &&
+                      TNode::_type_s_eq_hash_kind != kTVMFFISEqHashKindFreeVar &&
+                      TNode::_type_s_eq_hash_kind != kTVMFFISEqHashKindDAGNode) {
+          return false;
+        }
       }
       return this->IsRemappableIdentity(value.type_index());
     }();
@@ -1567,20 +1561,19 @@ Any StructuralMap(Any root,
 /*!
  * \brief Mutate a structured value with callbacks that own recursion.
  *
- * Each callback takes ``(value, StructuralMutatorObj* mutator)`` and may take
- * a third ``bool allow_inplace`` argument. It returns ``Expected<Any>``. The first argument
- * selects values by its FFI type;
- * callbacks are tested in declaration order and the first match owns mutation.
- * Its replacement is final and is not traversed again. The callback explicitly
- * recurses through the mutator, which also carries remap and def-region state.
- * A callback matching a variable owns repeated-use consistency and can use the
- * mutator's ``VarRemapGetExpected`` and ``VarRemapSetExpected`` operations.
- * An unmatched value follows registered or reflected default mutation. Success
- * returns the owning replacement; ``Error`` reports mutation failure.
+ * A callback takes one of two signatures:
+ *
+ * - ``Expected<Any>(const T& value, StructuralMutatorObj* mutator)``
+ * - ``Expected<Any>(const T& value, StructuralMutatorObj* mutator, bool allow_inplace)``
+ *
+ * The returned ``Any`` is the replacement for ``value``; an ``Error`` fails the
+ * mutation. The first argument selects by FFI type; callbacks are tried in
+ * declaration order and the first match owns mutation -- it drives its own
+ * recursion through the mutator and sets any variable remapping. An unmatched
+ * value takes registered or reflected default mutation.
  *
  * \param root The owning root value to mutate.
- * \param callbacks Callbacks tested in declaration order. Each accepts
- *        ``(value, mutator)`` or ``(value, mutator, allow_inplace)``.
+ * \param callbacks Callbacks tested in declaration order.
  * \return The mutated owning value, or an Error if mutation or a callback fails.
  *
  * \note A two-argument callback descends with ``MutateExpected`` and remains copy-on-write.
