@@ -37,6 +37,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -57,16 +58,22 @@ inline const char* OwnershipName(Ownership o) {
 }
 
 /*!
- * \brief What a fixture's replacement arms replace.
+ * \brief Which mutating arm a fixture's checks and sweeps select.
  *
- * `kAllVars` swaps every variable occurrence.  On a small tree that is a reasonable shape, but
- * on a long body it is not a workload anyone runs, and it hides implementation quality: every
- * node changes, so a traversal that rebuilds only the changed path and one that rebuilds
- * everything do the same amount of work.  `kSingleVar` changes exactly one occurrence -- a
- * sparse update, which is what a real substitution pass does -- and there the necessary and
- * the actual work diverge, with the gap growing as the body grows.
+ * Named after the arm it selects, not after a property of the workload: an earlier
+ * `kSingleVar` selected the Stmt-level element swap, which reads as its opposite.
+ *
+ * `kSubst` selects `map_subst`, the Expr-level `Var` substitution.  It goes through the remap,
+ * so every occurrence of the substituted variable changes: on a small tree that is a
+ * reasonable shape, but on a long body every node changes and a traversal that rebuilds only
+ * the changed path and one that rebuilds everything do the same amount of work.
+ *
+ * `kSwap` selects `map_swap`, the Stmt-level `Evaluate` swap.  `Evaluate` is not a free
+ * variable, so no remap is involved and exactly the intended elements change -- a sparse
+ * update, which is what a real substitution pass does, and where necessary and actual work
+ * diverge as the body grows.
  */
-enum class ReplaceKind { kAllVars, kSingleVar };
+enum class ArmKind { kSubst, kSwap };
 
 /*!
  * \brief What a fixture is, declared by the builder that constructs it.
@@ -84,14 +91,14 @@ struct FixtureInfo {
   int64_t occurrences;
   /*! \brief Unique nodes times node size, in bytes. */
   int64_t working_set;
-  /*! \brief Identities `map_replace` introduces, per ownership variant. */
+  /*! \brief Identities the fixture's selected mutating arm introduces, per ownership. */
   int64_t rebuilt_retained;
   int64_t rebuilt_moved;
   /*! \brief Traversals per timed sample, fixed per fixture so a sample is milliseconds. */
   int repeats;
   /*! \brief True when an in-place rebuild un-shares the graph, so the arm consumes it. */
   bool has_sharing;
-  ReplaceKind replace_kind;
+  ArmKind arm_kind;
 };
 
 // ---------------------------------------------------------------------------
@@ -132,7 +139,26 @@ inline void ReserveResultSink(size_t n) {
   ResultSink().clear();
   ResultSink().reserve(n);
 }
-inline void DrainResultSink() { ResultSink().clear(); }
+/*!
+ * \brief Free the batch's outputs, outside the clock, and check that there were any.
+ *
+ * The whole point of the sink is that a map arm's output is destroyed here rather than inside
+ * the timed region. An arm that let its result fall out of scope locally would time its own
+ * teardown and read as slower for a reason no reader could see -- silently, because the
+ * timings would still look plausible. This makes that structural: every map batch parks at
+ * least one result, so an empty sink at drain time means an arm dropped its output.
+ */
+inline void DrainResultSink(const char* what) {
+  if (ResultSink().empty()) {
+    std::fflush(stdout);
+    std::fprintf(stderr,
+                 "structural benchmark check failed: %s parked no result, so its teardown ran "
+                 "inside the timed region\n",
+                 what);
+    std::exit(2);
+  }
+  ResultSink().clear();
+}
 
 inline void Emit(const std::string& line) { std::printf("%s\n", line.c_str()); }
 
@@ -145,7 +171,7 @@ inline void EmitFixture(const std::string& harness, const FixtureInfo& f) {
   Emit("#fixture\t" + harness + "\t" + f.name + "\t" + std::to_string(f.unique_nodes) + "\t" +
        std::to_string(f.occurrences) + "\t" + std::to_string(f.working_set) + "\t" +
        std::to_string(f.rebuilt_retained) + "\t" + std::to_string(f.rebuilt_moved) + "\t" +
-       (f.replace_kind == ReplaceKind::kSingleVar ? "single_var" : "all_vars"));
+       (f.arm_kind == ArmKind::kSwap ? "swap" : "subst"));
 }
 
 /*! \brief One timing line. */

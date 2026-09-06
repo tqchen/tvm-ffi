@@ -240,7 +240,7 @@ void WalkOld(AnyView root) {
  * copy-on-write path; `moved` hands over the sole reference, so it takes the in-place path.
  * Neither destroys anything: the driver retains every output and frees them after the clock.
  */
-Any MapFloor(Any input, ReplaceKind, Ownership ownership) {
+Any MapFloor(Any input, ArmKind, Ownership ownership) {
   MinimalMutatorObj mutator;
   Expected<Any> result = ownership == Ownership::kMoved
                              ? mutator.MaybeInplaceMutateIfUniqueExpected(input)
@@ -249,7 +249,7 @@ Any MapFloor(Any input, ReplaceKind, Ownership ownership) {
   return result.value();
 }
 
-Any MapNever(Any input, ReplaceKind, Ownership) {
+Any MapNever(Any input, ArmKind, Ownership) {
   return StructuralMap<WalkOrder::kPostOrder>(std::move(input),
                                               [](const HPrimType& v) { return Any(v); });
 }
@@ -258,31 +258,31 @@ Any MapNever(Any input, ReplaceKind, Ownership) {
 // `*_var` is Expr-level Var substitution, which is what map_functor and map_old do, so those
 // two are baselines for these arms and for no others. `*_stmt` swaps whole HEvaluate nodes and
 // has no functor baseline. Var arms run everywhere, Stmt arms on the seq fixtures only.
-Any MapIdentityVar(Any input, ReplaceKind, Ownership) {
+Any MapIdentityVar(Any input, ArmKind, Ownership) {
   return StructuralMap<WalkOrder::kPostOrder>(std::move(input),
                                               [](const HVar& var) { return Any(var); });
 }
 
-Any MapReplaceVar(Any input, ReplaceKind, Ownership) {
+Any MapSubst(Any input, ArmKind, Ownership) {
   return StructuralMap<WalkOrder::kPostOrder>(std::move(input), SwapAllVars);
 }
 
-Any MapIdentityStmt(Any input, ReplaceKind, Ownership) {
+Any MapIdentityStmt(Any input, ArmKind, Ownership) {
   return StructuralMap<WalkOrder::kPostOrder>(std::move(input),
                                               [](const HStmt& stmt) { return Any(stmt); });
 }
 
-Any MapReplaceStmt(Any input, ReplaceKind, Ownership) {
+Any MapSwap(Any input, ArmKind, Ownership) {
   return StructuralMap<WalkOrder::kPostOrder>(std::move(input), SwapEvaluates);
 }
 
 /*! \brief The functor-era Substitute: ExprMutator/StmtMutator vtable + IRSubstitute. */
-Any MapFunctor(Any input, ReplaceKind, Ownership) {
+Any MapFunctor(Any input, ArmKind, Ownership) {
   return FunctorSubstitute(std::move(input), SwapVarsFn);
 }
 
 /*! \brief What the pinned TVM ships: a StructuralMutatorObj owning its own var remap. */
-Any MapOld(Any input, ReplaceKind, Ownership) {
+Any MapOld(Any input, ArmKind, Ownership) {
   return ShippingSubstitute(std::move(input), SwapVarsFn);
 }
 
@@ -297,17 +297,21 @@ constexpr WalkArm kWalkArms[] = {
 
 struct MapArm {
   const char* name;
-  Any (*run)(Any, ReplaceKind, Ownership);
+  Any (*run)(Any, ArmKind, Ownership);
   bool rebuilds;
 };
-constexpr MapArm kMapArms[] = {
+// Same split as real_tvm_bench.cc: each fixture family carries the one operation it is shaped
+// for, with the baselines that operation has. See the arm vocabulary in README.md.
+constexpr MapArm kExprMapArms[] = {
     {"map_floor", &MapFloor, false},              {"map_never", &MapNever, false},
-    {"map_identity_var", &MapIdentityVar, false}, {"map_replace_var", &MapReplaceVar, true},
+    {"map_identity_var", &MapIdentityVar, false}, {"map_subst", &MapSubst, true},
     {"map_functor", &MapFunctor, true},           {"map_old", &MapOld, true},
 };
-constexpr MapArm kStmtMapArms[] = {
+constexpr MapArm kSeqMapArms[] = {
+    {"map_floor", &MapFloor, false},
+    {"map_never", &MapNever, false},
     {"map_identity_stmt", &MapIdentityStmt, false},
-    {"map_replace_stmt", &MapReplaceStmt, true},
+    {"map_swap", &MapSwap, true},
 };
 
 // ---------------------------------------------------------------------------
@@ -318,8 +322,9 @@ constexpr MapArm kStmtMapArms[] = {
  * \brief Time one map arm. The timed region is `batch`, and nothing enters or leaves it
  *        implicitly. See real_tvm_bench.cc for the full statement of the boundary.
  */
-double MeasureMapArm(Any (*run)(Any, ReplaceKind, Ownership), Ownership ownership,
-                     ReplaceKind kind, int repeats, Any (*build)(), bool pooled = false) {
+double MeasureMapArm(const char* arm, Any (*run)(Any, ArmKind, Ownership),
+                     Ownership ownership, ArmKind kind, int repeats, Any (*build)(),
+                     bool pooled = false) {
   std::vector<Any>& out = ResultSink();
   Any held;
   std::vector<Any> pool;
@@ -348,7 +353,7 @@ double MeasureMapArm(Any (*run)(Any, ReplaceKind, Ownership), Ownership ownershi
     }
   };
   auto teardown = [&] {  // untimed: every retained output destroyed here
-    DrainResultSink();
+    DrainResultSink(arm);
     held = Any();
     pool.clear();
   };
@@ -377,18 +382,16 @@ void RunFixture(const FixtureInfo& info, Any (*build)()) {
     double ns = MeasureStationary(info.repeats, [&] { arm.run(root); }, [] {});
     EmitResult(kHarness, info.name, "-", arm.name, ns);
   }
+  const bool seq = info.arm_kind == ArmKind::kSwap;
+  const MapArm* arms = seq ? kSeqMapArms : kExprMapArms;
+  const size_t arm_count = seq ? sizeof(kSeqMapArms) / sizeof(kSeqMapArms[0])
+                               : sizeof(kExprMapArms) / sizeof(kExprMapArms[0]);
   for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
-    for (const MapArm& arm : kMapArms) {
-      double ns = MeasureMapArm(arm.run, ownership, info.replace_kind, info.repeats, build,
+    for (size_t i = 0; i < arm_count; ++i) {
+      const MapArm& arm = arms[i];
+      double ns = MeasureMapArm(arm.name, arm.run, ownership, info.arm_kind, info.repeats, build,
                                 arm.rebuilds && info.has_sharing);
       EmitResult(kHarness, info.name, OwnershipName(ownership), arm.name, ns);
-    }
-    if (info.replace_kind == ReplaceKind::kSingleVar) {
-      for (const MapArm& arm : kStmtMapArms) {
-        double ns = MeasureMapArm(arm.run, ownership, info.replace_kind, info.repeats, build,
-                                  arm.rebuilds && info.has_sharing);
-        EmitResult(kHarness, info.name, OwnershipName(ownership), arm.name, ns);
-      }
     }
   }
 }
@@ -406,9 +409,9 @@ int main() {
   auto build_shared = [] { return Any(SplitFuse(true)); };
   auto build_distinct = [] { return Any(SplitFuse(false)); };
   FixtureInfo shared{"split-fuse-shared", 12, 17, kSplitFuseSharedBytes, 9, 3, kSplitFuseRepeats,
-                     true, ReplaceKind::kAllVars};
+                     true, ArmKind::kSubst};
   FixtureInfo distinct{"split-fuse-distinct", 15, 17, kSplitFuseDistinctBytes, 9, 1,
-                       kSplitFuseRepeats, false, ReplaceKind::kAllVars};
+                       kSplitFuseRepeats, false, ArmKind::kSubst};
   RunFixture(shared, build_shared);
   RunFixture(distinct, build_distinct);
 
@@ -422,7 +425,7 @@ int main() {
     std::string name = "seq-" + std::to_string(length);
     RunFixture({name.c_str(), 4LL * length + 4, 6LL * length + 2, kSeqWorkingSet(length),
                 kSeqRebuiltRetained, kSeqRebuiltMoved, SeqRepeats(length), false,
-                ReplaceKind::kSingleVar},
+                ArmKind::kSwap},
                [] { return Any(LongSeq(current_length, 1)); });
   }
 

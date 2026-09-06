@@ -16,8 +16,39 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-#ifndef TVM_FFI_BENCHMARKS_CPP_STRUCTURAL_TVM_HOOK_OVERRIDE_H_
-#define TVM_FFI_BENCHMARKS_CPP_STRUCTURAL_TVM_HOOK_OVERRIDE_H_
+#ifndef TVM_FFI_BENCHMARKS_CPP_STRUCTURAL_TVM_HOOK_OVERRIDE_PRE753_H_
+#define TVM_FFI_BENCHMARKS_CPP_STRUCTURAL_TVM_HOOK_OVERRIDE_PRE753_H_
+
+// ===========================================================================================
+// STATE HOOK FILE: pre-tvm-ffi-#753.
+//
+// The hooks in this file are the hooks in `tvm_hook_override.h`, written against a tvm-ffi
+// that does not have `TVM_FFI_S_VISIT_RETURN_NONE`.  It exists so a two-state run can compile
+// each state's hooks against that state's own API instead of one file accommodating both.
+//
+// There is no `#if` here and there is no `#if` there.  The two files are deliberate
+// duplicates: a hook file that compiled against both states by accommodating both would
+// measure a hybrid nobody ships, which is the defect the two-state design exists to avoid.
+// The same principle already applies between `tvm_hook_override.h` and `mini_tir.h`.
+//
+// API ADAPTATION -- the whole of the difference, and the only thing `port_check.sh --header`
+// permits between this file and apache/tvm's source:
+//
+//   TVM_FFI_S_VISIT_RETURN_NONE();
+//   ->
+//   return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
+//
+//   six sites, one per visit hook.
+//
+// VERIFIED AGAINST apache/tvm#20275 b51da96381 -- the revision of this same PR written against
+// pre-#753 tvm-ffi, where every one of these hooks spells the tail exactly this way.  So the
+// adaptation is not invented here: `port_check.sh --header` diffs the bodies against the
+// current head with the substitution undone, and separately confirms the replacement text is
+// what the PR itself used before #753 landed.  Both endpoints are checked against apache/tvm.
+//
+// WHEN TO DELETE THIS FILE.  When no two-state run compares a state older than tvm-ffi #753.
+// It is not a compatibility layer to keep working; it is a snapshot for one comparison.
+// ===========================================================================================
 
 // Every structural hook the benchmark dispatches into on real TVM node types, plus the
 // installation that puts them over the ones TVM registered from its own static-init blocks.
@@ -120,7 +151,7 @@ namespace ffi = tvm::ffi;
 
 TVMFFIAny IntImmVisit(ffi::StructuralVisitorObj*, ffi::AnyView) noexcept {
   // skips: value
-  TVM_FFI_S_VISIT_RETURN_NONE();
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
 }
 
 TVMFFIAny IntImmMutate(ffi::StructuralMutatorObj*, ffi::AnyView value) noexcept {
@@ -157,7 +188,7 @@ TVMFFIAny VarVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) noexc
       TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->ty));
     }
   }
-  TVM_FFI_S_VISIT_RETURN_NONE();
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
 }
 
 TVMFFIAny VarMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
@@ -263,7 +294,7 @@ TVMFFIAny CallVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) noex
   if (!self->ty_args.empty()) {
     TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->ty_args));
   }
-  TVM_FFI_S_VISIT_RETURN_NONE();
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
 }
 
 TVMFFIAny CallMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
@@ -360,7 +391,7 @@ TVMFFIAny BinaryVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) no
       ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const TNode>(value);
   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->a));
   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->b));
-  TVM_FFI_S_VISIT_RETURN_NONE();
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
 }
 
 template <typename TNode>
@@ -405,7 +436,7 @@ TVMFFIAny SeqStmtVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) n
   const SeqStmtNode* self =
       ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const SeqStmtNode>(value);
   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->seq));
-  TVM_FFI_S_VISIT_RETURN_NONE();
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
 }
 
 bool IsSeqStmtNoOp(const Stmt& stmt) {
@@ -579,7 +610,7 @@ TVMFFIAny EvaluateVisit(ffi::StructuralVisitorObj* visitor, ffi::AnyView value) 
   const EvaluateNode* self =
       ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const EvaluateNode>(value);
   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->value));
-  TVM_FFI_S_VISIT_RETURN_NONE();
+  return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(nullptr));
 }
 
 TVMFFIAny EvaluateMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView value) noexcept {
@@ -671,4 +702,4 @@ inline std::vector<int32_t> CoveredTypes() {
 
 }  // namespace tvm_hooks
 
-#endif  // TVM_FFI_BENCHMARKS_CPP_STRUCTURAL_TVM_HOOK_OVERRIDE_H_
+#endif  // TVM_FFI_BENCHMARKS_CPP_STRUCTURAL_TVM_HOOK_OVERRIDE_PRE753_H_

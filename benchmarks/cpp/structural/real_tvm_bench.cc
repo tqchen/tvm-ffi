@@ -49,7 +49,13 @@
 
 #include <tvm/ffi/extra/structural_equal.h>
 
-#include "tvm_hook_override.h"
+// The hook file, selected per engine state by build.sh. A two-state run compiles each state's
+// hooks against that state's own tvm-ffi API, so this is a whole file per state rather than a
+// switch inside one -- see the banner in tvm_hook_override_pre753.h.
+#ifndef TVM_FFI_BENCH_HOOK_HEADER
+#define TVM_FFI_BENCH_HOOK_HEADER "tvm_hook_override.h"
+#endif
+#include TVM_FFI_BENCH_HOOK_HEADER
 
 namespace real_tvm {
 
@@ -85,6 +91,44 @@ PrimExpr SplitFuse(bool shared) {
 }
 
 /*!
+ * \brief The same split/fuse tree with every arithmetic node expressed as a `Call`.
+ *
+ * Row-for-row counterpart of `SplitFuse`: identical topology, identical `Var`s, the same six
+ * binary operations in the same order, so the only variable between the two fixtures is the
+ * node representation.  The delta between their rows is what a `Call` costs over a direct
+ * node.
+ *
+ * It is the only fixture that reaches three hook decisions #20275 made and justified on
+ * performance grounds, and that no other fixture can exercise:
+ *
+ *   * **descent into an `Array` inside a node** -- `Call.args`.  Every other fixture's
+ *     children are direct typed fields, so `CallMutate`'s container path is otherwise dead.
+ *   * **the empty `ty_args` skip.**  Nothing here has type arguments, so the guard is taken on
+ *     every `Call`, on every arm, including `floor`.
+ *   * **the interned `Op` operator skip.**
+ *
+ * The operator is a stand-in and its identity does not matter: the traversal never evaluates
+ * the call, and `CallVisit`/`CallMutate` skip an `OpNode` operator without looking at which
+ * one it is.  TIR has no builtin for `+` or `floordiv` -- those *are* nodes -- so four
+ * distinct interned builtins stand in for the four node types, which keeps the `op` field
+ * varying exactly as the direct form's node type does.
+ */
+PrimExpr CallOp(const Op& op, PrimExpr a, PrimExpr b) {
+  return Call(PrimType::Int(32), op, {std::move(a), std::move(b)});
+}
+PrimExpr CallImm(int64_t v) { return IntImm(PrimType::Int(32), v); }
+PrimExpr CallSplitFuse(bool shared) {
+  const Op& mul = prim::builtin::shift_left();
+  const Op& add = prim::builtin::bitwise_or();
+  const Op& fdiv = prim::builtin::bitwise_and();
+  const Op& fmod = prim::builtin::bitwise_xor();
+  PrimExpr q = CallOp(add, CallOp(mul, Outer(), CallImm(16)), Inner());
+  PrimExpr r = shared ? q : CallOp(add, CallOp(mul, Outer(), CallImm(16)), Inner());
+  return CallOp(add, CallOp(mul, CallOp(fdiv, q, CallImm(32)), CallImm(32)),
+                CallOp(fmod, r, CallImm(32)));
+}
+
+/*!
  * \brief The `Evaluate` elements a `seq` replacement swaps, by position.
  *
  * A swap rather than a one-way replacement, so the arm is an involution: applying it twice
@@ -112,23 +156,6 @@ std::unordered_map<const ffi::Object*, Stmt>* SwapTable() {
 }
 
 /*!
- * \brief Partner table for the intra-element swap: the `IntImm` multiplier inside one element
- *        maps to the multiplier inside its partner.
- *
- * The element-swap arm above replaces whole `Evaluate` nodes, so nothing *inside* an element
- * ever changes and element-level in-place mutation has no work to do however well it is
- * implemented.  This arm changes a leaf inside the element instead: the `Evaluate`'s `value`
- * field must be updated, which makes the `Evaluate` node itself a candidate for in-place
- * mutation, and the same for the `Add` and `Mul` above the leaf.  That is the workload a real
- * substitution pass performs, and the only one on which the `SeqStmt` unique-array access can
- * pay.  Still an involution, so the fixture stays stationary.
- */
-std::unordered_map<const ffi::Object*, PrimExpr>* IntraSwapTable() {
-  static std::unordered_map<const ffi::Object*, PrimExpr> table;
-  return &table;
-}
-
-/*!
  * \brief Splice table: an element that maps to a nested `SeqStmt` replaces itself with all of
  *        its statements, so `n > 1` grows the sequence, `n == 1` leaves it alone and `n == 0`
  *        shrinks it. Nothing else in the harness reaches the splice path at all.
@@ -140,16 +167,8 @@ std::unordered_map<const ffi::Object*, Stmt>* SpliceTable() {
 /*! \brief Statements a growing splice expands one element into. */
 constexpr int kSpliceWidth = 4;
 
-/*! \brief The `IntImm` multiplier inside `Evaluate(v * imm + inner)`. */
-PrimExpr MultiplierOf(const Stmt& element) {
-  const auto* eval = element.as<EvaluateNode>();
-  const auto* add = eval->value.as<prim::AddNode>();
-  const auto* mul = add->a.as<prim::MulNode>();
-  return mul->b;
-}
-
-/*! \brief Which swap table a fixture build populates. See IntraSwapTable. */
-enum class SwapMode { kElement, kIntraElement, kSpliceGrow, kSpliceShrink };
+/*! \brief Which table a fixture build populates: element swaps, or splice targets. */
+enum class SwapMode { kElement, kSpliceGrow, kSpliceShrink };
 
 Stmt LongSeq(int length, int density, SwapMode mode) {
   ffi::Array<Stmt> body;
@@ -159,7 +178,6 @@ Stmt LongSeq(int length, int density, SwapMode mode) {
     body.push_back(Evaluate(Outer() * (i + 2) + Inner()));
   }
   SwapTable()->clear();
-  IntraSwapTable()->clear();
   SpliceTable()->clear();
   for (const SwapPair& pair : SwapPairs(length, density)) {
     Stmt lo = body[pair.lo], hi = body[pair.hi];
@@ -168,12 +186,6 @@ Stmt LongSeq(int length, int density, SwapMode mode) {
       // replaces elements rather than mutating them.
       (*SwapTable())[lo.get()] = hi;
       (*SwapTable())[hi.get()] = lo;
-    } else if (mode == SwapMode::kIntraElement) {
-      // Holds handles to the leaves only. Holding the elements too would give them a second
-      // reference and suppress the in-place mutation this arm exists to exercise.
-      PrimExpr lo_imm = MultiplierOf(lo), hi_imm = MultiplierOf(hi);
-      (*IntraSwapTable())[lo_imm.get()] = hi_imm;
-      (*IntraSwapTable())[hi_imm.get()] = lo_imm;
     } else {
       ffi::Array<Stmt> expansion;
       if (mode == SwapMode::kSpliceGrow) {
@@ -201,6 +213,15 @@ constexpr int64_t kSplitFuseSharedBytes =
     static_cast<int64_t>(sizeof(prim::FloorModNode));
 constexpr int64_t kSplitFuseDistinctBytes =
     kSplitFuseSharedBytes + kMulBytes + kImmBytes + kAddBytes;
+// The Call form: every binary node becomes a CallNode plus the two-element ArrayObj holding
+// its args. `ty` is a PrimType and `ty_args` is empty, so neither is a node the traversal
+// reaches -- that is what the two skip guards do.
+constexpr int64_t kCallBytes = sizeof(CallNode);
+constexpr int64_t kArgsBytes = sizeof(ffi::ArrayObj) + 2 * static_cast<int64_t>(sizeof(ffi::Any));
+constexpr int64_t kCallSplitFuseSharedBytes =
+    2 * kVarBytes + 4 * kImmBytes + 6 * (kCallBytes + kArgsBytes);
+constexpr int64_t kCallSplitFuseDistinctBytes =
+    kCallSplitFuseSharedBytes + kImmBytes + 2 * (kCallBytes + kArgsBytes);
 // Two Vars (Outer, Inner) are shared across every element; 20275's SeqStmtVisit visits the
 // Array itself, so it is a node too and kSeqBytes covers it.
 constexpr int64_t kSeqWorkingSet(int64_t l) {
@@ -208,15 +229,6 @@ constexpr int64_t kSeqWorkingSet(int64_t l) {
 }
 
 constexpr int kSeqLengths[] = {16, 256, 16384};
-// The density sweep runs on the L2 fixture: the middle of the range, least likely to be
-// dominated by either cache effects or fixed overhead. Each point swaps `k` pairs, so
-// `2k` of the 256 elements change.
-constexpr int kDensitySweepLength = 256;
-// Pair k swaps positions L/4+k and 3L/4-k, so the two halves meet at k = L/4 and the largest
-// valid density is L/4 -- half the elements changed. CheckSeqSwap fails the run if a pair
-// collides, which is how the previous {1,8,32,64,128} was caught.
-constexpr int kDensities[] = {1, 8, 32, 64};
-
 // The seq replacement swaps two Evaluate nodes, so it rebuilds their two Mul/Add-free spines:
 // each swapped element's parent chain is just the SeqStmt, and the Evaluate objects themselves
 // are reused rather than rebuilt. Retained copies the SeqStmt and its Array; moved mutates
@@ -292,6 +304,12 @@ ffi::Any SwapAllVars(const Var& var) {
  * is exactly one `Evaluate`, so "swap k pairs" means what it says.
  */
 ffi::Any SwapEvaluates(const Stmt& stmt) {
+  // Bound to `Stmt`, narrowed here.  A callback bound to `Evaluate` would let the engine's
+  // link test reject `SeqStmt` before the callback ran; binding to the base type fires on
+  // every statement and narrows in user code, which is how a Stmt-level pass is actually
+  // written.  It also gives this arm and `map_identity_stmt` the same link, so the difference
+  // between them is the rebuild and not how many nodes the link accepted.
+  if (stmt.as<EvaluateNode>() == nullptr) return ffi::Any(stmt);
   auto it = SwapTable()->find(stmt.get());
   if (it != SwapTable()->end()) return ffi::Any(it->second);
   return ffi::Any(stmt);
@@ -303,12 +321,6 @@ ffi::Any SpliceElements(const Stmt& stmt) {
   return ffi::Any(stmt);
 }
 
-/*! \brief The intra-element replacement: swap the multipliers of two elements. */
-ffi::Any SwapMultipliers(const IntImm& imm) {
-  auto it = IntraSwapTable()->find(imm.get());
-  if (it != IntraSwapTable()->end()) return ffi::Any(it->second);
-  return ffi::Any(imm);
-}
 
 ffi::Optional<Expr> SwapVarsFn(const Var& var) {
   Expr mapped = SwapAllVars(var).cast<Expr>();
@@ -378,7 +390,7 @@ void WalkOld(ffi::AnyView root) {
  * reference, so it takes the in-place path. Neither arm destroys anything: the driver retains
  * every output in a buffer and frees them all after the clock is read.
  */
-ffi::Any MapFloor(ffi::Any input, ReplaceKind, Ownership ownership) {
+ffi::Any MapFloor(ffi::Any input, ArmKind, Ownership ownership) {
   MinimalMutatorObj mutator;
   ffi::Expected<ffi::Any> result = ownership == Ownership::kMoved
                                        ? mutator.MaybeInplaceMutateIfUniqueExpected(input)
@@ -387,65 +399,63 @@ ffi::Any MapFloor(ffi::Any input, ReplaceKind, Ownership ownership) {
   return result.value();
 }
 
-ffi::Any MapNever(ffi::Any input, ReplaceKind, Ownership) {
+ffi::Any MapNever(ffi::Any input, ArmKind, Ownership) {
   return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(
       std::move(input), [](const FloatImm& v) { return ffi::Any(v); });
 }
 
-// The ladder has two operations, and they are named rather than selected by fixture.
+// The ladder has two mutating operations, and each one is named after what it does.
 //
-// `*_var` is Expr-level: match `Var`, substitute through the remap.  That is exactly what
-// `Substitute` and `FunctorSubstitute` do, so `map_functor` and `map_old` are baselines for
-// these arms and for no others.  It runs on every fixture.
+// `map_subst` is Expr-level: match `Var`, substitute through the remap.  That is exactly what
+// `Substitute` and `FunctorSubstitute` do, so `map_functor` and `map_old` are baselines for it
+// and for no other arm.  It runs on every fixture.
 //
-// `*_stmt` is Stmt-level: match `Stmt`, swap two whole `Evaluate` nodes.  It is what exercises
-// the SeqStmt hook's element in-place and splice paths, and it has no functor baseline --
-// `StmtExprMutator` hooks `VisitExpr_(const VarNode*)` and does different work on the same
-// graph.  It runs on the seq fixtures only; split/fuse is an Expr tree with no Stmt nodes.
+// `map_swap` is Stmt-level: match `Stmt`, swap two whole `Evaluate` nodes.  It is what
+// exercises the SeqStmt hook's element in-place and splice paths, and it has no functor
+// baseline -- `StmtExprMutator` hooks `VisitExpr_(const VarNode*)` and does different work on
+// the same graph.  It runs on the seq fixtures only; split/fuse is an Expr tree with no Stmt
+// nodes.
 //
-// The previous report printed the Stmt-level `replace` beside `functor`/`old` on the seq rows
-// with no marker, which invited reading two operations as one comparison.
-ffi::Any MapIdentityVar(ffi::Any input, ReplaceKind, Ownership) {
+// Both are the same engine, `StructuralMap`, reached with a different callback.  They were
+// both called `replace` and told apart only by a `_var` / `_stmt` suffix, which is how an
+// earlier report came to print the Stmt-level one beside `functor`/`old` -- two operations
+// read as one comparison.  One name, one operation.
+ffi::Any MapIdentityVar(ffi::Any input, ArmKind, Ownership) {
   return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(
       std::move(input), [](const Var& var) { return ffi::Any(var); });
 }
 
-ffi::Any MapReplaceVar(ffi::Any input, ReplaceKind, Ownership) {
+ffi::Any MapSubst(ffi::Any input, ArmKind, Ownership) {
   return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(std::move(input), SwapAllVars);
 }
 
-ffi::Any MapIdentityStmt(ffi::Any input, ReplaceKind, Ownership) {
+ffi::Any MapIdentityStmt(ffi::Any input, ArmKind, Ownership) {
   return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(
       std::move(input), [](const Stmt& stmt) { return ffi::Any(stmt); });
 }
 
-ffi::Any MapReplaceStmt(ffi::Any input, ReplaceKind, Ownership) {
+ffi::Any MapSwap(ffi::Any input, ArmKind, Ownership) {
   return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(std::move(input), SwapEvaluates);
 }
 
-/*! \brief The fixture-selected replacement, used by the checks and the density sweep. */
-ffi::Any MapReplace(ffi::Any input, ReplaceKind kind, Ownership ownership) {
-  return kind == ReplaceKind::kSingleVar ? MapReplaceStmt(std::move(input), kind, ownership)
-                                         : MapReplaceVar(std::move(input), kind, ownership);
-}
-
-/*! \brief seq only: change a leaf inside the element rather than replacing the element. */
-ffi::Any MapReplaceField(ffi::Any input, ReplaceKind, Ownership) {
-  return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(std::move(input), SwapMultipliers);
+/*! \brief The arm a fixture declares, used by the checks and the density sweep. */
+ffi::Any MapFixtureArm(ffi::Any input, ArmKind kind, Ownership ownership) {
+  return kind == ArmKind::kSwap ? MapSwap(std::move(input), kind, ownership)
+                                : MapSubst(std::move(input), kind, ownership);
 }
 
 /*! \brief seq only: the only arm that reaches the hook's splice path. */
-ffi::Any MapSplice(ffi::Any input, ReplaceKind, Ownership) {
+ffi::Any MapSplice(ffi::Any input, ArmKind, Ownership) {
   return ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(std::move(input), SpliceElements);
 }
 
-ffi::Any MapFunctor(ffi::Any input, ReplaceKind, Ownership) {
+ffi::Any MapFunctor(ffi::Any input, ArmKind, Ownership) {
   FunctorSubstitute mutator([](const Var& var) { return SwapVarsFn(var); });
   if (auto stmt = input.as<Stmt>()) return ffi::Any(mutator(*stmt));
   return ffi::Any(mutator(input.cast<Expr>()));
 }
 
-ffi::Any MapOld(ffi::Any input, ReplaceKind, Ownership) {
+ffi::Any MapOld(ffi::Any input, ArmKind, Ownership) {
   auto vmap = [](const Var& var) { return SwapVarsFn(var); };
   if (auto stmt = input.as<Stmt>()) return ffi::Any(Substitute(*stmt, vmap));
   return ffi::Any(Substitute(input.cast<Expr>(), vmap));
@@ -465,21 +475,33 @@ constexpr WalkArm kWalkArms[] = {
 
 struct MapArm {
   const char* name;
-  ffi::Any (*run)(ffi::Any, ReplaceKind, Ownership);
+  ffi::Any (*run)(ffi::Any, ArmKind, Ownership);
   /*! rief Whether the arm changes the graph, which is what makes it consume a shared DAG. */
   bool rebuilds;
 };
-// The Expr-level ladder plus its two baselines. Every arm here performs Var substitution, so
-// every column in the table it renders is the same operation and every delta in it is real.
-constexpr MapArm kMapArms[] = {
-    {"map_floor", &MapFloor, false},            {"map_never", &MapNever, false},
-    {"map_identity_var", &MapIdentityVar, false}, {"map_replace_var", &MapReplaceVar, true},
-    {"map_functor", &MapFunctor, true},         {"map_old", &MapOld, true},
+// Each fixture family carries the one operation it is shaped for, and its arms are the arms
+// that operation has baselines for.
+//
+// split/fuse runs the Expr-level ladder: `Var` substitution, which is exactly what
+// `Substitute` and `FunctorSubstitute` do, so `map_functor` and `map_old` are baselines here
+// and every column is the same operation.
+constexpr MapArm kExprMapArms[] = {
+    {"map_floor", &MapFloor, false},
+    {"map_never", &MapNever, false},
+    {"map_identity_var", &MapIdentityVar, false},
+    {"map_subst", &MapSubst, true},
+    {"map_functor", &MapFunctor, true},
+    {"map_old", &MapOld, true},
 };
-// Stmt-level, seq only. No functor baseline exists for it; see MapReplaceStmt.
-constexpr MapArm kStmtMapArms[] = {
+// seq runs the Stmt-level swap at scale. `StmtExprMutator` hooks `VisitExpr_(const VarNode*)`
+// and does different work on the same graph, so there is no functor or shipping baseline for
+// this operation -- and rather than a column of `n/a`, those two arms are simply not here. A
+// baseline that cannot perform the operation is a column that belongs on another table.
+constexpr MapArm kSeqMapArms[] = {
+    {"map_floor", &MapFloor, false},
+    {"map_never", &MapNever, false},
     {"map_identity_stmt", &MapIdentityStmt, false},
-    {"map_replace_stmt", &MapReplaceStmt, true},
+    {"map_swap", &MapSwap, true},
 };
 
 
@@ -507,9 +529,20 @@ void Fail(const std::string& what) {
 void CheckInplace(const FixtureInfo& info, ffi::Any (*build)()) {
   const std::string tag = std::string("inplace/") + info.name;
   {
+    // `floor` too, and not only the mutating arm. `floor` under `moved` pays a uniqueness
+    // check at every node it descends through and rebuilds nothing, so if that check never
+    // succeeded the cost would be real but the arm would be measuring a path no caller hits.
     ffi::Any root = build();
     const ffi::Object* before = root.cast<ffi::ObjectRef>().get();
-    ffi::Any out = MapReplace(std::move(root), info.replace_kind, Ownership::kMoved);
+    ffi::Any out = MapFloor(std::move(root), info.arm_kind, Ownership::kMoved);
+    if (out.cast<ffi::ObjectRef>().get() != before) {
+      Fail(tag + "/floor/moved: the in-place path did not fire");
+    }
+  }
+  {
+    ffi::Any root = build();
+    const ffi::Object* before = root.cast<ffi::ObjectRef>().get();
+    ffi::Any out = MapFixtureArm(std::move(root), info.arm_kind, Ownership::kMoved);
     if (out.cast<ffi::ObjectRef>().get() != before) Fail(tag + "/moved: root was not in place");
   }
   {
@@ -517,7 +550,7 @@ void CheckInplace(const FixtureInfo& info, ffi::Any (*build)()) {
     // opposite direction, pinned so the check catches in-place firing where it should not.
     ffi::Any root = build();
     const ffi::Object* before = root.cast<ffi::ObjectRef>().get();
-    ffi::Any out = MapReplace(ffi::Any(root), info.replace_kind, Ownership::kRetained);
+    ffi::Any out = MapFixtureArm(ffi::Any(root), info.arm_kind, Ownership::kRetained);
     (void)out;  // `root` still holds a reference, so the input must not have been mutated
     if (root.cast<ffi::ObjectRef>().get() != before) Fail(tag + "/retained: input was mutated");
   }
@@ -593,23 +626,130 @@ Stmt MakeNestedSeq(ffi::Array<Stmt> body) {
   return Stmt(node);
 }
 
+/*!
+ * \brief a1031a2177's normalization: what shape a result of \p expected statements must have.
+ *
+ * Zero statements is `Evaluate(0)`, one is that statement unwrapped, and anything else is a
+ * `SeqStmt` of that length. Before a1031a2177 every result was a `SeqStmt`, so this is the
+ * check the previous twelve cases could not make.
+ */
+bool CheckSeqShape(const std::string& tag, const ffi::Any& result, int64_t expected) {
+  const ffi::ObjectRef ref = result.cast<ffi::ObjectRef>();
+  const auto* seq = ref.as<SeqStmtNode>();
+  if (expected == 0) {
+    const auto* eval = ref.as<EvaluateNode>();
+    const auto* imm = eval == nullptr ? nullptr : eval->value.as<IntImmNode>();
+    if (imm == nullptr || imm->value != 0) {
+      Fail(tag + ": an emptied sequence must normalize to Evaluate(0)");
+      return false;
+    }
+    return true;
+  }
+  if (expected == 1) {
+    if (seq != nullptr) {
+      Fail(tag + ": a sequence of one must normalize to the element, not a length-one SeqStmt");
+      return false;
+    }
+    return true;
+  }
+  if (seq == nullptr || static_cast<int64_t>(seq->seq.size()) != expected) {
+    Fail(tag + ": expected a SeqStmt of " + std::to_string(expected) + " statements");
+    return false;
+  }
+  return true;
+}
+
+/*!
+ * \brief The deliberate asymmetry in a1031a2177's no-op dropping, pinned.
+ *
+ * `IsSeqStmtNoOp` drops `Evaluate(0)` from the output, but only from the first changed element
+ * onward: the lead loop returns `self` untouched when nothing changed, and the rebuild path
+ * copies the prefix before that point with `InitRange` rather than replaying it. So the same
+ * `Evaluate(0)` survives or is dropped depending on where it sits relative to a change
+ * somewhere else in the sequence, and on whether there is a change at all.
+ *
+ * This reads as a bug and is not one: dropping no-ops on an unchanged pass would rewrite every
+ * sequence that contains one and destroy the `same_as` fast path, and replaying the prefix to
+ * drop them would give up the `InitRange` copy. It is untested in TVM's own tests, so it is
+ * pinned here.
+ *
+ * It also bounds the differential test: the two paths agree on a changed pass, which is what
+ * `CheckSpliceAgainstReference` asserts, and on an unchanged pass both return the input.
+ */
+void CheckNoOpAsymmetry() {
+  // [no-op, e0, e1, e2, no-op, e3] -- one no-op before the element that changes and one after.
+  auto build = [&](bool splice) {
+    ffi::Array<Stmt> body;
+    ffi::Array<Stmt> real;
+    for (int i = 0; i < 4; ++i) real.push_back(Evaluate(Outer() * (i + 2) + Inner()));
+    body.push_back(Evaluate(0));
+    body.push_back(real[0]);
+    body.push_back(real[1]);
+    body.push_back(real[2]);
+    body.push_back(Evaluate(0));
+    body.push_back(real[3]);
+    SpliceTable()->clear();
+    if (splice) (*SpliceTable())[real[2].get()] = MakeNestedSeq({real[2], real[2]});
+    return SeqStmt(body);
+  };
+  auto noops = [](const SeqStmtNode* seq) {
+    int64_t n = 0;
+    for (const Stmt& stmt : seq->seq) {
+      const auto* eval = stmt.as<EvaluateNode>();
+      const auto* imm = eval == nullptr ? nullptr : eval->value.as<IntImmNode>();
+      if (imm != nullptr && imm->value == 0) ++n;
+    }
+    return n;
+  };
+  {  // Nothing changes: the node itself comes back and both no-ops survive.
+    ffi::Any root = ffi::Any(build(false));
+    const ffi::Object* before = root.cast<ffi::ObjectRef>().get();
+    ffi::Any out =
+        ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(std::move(root), SpliceElements);
+    const auto* seq = out.cast<ffi::ObjectRef>().as<SeqStmtNode>();
+    if (out.cast<ffi::ObjectRef>().get() != before) {
+      Fail("noop/unchanged: an unchanged pass must return the input node");
+    }
+    if (seq == nullptr || noops(seq) != 2) {
+      Fail("noop/unchanged: both Evaluate(0)s must survive a pass that changes nothing");
+    }
+  }
+  {  // Element 3 splices into two: the no-op after it is dropped, the one before survives.
+    ffi::Any input = ffi::Any(build(true));
+    ffi::Any out = ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(ffi::Any(input),
+                                                                 SpliceElements);
+    const auto* seq = out.cast<ffi::ObjectRef>().as<SeqStmtNode>();
+    // [no-op, e0, e1, e2, e2, e3]: the prefix is copied verbatim, the suffix is rebuilt.
+    if (seq == nullptr || static_cast<int64_t>(seq->seq.size()) != 6 || noops(seq) != 1) {
+      Fail("noop/changed: the Evaluate(0) before the first change must survive and the one "
+           "after it must be dropped");
+    }
+    if (noops(static_cast<const SeqStmtNode*>(input.cast<ffi::ObjectRef>().get())) != 2) {
+      Fail("noop/changed: the input must be unchanged under retained ownership");
+    }
+  }
+}
+
 void CheckSpliceAgainstReference() {
   struct Case {
     const char* name;
     int length;
     std::vector<int> targets;  // element positions that map to a nested SeqStmt
     // Statements each target expands into: 0 shrinks, >1 grows. A nested SeqStmt of length 1
-    // is not expressible -- SeqStmt's constructor prohibits it -- so the length-unchanged
-    // splice cannot occur and is not tested.
+    // is not expressible through the public constructor, so MakeNestedSeq builds it directly.
     int width;
   };
   const std::vector<Case> cases = {
-      {"grow/first", 8, {0}, 4},        {"grow/last", 8, {7}, 4},
-      {"grow/middle", 8, {3}, 4},       {"grow/several", 8, {1, 3, 5}, 3},
-      {"grow/adjacent", 8, {2, 3}, 2},  {"keep/one", 8, {4}, 1},
-      {"shrink/first", 8, {0}, 0},      {"shrink/last", 8, {7}, 0},
-      {"shrink/several", 8, {0, 2, 4}, 0}, {"shrink/all", 5, {0, 1, 2, 3, 4}, 0},
-      {"grow/wide", 4, {0, 1, 2, 3}, 6},  // forces the spill path
+      {"grow/first", 8, {0}, 4},           {"grow/last", 8, {7}, 4},
+      {"grow/middle", 8, {3}, 4},          {"grow/several", 8, {1, 3, 5}, 3},
+      {"grow/adjacent", 8, {2, 3}, 2},     {"keep/one", 8, {4}, 1},
+      {"shrink/first", 8, {0}, 0},         {"shrink/last", 8, {7}, 0},
+      {"shrink/several", 8, {0, 2, 4}, 0}, {"grow/wide", 4, {0, 1, 2, 3}, 6},
+      // a1031a2177 normalizes the result, so these three pin the shapes that opens up: a
+      // sequence that ends at one element returns that element unwrapped rather than a
+      // length-one SeqStmt, and one that ends at zero returns Evaluate(0).
+      {"normalize/to-one", 2, {0}, 0},     {"normalize/to-zero", 2, {0, 1}, 0},
+      {"normalize/all-gone", 5, {0, 1, 2, 3, 4}, 0},
   };
   for (const Case& c : cases) {
     auto build = [&]() {
@@ -632,25 +772,82 @@ void CheckSpliceAgainstReference() {
     ffi::Any inplace_input = ffi::Any(build());
     ffi::Any inplace = ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(std::move(inplace_input),
                                                                      SpliceElements);
-    const auto* a = reference.cast<ffi::ObjectRef>().as<SeqStmtNode>();
-    const auto* b = inplace.cast<ffi::ObjectRef>().as<SeqStmtNode>();
-    const int64_t a_len = a == nullptr ? -1 : static_cast<int64_t>(a->seq.size());
-    const int64_t b_len = b == nullptr ? -1 : static_cast<int64_t>(b->seq.size());
-    // Non-vacuous: the reference itself must have changed length by the amount the case
-    // describes, or agreement between the two paths would prove nothing.
+    // Non-vacuous: the reference itself must have the shape the case describes, or agreement
+    // between the two paths would prove nothing.
     int64_t expected = c.length;
     for (size_t k = 0; k < c.targets.size(); ++k) expected += c.width - 1;
-    if (a_len != expected) {
-      Fail(std::string("splice/") + c.name + ": MutateSeqStmtRaw produced length " +
-           std::to_string(a_len) + ", expected " + std::to_string(expected));
+    if (!CheckSeqShape(std::string("splice/") + c.name + "/reference", reference, expected)) {
+      return;
     }
-    if (a_len != b_len) {
-      Fail(std::string("splice/") + c.name + ": length " + std::to_string(b_len) +
-           " in place against " + std::to_string(a_len) + " from MutateSeqStmtRaw");
-    }
+    CheckSeqShape(std::string("splice/") + c.name + "/inplace", inplace, expected);
     if (!ffi::StructuralEqual()(reference, inplace)) {
       Fail(std::string("splice/") + c.name + ": in-place output differs from MutateSeqStmtRaw");
     }
+  }
+  CheckNoOpAsymmetry();
+}
+
+/*!
+ * \brief The builder declares what it built; this confirms the declaration, untimed.
+ *
+ * The counts stay declared rather than measured -- making the binary re-derive them would put
+ * counting inside the measurement, and the builder wrote the loop and knows them.  What it
+ * cannot do is notice when a fixture is edited and its constants are not, which is a silent
+ * error in every `ns/node` in the row.  So the declaration is checked once, before anything is
+ * timed, against a walk of the graph it actually built, and the failure prints the numbers to
+ * paste in.
+ *
+ * `rebuilt` is the pointer-identity set difference between input and output, which is what the
+ * report says it is.  Under `moved` it is a lower bound: the input is consumed, so a
+ * replacement can land on a just-freed address and the comparison undercounts.  The check
+ * therefore requires the declared `moved` count to be no greater than the observed one.
+ */
+void CheckDeclaredCounts(const FixtureInfo& info, ffi::Any (*build)()) {
+  const std::string tag = std::string("counts/") + info.name;
+  std::unordered_set<const ffi::Object*> unique;
+  int64_t occurrences = 0;
+  ffi::Any root = build();
+  ffi::StructuralWalk<ffi::WalkOrder::kPostOrder>(root, [&](ffi::AnyView v) {
+    if (v.type_index() >= ffi::TypeIndex::kTVMFFIStaticObjectBegin) {
+      unique.insert(v.cast<ffi::ObjectRef>().get());
+      ++occurrences;
+    }
+    return ffi::WalkResult::Advance();
+  });
+  auto rebuilt = [&](Ownership ownership) {
+    ffi::Any input = build();
+    std::unordered_set<const ffi::Object*> before;
+    ffi::StructuralWalk<ffi::WalkOrder::kPostOrder>(input, [&](ffi::AnyView v) {
+      if (v.type_index() >= ffi::TypeIndex::kTVMFFIStaticObjectBegin) {
+        before.insert(v.cast<ffi::ObjectRef>().get());
+      }
+      return ffi::WalkResult::Advance();
+    });
+    ffi::Any out = ownership == Ownership::kMoved
+                       ? MapFixtureArm(std::move(input), info.arm_kind, ownership)
+                       : MapFixtureArm(ffi::Any(input), info.arm_kind, ownership);
+    int64_t n = 0;
+    ffi::StructuralWalk<ffi::WalkOrder::kPostOrder>(out, [&](ffi::AnyView v) {
+      if (v.type_index() >= ffi::TypeIndex::kTVMFFIStaticObjectBegin &&
+          before.count(v.cast<ffi::ObjectRef>().get()) == 0) {
+        ++n;
+      }
+      return ffi::WalkResult::Advance();
+    });
+    return n;
+  };
+  const int64_t observed_unique = static_cast<int64_t>(unique.size());
+  const int64_t observed_retained = rebuilt(Ownership::kRetained);
+  const int64_t observed_moved = rebuilt(Ownership::kMoved);
+  if (observed_unique != info.unique_nodes || occurrences != info.occurrences ||
+      observed_retained != info.rebuilt_retained || observed_moved < info.rebuilt_moved) {
+    Fail(tag + ": declared unique=" + std::to_string(info.unique_nodes) + " occurrences=" +
+         std::to_string(info.occurrences) + " rebuilt_retained=" +
+         std::to_string(info.rebuilt_retained) + " rebuilt_moved=" +
+         std::to_string(info.rebuilt_moved) + "; walked unique=" +
+         std::to_string(observed_unique) + " occurrences=" + std::to_string(occurrences) +
+         " rebuilt_retained=" + std::to_string(observed_retained) + " rebuilt_moved=" +
+         std::to_string(observed_moved));
   }
 }
 
@@ -691,8 +888,9 @@ void CheckHookCoverage(ffi::Any (*build)(), const char* name) {
  * previous iteration's output as the next iteration's input, so a single graph walks down the
  * chain. Both retain every output.
  */
-double MeasureMapArm(ffi::Any (*run)(ffi::Any, ReplaceKind, Ownership), Ownership ownership,
-                     ReplaceKind kind, int repeats, ffi::Any (*build)(), bool pooled = false) {
+double MeasureMapArm(const char* arm, ffi::Any (*run)(ffi::Any, ArmKind, Ownership),
+                     Ownership ownership, ArmKind kind, int repeats, ffi::Any (*build)(),
+                     bool pooled = false) {
   std::vector<ffi::Any>& out = ResultSink();
   ffi::Any held;             // retained: the caller's handle, alive for the whole batch
   std::vector<ffi::Any> pool;  // moved on a fixture the arm consumes: independent copies
@@ -724,7 +922,7 @@ double MeasureMapArm(ffi::Any (*run)(ffi::Any, ReplaceKind, Ownership), Ownershi
     }
   };
   auto teardown = [&] {  // untimed
-    DrainResultSink();
+    DrainResultSink(arm);
     held = ffi::Any();
     pool.clear();
   };
@@ -746,7 +944,8 @@ double MeasureMapArm(ffi::Any (*run)(ffi::Any, ReplaceKind, Ownership), Ownershi
   return Median(std::move(samples));
 }
 
-void RunFixture(const FixtureInfo& info, ffi::Any (*build)()) {
+void RunFixture(const FixtureInfo& info, ffi::Any (*build)(), const MapArm* arms,
+                size_t arm_count) {
   EmitFixture(kHarness, info);
 
   for (const WalkArm& arm : kWalkArms) {
@@ -757,25 +956,20 @@ void RunFixture(const FixtureInfo& info, ffi::Any (*build)()) {
   }
 
   for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
-    for (const MapArm& arm : kMapArms) {
-      // `map_old` runs on every fixture. It is Substitute, which shares the engine with
-      // map_replace_var but carries a dtype ICHECK per substitution plus buffer/attr handling
-      // FunctorSubstitute omits, so the column is not a null result and belongs on every row.
-      double ns = MeasureMapArm(arm.run, ownership, info.replace_kind, info.repeats, build,
+    for (size_t i = 0; i < arm_count; ++i) {
+      const MapArm& arm = arms[i];
+      double ns = MeasureMapArm(arm.name, arm.run, ownership, info.arm_kind, info.repeats, build,
                                 arm.rebuilds && info.has_sharing);
       EmitResult(kHarness, info.name, OwnershipName(ownership), arm.name, ns);
     }
-    if (info.replace_kind == ReplaceKind::kSingleVar) {
-      for (const MapArm& arm : kStmtMapArms) {
-        double ns = MeasureMapArm(arm.run, ownership, info.replace_kind, info.repeats, build,
-                                  arm.rebuilds && info.has_sharing);
-        EmitResult(kHarness, info.name, OwnershipName(ownership), arm.name, ns);
-      }
-      double ns = MeasureMapArm(&MapReplaceField, ownership, info.replace_kind, info.repeats,
-                                build);
-      EmitResult(kHarness, info.name, OwnershipName(ownership), "map_replace_field", ns);
-    }
   }
+}
+
+/*! \brief Everything a fixture needs before it is timed. */
+void PrepareFixture(const FixtureInfo& info, ffi::Any (*build)(), const char* coverage_tag) {
+  CheckHookCoverage(build, coverage_tag);
+  CheckDeclaredCounts(info, build);
+  CheckInplace(info, build);
 }
 
 }  // namespace real_tvm
@@ -786,27 +980,39 @@ int main() {
 
   EmitStandardProvenance(kHarness);
   EmitProvenance("structural_hooks",
-                 "harness (tvm_hook_override.h), ported from apache/tvm#20275 e40167046ed6, "
+                 "harness (tvm_hook_override.h), ported from apache/tvm#20275 a1031a2177, "
                  "installed over TVM's");
-  EmitProvenance("seqstmt_inplace_hook", TVM_SEQSTMT_INPLACE_FIX ? "repaired" : "20275 as shipped");
-
-  // split/fuse replaces every Var, with the remap, which is the semantics Substitute provides
-  // and the thing worth measuring on a small tree. Under moved ownership the only new identity
-  // is the substituted-in Var, except on the shared fixture, where the first parent to reach
-  // the shared subtree cannot mutate it in place and copies it and its own changed child.
-  auto build_shared = [] { return ffi::Any(SplitFuse(true)); };
-  auto build_distinct = [] { return ffi::Any(SplitFuse(false)); };
-  FixtureInfo shared{"split-fuse-shared", 12, 17, kSplitFuseSharedBytes, 9, 3, kSplitFuseRepeats,
-                     true, ReplaceKind::kAllVars};
-  FixtureInfo distinct{"split-fuse-distinct", 15, 17, kSplitFuseDistinctBytes, 9, 1,
-                       kSplitFuseRepeats, false, ReplaceKind::kAllVars};
 
   CheckSpliceAgainstReference();
-  CheckHookCoverage(build_shared, "split-fuse-shared");
-  CheckInplace(shared, build_shared);
-  CheckInplace(distinct, build_distinct);
-  RunFixture(shared, build_shared);
-  RunFixture(distinct, build_distinct);
+
+  // split/fuse substitutes every Var, with the remap, which is the semantics Substitute
+  // provides and the thing worth measuring on a small Expr tree.  Under moved ownership the
+  // only new identity is the substituted-in Var, except on the shared fixture, where the first
+  // parent to reach the shared subtree cannot mutate it in place and copies it and its own
+  // changed child.  Each shape is built twice: once from direct Add/Mul/FloorDiv/FloorMod
+  // nodes and once from Calls, so the two rows differ only in node representation.
+  struct ExprFixture {
+    FixtureInfo info;
+    ffi::Any (*build)();
+  };
+  const ExprFixture expr_fixtures[] = {
+      {{"split-fuse-shared", 12, 17, kSplitFuseSharedBytes, 10, 4, kSplitFuseRepeats, true,
+        ArmKind::kSubst},
+       [] { return ffi::Any(SplitFuse(true)); }},
+      {{"split-fuse-distinct", 15, 17, kSplitFuseDistinctBytes, 10, 2, kSplitFuseRepeats, false,
+        ArmKind::kSubst},
+       [] { return ffi::Any(SplitFuse(false)); }},
+      {{"call-split-fuse-shared", 18, 25, kCallSplitFuseSharedBytes, 18, 6, kSplitFuseRepeats,
+        true, ArmKind::kSubst},
+       [] { return ffi::Any(CallSplitFuse(true)); }},
+      {{"call-split-fuse-distinct", 23, 25, kCallSplitFuseDistinctBytes, 18, 2,
+        kSplitFuseRepeats, false, ArmKind::kSubst},
+       [] { return ffi::Any(CallSplitFuse(false)); }},
+  };
+  for (const ExprFixture& f : expr_fixtures) {
+    PrepareFixture(f.info, f.build, f.info.name);
+    RunFixture(f.info, f.build, kExprMapArms, sizeof(kExprMapArms) / sizeof(kExprMapArms[0]));
+  }
 
   // seq swaps two Evaluate nodes: no remap is involved, and the change count is exactly two
   // regardless of L, so the update stays sparse as the body grows.
@@ -814,7 +1020,6 @@ int main() {
     static int current_length = 0;
     current_length = length;
     auto build = [] { return ffi::Any(LongSeq(current_length, 1, SwapMode::kElement)); };
-    CheckHookCoverage(build, "seq");
     CheckSeqSwap(length, 1);
     std::string name = "seq-" + std::to_string(length);
     FixtureInfo info{name.c_str(),
@@ -825,91 +1030,9 @@ int main() {
                      kSeqRebuiltMoved,
                      SeqRepeats(length),
                      false,
-                     ReplaceKind::kSingleVar};
-    CheckInplace(info, build);
-    RunFixture(info, build);
-  }
-
-  // The intra-element workload: change a leaf inside two elements rather than replacing the
-  // elements. The Evaluate above each changed leaf has its `value` field updated, so it is a
-  // candidate for in-place mutation -- which is what SeqStmt's hook decides, and the only
-  // workload on which the repaired hook can pay. Run across the seq sweep and, at the L2 size,
-  // across density.
-  {
-    static int intra_length = 0;
-    static int intra_density = 0;
-    auto build = [] { return ffi::Any(LongSeq(intra_length, intra_density, SwapMode::kIntraElement)); };
-    for (int length : kSeqLengths) {
-      intra_length = length;
-      intra_density = 1;
-      std::string name = "intra-seq-" + std::to_string(length);
-      for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
-        double ns = MeasureMapArm(&MapReplaceField, ownership, ReplaceKind::kSingleVar,
-                                  SeqRepeats(length), build);
-        EmitResult(kHarness, name, OwnershipName(ownership), "map_replace_field", ns);
-      }
-    }
-    intra_length = kDensitySweepLength;
-    for (int density : kDensities) {
-      intra_density = density;
-      std::string name = "intra-density-" + std::to_string(2 * density) + "of" +
-                         std::to_string(kDensitySweepLength);
-      for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
-        double ns = MeasureMapArm(&MapReplaceField, ownership, ReplaceKind::kSingleVar,
-                                  SeqRepeats(kDensitySweepLength), build);
-        EmitResult(kHarness, name, OwnershipName(ownership), "map_replace_field", ns);
-      }
-    }
-  }
-
-  // Splicing: the only arm that reaches the hook's splice path. Growing is not stationary --
-  // the sequence gets longer each time -- so it runs over a pool of independent copies rebuilt
-  // untimed between passes, like the shared-DAG case. Two seq sizes and two splice counts;
-  // seq-16384 is left out because a pool of it would be gigabytes.
-  {
-    static int splice_length = 0;
-    static int splice_count = 0;
-    auto build = [] {
-      return ffi::Any(LongSeq(splice_length, splice_count, SwapMode::kSpliceGrow));
-    };
-    for (int length : {16, 256}) {
-      splice_length = length;
-      for (int count : {1, 8}) {
-        if (count * 2 > length / 2) continue;
-        splice_count = count;
-        std::string name = "splice-" + std::to_string(2 * count) + "x" +
-                           std::to_string(kSpliceWidth) + "-L" + std::to_string(length);
-        for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
-          // Growing is not stationary -- the sequence lengthens each time -- so the moved path
-          // consumes a fresh copy per iteration from an untimed pool.
-          double ns = MeasureMapArm(&MapSplice, ownership, ReplaceKind::kSingleVar,
-                                    SeqRepeats(length), build, /*pooled=*/true);
-          EmitResult(kHarness, name, OwnershipName(ownership), "map_splice", ns);
-        }
-      }
-    }
-  }
-
-  // Change-density sweep, on the L2 fixture only: does moved stop losing to retained once
-  // enough of the body changes? The mechanism says the in-place path pays a uniqueness check
-  // at every node it descends through, O(N), and saves a rebuild only where something
-  // changes, O(changed), so there should be a crossover.
-  {
-    static int sweep_length = 0;
-    sweep_length = kDensitySweepLength;
-    for (int density : kDensities) {
-      static int current_density = 0;
-      current_density = density;
-      auto build = [] { return ffi::Any(LongSeq(sweep_length, current_density, SwapMode::kElement)); };
-      CheckSeqSwap(sweep_length, density);
-      std::string name = "density-" + std::to_string(2 * density) + "of" +
-                         std::to_string(sweep_length);
-      for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
-        double ns = MeasureMapArm(&MapReplace, ownership, ReplaceKind::kSingleVar,
-                                  SeqRepeats(sweep_length), build);
-        EmitResult(kHarness, name, OwnershipName(ownership), "map_replace_stmt", ns);
-      }
-    }
+                     ArmKind::kSwap};
+    PrepareFixture(info, build, "seq");
+    RunFixture(info, build, kSeqMapArms, sizeof(kSeqMapArms) / sizeof(kSeqMapArms[0]));
   }
 
   Emit("#sink\t" + std::to_string(g_sink));

@@ -30,13 +30,14 @@ of the earlier work, read it top to bottom once; it is shorter than re-deriving 
 
 1. [Why this is a branch](#why-this-is-a-branch-and-not-main)
 2. [Running it](#running-it)
-3. [The arm vocabulary](#the-arm-vocabulary-which-arm-answers-which-question)
-4. [The fixtures](#the-fixtures)
-5. [Method, and what it protects against](#method-and-what-it-protects-against)
-6. [Reading the tables](#reading-the-tables)
-7. [The port](#the-port)
-8. [Adding an arm or a fixture](#adding-an-arm-or-a-fixture)
-9. [Layout](#layout)
+3. [Two-state runs](#two-state-runs)
+4. [The arm vocabulary](#the-arm-vocabulary-which-arm-answers-which-question)
+5. [The fixtures](#the-fixtures)
+6. [Method, and what it protects against](#method-and-what-it-protects-against)
+7. [Reading the tables](#reading-the-tables)
+8. [The port](#the-port)
+9. [Adding an arm or a fixture](#adding-an-arm-or-a-fixture)
+10. [Layout](#layout)
 
 ## Why this is a branch and not `main`
 
@@ -52,9 +53,14 @@ The guard is disabled by an off-by-default CMake option added on this branch,
 types and registers its own hooks: no override, no patch, runs in tvm-ffi's tree alone. `real
 TVM` links TVM and overrides the real hooks from `main()`, which runs after every
 `TVM_FFI_STATIC_INIT_BLOCK`, and needs the guard patch. They differ only in the types they build
-from and how hooks are installed; fixtures, arms, method, checks and report format are common.
-Their rows are structural counterparts — same node counts, same occurrence counts, same rebuild
-counts — so disagreement between them is a signal rather than noise.
+from and how hooks are installed; arms, method, checks and report format are common. Where a
+fixture exists in both, the rows are structural counterparts — same node counts, same
+occurrence counts, same rebuild counts — so disagreement between them is a signal rather than
+noise. `call-split-fuse` is real-TVM only: mini-TIR has no `Call` node, and the guards that
+fixture exists to reach are `Call`'s.
+
+**Two-state runs are real-TVM only**, for the same reason in reverse: mini-TIR's hooks are the
+harness's own code rather than a port, so there is no per-state hook file for them.
 
 ## Running it
 
@@ -77,18 +83,65 @@ benchmarks/cpp/structural/report.py \
 
 Nothing in the TVM checkout is modified. The harness lives here and links TVM from outside.
 
-`build.sh` emits four binaries: `mini_tir_bench`, `real_tvm_bench`, and a `*_seqorig` of each
-with the `SeqStmt` in-place hook in apache/tvm#20275's shipped shape rather than the harness's
-variant. `report.py` takes any number of `--binary` arguments and renders one set of tables per
-binary.
+`build.sh` emits `mini_tir_bench` and `real_tvm_bench`. `report.py` takes any number of
+`--binary` arguments and renders one set of tables per binary.
 
-**Wall time.** A single `real_tvm_bench` process is roughly four minutes, `mini_tir_bench`
-roughly three; `--runs 5` on both is about 35 minutes. The `seq-16384` fixture and the density
-sweep are most of it. Pin with `--cpu`; leave the machine otherwise idle.
+**Wall time.** One `real_tvm_bench` process is about twenty seconds and `--runs 5` a couple of
+minutes. Pin with `--cpu`; leave the machine otherwise idle.
 
-**Two-state runs** — building two tvm-ffi refs and comparing them — are not implemented yet.
-See [Reading the tables](#reading-the-tables) for why absolutes from two separately compiled
-binaries may not be compared directly, which is the problem that work exists to solve.
+## Two-state runs
+
+Comparing two tvm-ffi refs. This is the only sound way to say that an engine change moved a
+number: absolutes from two separately compiled binaries are not comparable, and this harness
+has a worked example of a `map_floor` difference of -18% to -30% between two builds of
+identical source.
+
+```sh
+benchmarks/cpp/structural/build.sh --tvm "$TVM" \
+    --state 'A=62df2f5,hooks=tvm_hook_override_pre753.h,shim=state_shims/pre753_visit_return_none.h' \
+    --state 'B=897ece6'
+
+benchmarks/cpp/structural/report.py --two-state --cpu 0 --runs 5 \
+    --state 'A=62df2f5:build_bench/real_tvm_bench_A' \
+    --state 'B=897ece6:build_bench/real_tvm_bench_B' \
+    --differs 'tvm-ffi #747 #749 #750 #751 #753 #756' --out compare.md
+```
+
+Four things make the comparison mean something, and each is a rule rather than a nicety.
+
+**One hook file per state, each written against that state's own tvm-ffi API.** The harness
+hooks call into the engine, and the engine's surface differs between states — entry points,
+return types, macros available. `hooks=` selects a whole file. There is no conditional
+compilation, no template parameter selecting an API, and no shared file with `#if`s: a hook
+file that compiled against both states by accommodating both would measure a hybrid nobody
+ships, which is what made an earlier bespoke benchmark useless. Duplication between the two
+files is correct and expected — the same principle the harness already applies between
+`tvm_hook_override.h` and `mini_tir.h`. A state file declares an `API ADAPTATION` block and
+`port_check.sh --header` checks it; see [The port](#the-port).
+
+**Interleaved processes, A/B/A/B.** Not all of A and then all of B. Thermal state, allocator
+luck and drift then hit both states equally instead of landing on whichever ran second.
+`report.py --two-state` does this; nothing else is a two-state run.
+
+**apache/tvm held fixed.** Both states build the same TVM revision — the one `--tvm` points
+at — so the only difference is the engine. `build.sh` gives each state its own TVM worktree
+with `3rdparty/tvm-ffi` pointed at that state's engine, which is what makes one TVM revision
+buildable against two engines at once.
+
+**Build shims, where a state's engine is missing something TVM's own sources use.** `shim=`
+force-includes a header into apache/tvm's translation units only, never the benchmark's. It
+exists because the harness ports twenty-three of TVM's hooks and TVM has many more; the rest
+still have to compile. A shim must be semantically identical to what the state's engine
+already does, must be off every arm's dispatch path, and must say in its own header why both
+are true. The empty shim `state_shims/none.h` is force-included for a state that needs
+nothing, so both states are compiled with the same flag shape: a flag present on one side and
+absent on the other is itself a build difference.
+
+**What the report may claim.** Both absolutes and the delta appear in each cell, as
+`30.81 —> 24.16 (-21.6%)`, and only the delta is claimed. `floor` is the control: it dispatches
+no callbacks, so an engine or protocol change should not touch it, and if it moves the two
+builds differ in something beyond what is under study and nothing else in that row can be
+trusted.
 
 ## The arm vocabulary: which arm answers which question
 
@@ -108,36 +161,59 @@ comparable.
 
 ### Map arms
 
-Map arms are split by the **operation** they perform, because two operations on the same graph
-are not each other's baselines. This was a real error in an earlier report: the seq `replace`
-column swapped `Evaluate` nodes while the `functor` and `old` columns beside it substituted
-`Var`s, with nothing saying so.
+**Each fixture family carries the one operation it is shaped for, and its arms are the arms
+that operation has baselines for.** Two operations on the same graph are not each other's
+baselines, and an earlier report printed them side by side without saying so: a column that
+swapped `Evaluate` nodes sat next to `functor` and `old` columns that substituted `Var`s.
 
-**Expr-level — `Var` substitution.** Runs on every fixture. `Substitute` and `FunctorSubstitute`
-both hook `VisitExpr_(const VarNode*)`, so these are the arms they are baselines for.
+Every map arm is the same engine, `StructuralMap`, reached with a different callback — which
+is what makes `subst` against `old` and against `functor` interpretable, and why they are not
+three different engines:
+
+| arm | mechanism |
+| --- | --- |
+| `subst` | `StructuralMap` with a `Var` callback |
+| `old` | `Substitute` — the same engine at this pin, reached through a different API |
+| `functor` | `FunctorSubstitute : StmtExprMutator` — pre-migration vtable path, no hooks |
+
+So `subst vs old` prices the API and `subst vs functor` prices the migration.
+
+**split/fuse — Expr-level `Var` substitution.** `Substitute` and `FunctorSubstitute` both hook
+`VisitExpr_(const VarNode*)`, so these are the arms they are baselines for.
 
 | arm | what it is | the question it answers |
 | --- | --- | --- |
-| `map_floor` | hand-written minimal mutator over the two mutate columns | **the control.** If it moves between two builds, the builds differ in something beyond what is under study and nothing else in the table can be trusted. |
+| `map_floor` | hand-written minimal mutator over the two mutate columns | **the control.** If it moves between two builds, the builds differ in something beyond what is under study and nothing else in the row can be trusted. |
 | `map_never` | `StructuralMap<kPostOrder>` whose callback can never match | link testing alone, nothing rebuilt |
 | `map_identity_var` | `StructuralMap` matching `Var`, returning the same `Var` | **matches but rebuilds nothing.** This is where a no-change optimization shows. |
-| `map_replace_var` | `StructuralMap` substituting every `Var` through the remap | **the rebuild is real.** This is where rebuild cost shows. |
+| `map_subst` | `StructuralMap` substituting every `Var` through the remap | **the rebuild is real.** This is where rebuild cost shows. |
 | `map_functor` | `IRSubstitute`'s shape over `StmtExprMutator` | baseline: the functor-era mutator |
 | `map_old` | `Substitute`, called directly | baseline: the shipping API |
 
-**Stmt-level — element swap.** Seq fixtures only; `split-fuse` is an `Expr` tree with no `Stmt`
-nodes in it, so these arms have nothing to match there.
+**seq — Stmt-level `Evaluate` swap.** `StmtExprMutator` hooks `VisitExpr_(const VarNode*)` and
+does different work on the same graph, so it is not a baseline for this operation. `functor` and
+`old` are therefore **not columns on the seq tables at all** rather than a column of `n/a`: a
+baseline that cannot perform the operation is a column that belongs on another table.
 
 | arm | what it is | the question it answers |
 | --- | --- | --- |
-| `map_identity_stmt` | `StructuralMap` matching `Stmt`, returning the same `Stmt` | the Stmt-level ladder's no-rebuild rung |
-| `map_replace_stmt` | swaps two whole `Evaluate` nodes | exercises the `SeqStmt` hook's **element in-place** path and the sparse-update cost |
-| `map_replace_field` | swaps an `IntImm` *inside* two elements | the only arm that exercises **element-level in-place mutation**: replacing whole elements leaves nothing within an element to mutate |
-| `map_splice` | maps an element to a nested `SeqStmt` | the only arm that reaches the hook's **splice** path |
+| `map_floor` | as above | the control |
+| `map_never` | as above | link testing alone |
+| `map_identity_stmt` | `StructuralMap` matching `Stmt`, returning it unchanged | the no-rebuild rung |
+| `map_swap` | matches `Stmt`, swaps two whole `Evaluate` nodes | exercises the `SeqStmt` hook's **element in-place** path and the sparse-update cost |
 
-**There is no functor baseline for the Stmt-level arms**, so no delta against `functor` or `old`
-is printed for them. A cell that cannot be filled says `n/a` and carries a footnote; a blank
-cell would read as missing data.
+**Both seq arms bind the callback to `Stmt` and narrow to `Evaluate` inside it**, rather than
+binding to `Evaluate` and letting the engine's link test do the narrowing. That is how a real
+Stmt-level pass is written — passes match a base type and dispatch inside — and it is a
+choice with a measurable consequence: matching narrowly moves work out of the callback and into
+the engine's link test, and the two are not the same cost. It also gives `identity` and `swap`
+the same link, so the difference between them is the rebuild and not how many nodes the link
+accepted. Measuring the narrow/broad difference directly would be a narrow-match variant of
+this same arm; there is no such arm today.
+
+`map_splice` maps an element to a nested `SeqStmt` and is the only thing that reaches the
+hook's splice path. It is not timed: it exists for the differential check, which is where the
+question it answers is a correctness question rather than a cost one.
 
 `map_functor` is a **floor for a functor-era mutator, not a reproduction of `Substitute`**. TVM's
 `IRSubstitute` carries a dtype `ICHECK` per substitution plus buffer and attribute handling the
@@ -147,8 +223,6 @@ harness's `FunctorSubstitute` omits, which is why `map_functor` and `map_old` di
 `*_functor` and `*_old` are **different baselines**, and a reader should not average them.
 `*_old` is the pinned TVM's current implementation, which is already engine-based; `*_functor`
 is the pre-structural functor machinery. Reading `*_old` as "before the engine" would be wrong.
-Against `old` asks what migrating costs a caller of the shipping API; against `functor` asks
-what the migration to the structural engine cost.
 
 ### The ownership axis
 
@@ -160,42 +234,63 @@ one hides how much of a result depends on ownership, which is the number a calle
 whether to `std::move` actually needs. They share a table, adjacent rows, because the comparison
 between them is a result in its own right. Walk arms have no ownership axis and appear once.
 
-Replacement arms **swap** rather than replace one-way, so repeating one in place is stationary
+Mutating arms **swap** rather than replace one-way, so repeating one in place is stationary
 and the timed loop never drifts into a different workload. A fixture with a pointer-shared
 subtree cannot be traversed in place repeatedly at all — the first in-place rebuild un-shares
 the DAG — so those cases run over a pool of independent copies rebuilt untimed between passes.
 
 ## The fixtures
 
-| fixture | shape | scales? |
-| --- | --- | --- |
-| `split-fuse-shared` | `floordiv(o*16+i, 32)*32 + floormod(o*16+i, 32)`, one pointer-shared intermediate | no, N=12 |
-| `split-fuse-distinct` | the same with two structurally equal, pointer-distinct intermediates | no, N=15 |
-| `seq-L` | `SeqStmt` of `L` statements `Evaluate(o*(i+2) + inner)`, `L` in 16, 256, 16384 | **yes** |
+| fixture | shape | operation | scales? |
+| --- | --- | --- | --- |
+| `split-fuse-shared` | `floordiv(o*16+i, 32)*32 + floormod(o*16+i, 32)`, one pointer-shared intermediate | `subst` | no, N=12 |
+| `split-fuse-distinct` | the same with two structurally equal, pointer-distinct intermediates | `subst` | no, N=15 |
+| `call-split-fuse-shared` | the shared shape with every arithmetic node expressed as a `Call` | `subst` | no, N=18 |
+| `call-split-fuse-distinct` | the distinct shape, likewise | `subst` | no, N=23 |
+| `seq-L` | `SeqStmt` of `L` statements `Evaluate(o*(i+2) + inner)`, `L` in 16, 256, 16384 | `swap` | **yes** |
 
 **split/fuse** is a small `Expr` tree. It carries the Expr-level comparison against both
 baselines, and the shared variant is the only fixture that exercises DAG un-sharing. It does not
 scale, so it says nothing about working set.
 
+**call-split-fuse** is its row-for-row counterpart: identical topology, identical `Var`s, the
+same six binary operations in the same order, with each expressed as a `Call` to an interned
+builtin instead of a direct `Add`/`Mul`/`FloorDiv`/`FloorMod` node. The only variable between
+the two is the node representation, so the delta between their rows is what a `Call` costs.
+
+It is also the only fixture that reaches three hook decisions apache/tvm#20275 made and
+justified on performance grounds:
+
+- **descent into an `Array` inside a node**, `Call.args`. Every other fixture's children are
+  direct typed fields, so the container path in `CallVisit`/`CallMutate` is otherwise dead.
+- **the empty `ty_args` skip.** Nothing here has type arguments, so the guard is taken on every
+  `Call`, on every arm, `floor` included.
+- **the interned `Op` operator skip.**
+
+Since the harness hooks are a verbatim port of 20275's, this fixture is the only place those
+guards are exercised outside TVM's own tests. The operator's identity does not matter — the
+traversal never evaluates the call, and the hooks skip an `OpNode` operator without looking at
+which one — so four distinct builtins stand in for the four node types, which keeps the `op`
+field varying exactly as the direct form's node type does.
+
 **seq** is the one that scales, and the three lengths are one per cache level: 16 inside a
 32 KiB L1d, 256 inside a 1 MiB L2, 16384 inside a 32 MiB L3. `report.py` names the level from
 that stated geometry. Any question about how a result behaves as the tree stops fitting in cache
-is a seq question.
+is a seq question. It carries the Stmt-level swap: `Evaluate` is not a free variable, so no
+remap is involved, each element is exactly one `Evaluate`, and "swap k pairs" is a controlled
+sparse input.
 
-**The seq fixtures carry two operations and they are not interchangeable.** The Stmt-level arm
-swaps two `Evaluate` nodes: `Evaluate` is not a free variable, so no remap is involved, each
-element is exactly one `Evaluate`, and "swap k pairs" is a controlled sparse input. The
-Expr-level arm substitutes `Var`s, which propagates through the remap to every element and is a
-dense rebuild. Both are legitimate; they are separate columns in separate tables because a delta
-between them would be meaningless.
-
-`N` and `occurrences` include the `Array` inside each `SeqStmt`: apache/tvm#20275's
-`SeqStmtVisit` visits `self->seq` as a value rather than iterating its elements, so the
-container is itself a visited node.
+`N` and `occurrences` include the `Array` inside each `SeqStmt` and inside each `Call`:
+apache/tvm#20275's hooks visit those containers as values rather than iterating their elements,
+so a container is itself a visited node.
 
 Fixture counts — unique nodes, occurrences, working set, rebuild counts — are **declared by the
-builder**, not measured back by the binary. The builder built the thing and knows them; making
-the binary re-derive them would put counting inside the measurement.
+builder**, not measured back by the binary: the builder built the thing and knows them, and
+making the binary re-derive them would put counting inside the measurement. What the builder
+cannot do is notice when a fixture is edited and its constants are not, which would be a silent
+error in every `ns/node` in the row. So `CheckDeclaredCounts` walks the graph once, untimed,
+before anything is measured, and fails the run with the numbers to paste in. It found two
+stale rebuild counts the first time it ran.
 
 ## Method, and what it protects against
 
@@ -247,10 +342,22 @@ table.
   caught a density point whose swap pairs collided.
 - **Splice matches the reference.** The in-place hook must produce exactly what the
   non-in-place `MutateSeqStmtRaw` produces — it is an optimization of the same semantics. The
-  two are differential-tested against each other across twelve cases: grow at first/last/middle,
-  several in one pass, two adjacent, length-preserving, shrink at first/last/several, a splice
-  that empties the sequence, and a wide splice that overflows capacity. Each case also asserts
-  the reference's own output length, so agreement cannot be vacuous.
+  two are differential-tested against each other across thirteen cases: grow at
+  first/last/middle, several in one pass, two adjacent, length-preserving, shrink at
+  first/last/several, a wide splice, a sequence that ends at one element and one that ends at
+  zero. Each case asserts the reference's own output shape, so agreement cannot be vacuous.
+- **The no-op asymmetry is pinned.** From a1031a2177 the hooks normalize their result: an
+  `Evaluate(0)` element is dropped, a sequence that ends at one element returns that element
+  unwrapped, and one that ends at zero returns `Evaluate(0)`. Dropping happens only from the
+  first changed element onward — the lead loop returns `self` untouched when nothing changed,
+  and the rebuild path copies the prefix before the change with `InitRange` rather than
+  replaying it. So the same `Evaluate(0)` survives or is dropped depending on where it sits
+  relative to a change elsewhere in the sequence. That is deliberate: dropping no-ops on an
+  unchanged pass would rewrite every sequence containing one and destroy the `same_as` fast
+  path. It reads as a bug, it is untested in TVM's own tests, and `CheckNoOpAsymmetry` pins it.
+- **The declared fixture counts are the real ones.** `CheckDeclaredCounts` walks each fixture
+  once and fails the run if unique nodes, occurrences or rebuild counts differ from what the
+  builder declared.
 - **Hook coverage.** Every type a fixture dispatches on must have a harness hook, so a new
   fixture that reaches a new type names it instead of silently falling through to TVM's.
 - **Port fidelity.** See [The port](#the-port).
@@ -263,17 +370,21 @@ by bypassing the constructor, so the hook's behaviour on them is pinned rather t
 ## Reading the tables
 
 `ns/node` divides by the fixture's unique-node count, **the same divisor for every arm in a
-row**, so a row is internally comparable and a column is comparable down the fixture list. For
-the sparse-update fixtures `ns/node` amortizes one useful change over the whole traversal, so
-those also get an absolute-cost table, which is the number a caller feels.
+row**, so a row is internally comparable and a column is comparable down the fixture list.
 
-**The three arms that read as a set:**
+**`N` is not a results column.** It is fixture metadata, constant per fixture, and it lives in
+the fixtures table rather than being repeated on every row of every results table. Nor is
+`subst vs functor`: `old` is the shipping API, so `subst vs old` is the delta a caller's
+decision turns on, and the historical question the functor comparison answers is settled and
+belongs in a finding with its numbers quoted there.
+
+**The three arms that read as a set** — the shape a two-state run is read in:
 
 | arm | expected | what a violation means |
 | --- | --- | --- |
-| `floor` | **flat** across any callback-level or protocol-level change | the two builds differ in something beyond what is under study; nothing else in the table can be trusted |
+| `floor` | **flat** across any callback-level or protocol-level change | the two builds differ in something beyond what is under study; nothing else in that row can be trusted |
 | `identity` | **improves** when a no-change optimization lands | it did not reach the path it was meant to |
-| `replace` | **roughly neutral** — the rebuild is real work either way | a change aimed at unchanged nodes moved rebuilding cost, which needs explaining |
+| `subst` / `swap` | **roughly neutral** — the rebuild is real work either way | a change aimed at unchanged nodes moved rebuilding cost, which needs explaining |
 
 Any other pattern is a finding, not a footnote.
 
@@ -296,11 +407,21 @@ differs only in the traversal API and not in the hooks underneath it.
 
 ## The port
 
-`tvm_hook_override.h` holds fifteen structural hooks **copied verbatim** from apache/tvm#20275
-— same names, same signatures, same order, same internal structure, grouped by the TVM file each
-came from. Nothing is reordered, renamed or tidied, because a change prototyped here has to lift
-back into apache/tvm as a patch. The intended differences are marked `HARNESS DEVIATION` in the
-header.
+`tvm_hook_override.h` holds twenty-three structural hooks and helpers **copied verbatim** from
+apache/tvm#20275 — same names, same signatures, same order, same internal structure, grouped by
+the TVM file each came from. Nothing is reordered, renamed or tidied, because a change
+prototyped here has to lift back into apache/tvm as a patch. The intended differences are
+marked `HARNESS DEVIATION` in the header; there is one, and it is in the installation rather
+than in any hook body.
+
+**A per-state hook file** — `tvm_hook_override_pre753.h` today — is the same bodies written
+against an older tvm-ffi API, for the two-state runs described above. It declares its single
+`API ADAPTATION` and the apache/tvm revision that used that spelling, and `port_check.sh
+--header FILE` checks it twice over: it undoes the declared substitution before diffing, so
+DRIFT still means real drift, and it separately confirms the replacement text is what the PR
+itself used at the revision cited. Both endpoints are checked against apache/tvm; nothing about
+the adaptation is asserted by the harness alone. Delete the file when no two-state run reaches
+back that far.
 
 A hook experiment is then an edit to one header and a rebuild of one translation unit, never a
 TVM branch and a full TVM build. That is the difference between answering a question in a minute
@@ -309,6 +430,7 @@ and in an afternoon.
 ```sh
 ./port_check.sh /path/to/tvm            # against the sha recorded in the header
 ./port_check.sh /path/to/tvm <sha>      # against another revision, e.g. a rebased PR head
+./port_check.sh --header tvm_hook_override_pre753.h /path/to/tvm   # a state file
 ```
 
 It re-extracts each function from the TVM revision and diffs it against the copy in the header.
@@ -357,11 +479,13 @@ drifted from what the format was built to say — fix that first.
 | `bench_common.h` | the two floor arms, build-time provenance, printing |
 | `mini_tir.h` | mini-TIR's node types, their hooks, and the traversal machinery the baseline arms measure |
 | `tvm_hook_override.h` | every structural hook the benchmark dispatches into on real TVM types, and the installation that puts them over TVM's |
+| `tvm_hook_override_pre753.h` | the same hooks written against a pre-#753 tvm-ffi, for two-state runs that reach back that far |
+| `state_shims/` | headers force-included into apache/tvm's own translation units so TVM compiles against an older engine; never on the benchmark's include path |
 | `mini_tir_bench.cc` | mini-TIR fixtures, arms, `main` |
 | `real_tvm_bench.cc` | real-TVM fixtures, arms, checks, `main` |
-| `build.sh` | builds each harness twice, `SeqStmt` in-place hook shipped and harness-variant, stamping provenance in |
+| `build.sh` | builds each harness, single-state or one binary per engine state, stamping provenance in |
 | `port_check.sh` | diffs the ported hooks against the TVM revision they came from |
-| `report.py` | runs each binary N pinned processes, medians the process medians, renders the tables |
+| `report.py` | runs each binary N pinned processes, medians the process medians, renders the tables; `--two-state` interleaves A/B/A/B and renders the comparison |
 
 The two hook headers are deliberately **not** factored against each other. Their bodies read
 almost identically and are written out twice on purpose: a reader can follow either without

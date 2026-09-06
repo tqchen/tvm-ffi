@@ -20,10 +20,20 @@
 The reporting format lives here, not in a task record: rows are cases, columns are arms, one
 quantity per table, `ns/node` on the fixture's declared unique-node count with the same
 divisor for every arm in a row, and every delta column says in its own header what it
-compares.  Each binary is run `--runs` times pinned to one CPU; the reported value is the
-median of the process medians.
+compares.  `N` is not repeated on results rows -- it is fixture metadata and lives in the
+fixtures table.
 
-    ./report.py --binary ../../../build_bench/mini_tir_bench --cpu 0
+    # one state
+    ./report.py --binary ../../../build_bench/real_tvm_bench --cpu 0
+
+    # two states, interleaved A/B/A/B, rendering the `## Compare` tables
+    ./report.py --two-state --state 'A=62df2f5:../../../build_bench/real_tvm_bench_A' \\
+                --state 'B=897ece6:../../../build_bench/real_tvm_bench_B' \\
+                --differs 'the five structural commits #747 #749 #750 #751 #753' --cpu 0
+
+Two-state runs interleave the processes rather than running all of A and then all of B, so
+thermal state, allocator luck and drift hit both states equally.  Absolutes from two
+separately compiled binaries are not comparable; only the interleaved delta is claimed.
 """
 import argparse
 import os
@@ -32,17 +42,16 @@ import subprocess
 import sys
 
 WALK_ARMS = ["walk_floor", "walk_var", "walk_never", "walk_functor", "walk_old"]
-# The Expr-level ladder and its two baselines: every arm here substitutes Vars, so every
-# column is the same operation and every delta between them is a real comparison.
-VAR_MAP_ARMS = ["map_floor", "map_never", "map_identity_var", "map_replace_var",
-                "map_functor", "map_old"]
-# Stmt-level, seq fixtures only. No functor baseline: StmtExprMutator hooks
-# VisitExpr_(const VarNode*) and does different work on the same graph.
-STMT_MAP_ARMS = ["map_floor", "map_never", "map_identity_stmt", "map_replace_stmt"]
+# split/fuse: Expr-level Var substitution, with the two baselines that perform it.
+EXPR_MAP_ARMS = ["map_floor", "map_never", "map_identity_var", "map_subst",
+                 "map_functor", "map_old"]
+# seq: the Stmt-level Evaluate swap at scale. `StmtExprMutator` does different work on the
+# same graph, so `functor` and `old` are not baselines for it and are not columns here.
+SEQ_MAP_ARMS = ["map_floor", "map_never", "map_identity_stmt", "map_swap"]
 
-# A cell is never blank. Where an arm cannot run on a row, it says so in a word and the
-# footnote under the table gives the reason.
-NA_LABEL = "stmt-%s"  # per-harness, so two harnesses in one document do not collide
+# Which arm each fixture family's mutating column is, keyed by the `kind` the binary declares.
+MUTATE_ARM = {"subst": "map_subst", "swap": "map_swap"}
+IDENTITY_ARM = {"subst": "map_identity_var", "swap": "map_identity_stmt"}
 
 # The benchmark machine's data-cache geometry, stated rather than probed.
 CACHE = [("L1d", 32 * 1024), ("L2", 1024 * 1024), ("L3", 32 * 1024 * 1024)]
@@ -62,7 +71,7 @@ def run_once(binary, cpu):
         sys.stderr.write(proc.stdout)
         sys.stderr.write(proc.stderr)
         raise SystemExit("%s exited %d, so this run is invalid" % (binary, proc.returncode))
-    return proc.stdout
+    return parse(proc.stdout)
 
 
 def parse(text):
@@ -99,35 +108,28 @@ def human(n):
         n /= 1024.0
 
 
-# The operation each column performs, printed in the header so a reader scanning only the
-# tables can see which columns are comparable with which.
-OPERATION = {
-    "map_identity_var": "identity<br>Var",
-    "map_replace_var": "replace<br>Var subst",
-    "map_functor": "functor<br>Var subst",
-    "map_old": "old<br>Var subst",
-    "map_identity_stmt": "identity<br>Stmt",
-    "map_replace_stmt": "replace<br>swap 2 Eval",
-}
+HEADER = {"map_identity_var": "identity", "map_identity_stmt": "identity"}
 
 
 def header(arm):
-    """`map_floor` renders as `map<br>floor`; arms with an operation name say which."""
-    if arm in OPERATION:
-        return OPERATION[arm]
-    quantity, _, rest = arm.partition("_")
-    return "%s<br>%s" % (quantity, rest)
+    """The arm without its `walk_`/`map_` prefix: the table title already says which."""
+    return HEADER.get(arm, arm.partition("_")[2])
 
 
 def pct(new, base):
     return "**%+.1f%%**" % (100.0 * (new - base) / base)
 
 
+def ns_per_node(merged, fixture, ownership, arm):
+    ns = merged["results"].get((fixture, ownership, arm))
+    return None if ns is None else ns / merged["fixtures"][fixture]["unique"]
+
+
 def render(merged, runs, out):
     prov = merged["provenance"]
     harness = prov["harness"]
     fixtures = merged["fixtures"]
-    results = [n for n in merged["order"] if not n.startswith("density-")]
+    names = merged["order"]
     w = out.write
 
     w("### Provenance -- %s\n\n| | |\n| --- | --- |\n" % harness)
@@ -135,150 +137,188 @@ def render(merged, runs, out):
                        ("tvm_ffi_engine_sha", "tvm-ffi engine sha"),
                        ("tvm_sha", "apache/tvm sha"),
                        ("compiler", "compiler"), ("flags", "flags"),
-                       ("structural_hooks", "structural hooks"),
-                       ("seqstmt_inplace_hook", "SeqStmt in-place hook")]:
+                       ("structural_hooks", "structural hooks")]:
         if key in prov:
             w("| %s | `%s` |\n" % (label, prov[key]))
     w("| method | %s |\n| processes | %d |\n\n" % (prov["method"], len(runs)))
 
     w("### Fixtures -- %s\n\n" % harness)
-    w("| fixture | N | occurrences | working set | fits | replaces | rebuilt retained "
+    w("| fixture | N | occurrences | working set | fits | operation | rebuilt retained "
       "| rebuilt moved |\n")
     w("| --- | ---: | ---: | ---: | --- | --- | ---: | ---: |\n")
-    for name in results:
+    for name in names:
         f = fixtures[name]
-        w("| `%s` | %d | %d | %s | %s | %s | %d | %d |\n"
+        w("| `%s` | %d | %d | %s | %s | `%s` | %d | %d |\n"
           % (name, f["unique"], f["occurrences"], human(f["working_set"]),
-             fits(f["working_set"]), f["kind"].replace("_", " "),
-             f["rebuilt_retained"], f["rebuilt_moved"]))
+             fits(f["working_set"]), f["kind"], f["rebuilt_retained"], f["rebuilt_moved"]))
     w("\n")
-
-    def cell(fixture, ownership, arm):
-        ns = merged["results"].get((fixture, ownership, arm))
-        return None if ns is None else ns / fixtures[fixture]["unique"]
 
     w("#### %s -- walk -- ns/node\n\n" % harness)
-    w("| Case | N | " + " | ".join(header(a) for a in WALK_ARMS) +
-      " | var<br>vs old | var<br>vs functor |\n")
-    w("| --- | ---: |" + " ---: |" * (len(WALK_ARMS) + 2) + "\n")
-    for name in results:
-        row = [cell(name, "-", a) for a in WALK_ARMS]
-        w("| %s | %d | %s | %s | %s |\n"
-          % (name, fixtures[name]["unique"],
-             " | ".join("%.2f" % v if v is not None else "" for v in row),
-             pct(row[1], row[4]), pct(row[1], row[3])))
+    w("| Case | " + " | ".join(header(a) for a in WALK_ARMS) + " | var<br>vs old |\n")
+    w("| --- |" + " ---: |" * (len(WALK_ARMS) + 1) + "\n")
+    for name in names:
+        row = [ns_per_node(merged, name, "-", a) for a in WALK_ARMS]
+        w("| %s | %s | %s |\n"
+          % (name, " | ".join("%.2f" % v for v in row), pct(row[1], row[4])))
     w("\n")
 
-    na = "n/a[^%s]" % (NA_LABEL % harness)
-
-    def fmt(v):
-        return na if v is None else "%.2f" % v
-
-    w("#### %s -- map, Var substitution -- ns/node, both ownership variants\n\n" % harness)
-    w("Every column substitutes `Var`s, which is the operation `Substitute` and\n"
-      "`FunctorSubstitute` perform, so `functor` and `old` are baselines for `replace` here\n"
-      "and the two delta columns are like-for-like.\n\n")
-    w("| Case | ownership | N | " + " | ".join(header(a) for a in VAR_MAP_ARMS) +
-      " | replace<br>vs functor | replace<br>vs old |\n")
-    w("| --- | --- | ---: |" + " ---: |" * (len(VAR_MAP_ARMS) + 2) + "\n")
-    for name in results:
-        for ownership in ["retained", "moved"]:
-            row = [cell(name, ownership, a) for a in VAR_MAP_ARMS]
-            w("| %s | %s | %d | %s | %s | %s |\n"
-              % (name, ownership, fixtures[name]["unique"],
-                 " | ".join(fmt(v) for v in row),
-                 pct(row[3], row[4]) if row[3] and row[4] else na,
-                 pct(row[3], row[5]) if row[3] and row[5] else na))
-    w("\n")
-
-    w("#### %s -- map, Stmt-level element swap -- ns/node\n\n" % harness)
-    w("A different operation from the table above: swap two whole `Evaluate` nodes rather\n"
-      "than substitute `Var`s. It is what exercises the `SeqStmt` hook's element in-place and\n"
-      "splice paths, and it has no functor baseline, so no delta against `functor` or `old`\n"
-      "appears here or in the table above.\n\n")
-    w("| Case | ownership | N | " + " | ".join(header(a) for a in STMT_MAP_ARMS) + " |\n")
-    w("| --- | --- | ---: |" + " ---: |" * len(STMT_MAP_ARMS) + "\n")
-    for name in results:
-        for ownership in ["retained", "moved"]:
-            row = [cell(name, ownership, a) for a in STMT_MAP_ARMS]
-            w("| %s | %s | %d | %s |\n"
-              % (name, ownership, fixtures[name]["unique"], " | ".join(fmt(v) for v in row)))
-    w("\n[^%s]: `split-fuse` is an `Expr` tree with no `Stmt` nodes in it, so a Stmt-level arm\n"
-      % (NA_LABEL % harness) +
-      "has nothing to match and is not run on those rows.\n\n")
-
-    # The sparse-update fixtures: ns/node amortizes one useful change over the whole
-    # traversal, which is exactly the cost that should be visible rather than hidden.
-    sparse = [n for n in results if fixtures[n]["kind"] == "single_var"]
-    if sparse:
-        w("#### %s -- sparse update: cost of changing one variable\n\n" % harness)
-        # One variable occurrence changes, so ns/traversal is also ns per changed node:
-        # the whole traversal buys one replacement. That is the cost ns/node would hide.
-        w("| Case | ownership | N | ns per traversal | ns per changed element | rebuilt |\n")
-        w("| --- | --- | ---: | ---: | ---: | ---: |\n")
-        for name in sparse:
-            f = fixtures[name]
+    for kind, arms, title, note in [
+        ("subst", EXPR_MAP_ARMS, "map, Expr-level `Var` substitution",
+         "Every column substitutes `Var`s, which is the operation `Substitute` and\n"
+         "`FunctorSubstitute` perform, so `functor` and `old` are baselines for `subst` here\n"
+         "and the delta column is like-for-like.\n"),
+        ("swap", SEQ_MAP_ARMS, "map, Stmt-level `Evaluate` swap",
+         "A different operation: swap two whole `Evaluate` nodes rather than substitute\n"
+         "`Var`s. `StmtExprMutator` hooks `VisitExpr_(const VarNode*)` and does different work\n"
+         "on the same graph, so it is not a baseline for this operation and does not appear.\n"),
+    ]:
+        rows = [n for n in names if fixtures[n]["kind"] == kind]
+        if not rows:
+            continue
+        w("#### %s -- %s -- ns/node, both ownership variants\n\n" % (harness, title))
+        w(note + "\n")
+        delta = kind == "subst"
+        w("| Case | own | " + " | ".join(header(a) for a in arms) +
+          (" | subst<br>vs old |\n" if delta else " |\n"))
+        w("| --- | --- |" + " ---: |" * (len(arms) + (1 if delta else 0)) + "\n")
+        for name in rows:
             for ownership in ["retained", "moved"]:
-                ns = merged["results"].get((name, ownership, "map_replace_stmt"))
-                if ns is None:
-                    continue
-                rebuilt = f["rebuilt_retained"] if ownership == "retained" else f["rebuilt_moved"]
-                # Two elements change, so the traversal buys two swaps.
-                w("| %s | %s | %d | %.0f | %.0f | %d |\n"
-                  % (name, ownership, f["unique"], ns, ns / 2.0, rebuilt))
+                vals = [ns_per_node(merged, name, ownership, a) for a in arms]
+                cells = " | ".join("%.2f" % v for v in vals)
+                if delta:
+                    cells += " | " + pct(vals[arms.index("map_subst")],
+                                         vals[arms.index("map_old")])
+                w("| %s | %s | %s |\n" % (name, ownership, cells))
         w("\n")
 
 
-def render_extras(merged, out):
+# ---------------------------------------------------------------------------
+# Two-state mode.
+# ---------------------------------------------------------------------------
+
+def interleave(states, cpu, runs):
+    """Run A, B, A, B, ... so drift and thermal state hit both states equally.
+
+    The alternative -- all of A and then all of B -- lets anything that changes over the run
+    land entirely on one state and read as a result. This report already carries a worked
+    example: a `map_floor` comparison across two separately compiled binaries showed -18% to
+    -30% on every row, which an interleaved A/B proved was a build artifact and not a change.
+    """
+    collected = {label: [] for label, _, _ in states}
+    for _ in range(runs):
+        for label, _ref, binary in states:
+            collected[label].append(run_once(binary, cpu))
+    return {label: median_runs(rs) for label, rs in collected.items()}
+
+
+def cell(a, b):
+    """`30.81 -> 24.16 (-21.6%)`: both absolutes and the delta, in one cell."""
+    if a is None or b is None:
+        return None
+    return "%.2f &rarr; %.2f (%+.1f%%)" % (a, b, 100.0 * (b - a) / a)
+
+
+def render_compare(merged, states, runs, differs, out):
     w = out.write
-    density = sorted({k[0] for k in merged["results"] if k[0].startswith("density-")},
-                     key=lambda n: int(n.split("-")[1].split("of")[0]))
-    if density:
-        w("#### change-density sweep -- `map_replace` on seq-256, ns per traversal\n\n")
-        w("| changed of 256 | retained | moved | moved vs retained |\n")
-        w("| --- | ---: | ---: | ---: |\n")
-        for name in density:
-            r = merged["results"].get((name, "retained", "map_replace_stmt"))
-            m = merged["results"].get((name, "moved", "map_replace_stmt"))
-            if r is None or m is None:
-                continue
-            w("| %s | %.0f | %.0f | %s |\n"
-              % (name.split("-")[1].replace("of256", ""), r, m, pct(m, r)))
+    a_label, a_ref, _ = states[0]
+    b_label, b_ref, _ = states[1]
+    fixtures = merged[a_label]["fixtures"]
+    names = merged[a_label]["order"]
+
+    def row_cell(name, ownership, arm):
+        return cell(ns_per_node(merged[a_label], name, ownership, arm),
+                    ns_per_node(merged[b_label], name, ownership, arm))
+
+    w("### Provenance\n\n| | |\n| --- | --- |\n")
+    w("| state %s | tvm-ffi `%s` |\n" % (a_label, merged[a_label]["provenance"]["tvm_ffi_engine_sha"]))
+    w("| state %s | tvm-ffi `%s` |\n" % (b_label, merged[b_label]["provenance"]["tvm_ffi_engine_sha"]))
+    w("| what differs | %s |\n" % differs)
+    w("| apache/tvm | `%s`, identical in both states |\n"
+      % merged[a_label]["provenance"]["tvm_sha"])
+    w("| hooks | one file per state, each written against that state's own tvm-ffi API; "
+      "`port_check.sh --header` checks both against apache/tvm |\n")
+    w("| method | %s, processes interleaved %s/%s/%s/%s |\n"
+      % (merged[a_label]["provenance"]["method"], a_label, b_label, a_label, b_label))
+    w("| processes | %d per state |\n\n" % runs)
+    w("**Absolutes come from two separately compiled binaries and are not comparable across "
+      "states; only the delta in each cell is claimed.** Two builds differ in inlining, layout "
+      "and allocator luck for reasons unrelated to what is under study. The processes are "
+      "interleaved %s/%s/%s/%s, so drift and thermal state hit both equally.\n\n"
+      % (a_label, b_label, a_label, b_label))
+
+    w("### Headline\n\n")
+    w("`floor` is the control: it dispatches no callbacks, so a protocol or engine change "
+      "should not touch it. **If `floor` moves, the two builds differ in something beyond "
+      "what is being compared and nothing else in that row can be trusted.** `identity` and "
+      "`subst`/`swap` are read against whatever the two states differ in, named above. Any "
+      "other pattern is a finding.\n\n")
+
+    for kind, title, note in [
+        ("subst", "Expr-level -- split/fuse", "`subst` substitutes `Var`s."),
+        ("swap", "Stmt-level -- seq", "`swap` swaps two whole `Evaluate` nodes."),
+    ]:
+        rows = [n for n in names if fixtures[n]["kind"] == kind]
+        if not rows:
+            continue
+        arms = ["map_floor", IDENTITY_ARM[kind], MUTATE_ARM[kind]]
+        w("#### %s -- ns/node, %s &rarr; %s\n\n%s\n\n" % (title, a_label, b_label, note))
+        w("| Case | own | floor | identity | %s |\n" % header(arms[2]))
+        w("| --- | --- | ---: | ---: | ---: |\n")
+        for name in rows:
+            for ownership in ["retained", "moved"]:
+                cells = [row_cell(name, ownership, a) for a in arms]
+                w("| %s | %s | %s |\n"
+                  % (name, ownership, " | ".join(c if c else "n/a" for c in cells)))
         w("\n")
-    intra_seq = sorted({k[0] for k in merged["results"] if k[0].startswith("intra-seq-")},
-                       key=lambda n: int(n.rsplit("-", 1)[1]))
-    intra_den = sorted({k[0] for k in merged["results"] if k[0].startswith("intra-density-")},
-                       key=lambda n: int(n.split("-")[2].split("of")[0]))
-    if intra_seq or intra_den:
-        w("#### intra-element workload -- `map_replace_field`, ns per traversal\n\n")
-        w("Changes a leaf *inside* two elements rather than replacing the elements, so each\n"
-          "changed `Evaluate` has its field updated and is a candidate for in-place mutation.\n\n")
-        w("| case | retained | moved | moved vs retained |\n| --- | ---: | ---: | ---: |\n")
-        for name in intra_seq + intra_den:
-            r = merged["results"].get((name, "retained", "map_replace_field"))
-            m = merged["results"].get((name, "moved", "map_replace_field"))
-            if r is None or m is None:
-                continue
-            label = name.replace("intra-seq-", "L=").replace("intra-density-", "").replace(
-                "of256", " of 256 changed, L=256")
-            w("| %s | %.0f | %.0f | %s |\n" % (label, r, m, pct(m, r)))
-        w("\n")
+
+    w("### Supporting\n\n")
+    w("| Case | own | never | functor | old |\n| --- | --- | ---: | ---: | ---: |\n")
+    na = "n/a[^cmp-seq]"
+    for name in names:
+        kind = fixtures[name]["kind"]
+        for ownership in ["retained", "moved"]:
+            never = row_cell(name, ownership, "map_never")
+            if kind == "swap":
+                functor = old = na
+            else:
+                functor = row_cell(name, ownership, "map_functor") or na
+                old = row_cell(name, ownership, "map_old") or na
+            w("| %s | %s | %s | %s | %s |\n" % (name, ownership, never or na, functor, old))
+    w("\n[^cmp-seq]: `functor` and `old` substitute `Var`s. The seq fixtures carry the "
+      "Stmt-level `Evaluate` swap, which neither performs, so they are not baselines for "
+      "those rows rather than missing from them.\n\n")
+
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--binary", action="append", required=True)
+    ap.add_argument("--binary", action="append", default=[])
+    ap.add_argument("--two-state", action="store_true")
+    ap.add_argument("--state", action="append", default=[],
+                    help="LABEL=REF:PATH, given twice for a two-state run")
+    ap.add_argument("--differs", default="unstated",
+                    help="what differs between the two states -- the only thing the delta "
+                         "can be attributed to")
     ap.add_argument("--cpu", type=int, default=0)
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--out", default="-")
     args = ap.parse_args()
 
     out = sys.stdout if args.out == "-" else open(args.out, "w")
-    for binary in args.binary:
-        binary = os.path.abspath(binary)
-        runs = [parse(run_once(binary, args.cpu)) for _ in range(args.runs)]
-        merged = median_runs(runs)
-        render(merged, runs, out)
-        render_extras(merged, out)
+    if args.two_state:
+        if len(args.state) != 2:
+            raise SystemExit("--two-state needs exactly two --state arguments")
+        states = []
+        for spec in args.state:
+            label, _, rest = spec.partition("=")
+            ref, _, path = rest.partition(":")
+            states.append((label, ref, os.path.abspath(path)))
+        merged = interleave(states, args.cpu, args.runs)
+        render_compare(merged, states, args.runs, args.differs, out)
+    else:
+        for binary in args.binary:
+            binary = os.path.abspath(binary)
+            runs = [run_once(binary, args.cpu) for _ in range(args.runs)]
+            render(median_runs(runs), runs, out)
     if out is not sys.stdout:
         out.close()
 
