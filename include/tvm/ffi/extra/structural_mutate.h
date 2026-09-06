@@ -108,13 +108,6 @@ TVM_FFI_INLINE TVMFFIAny StructuralMutateUnchangedRaw() noexcept {
 }
 
 /*!
- * \brief Resolve a raw structural-mutation result into ``Expected<Any>``.
- *
- * The single boundary at which the marker is understood.  Everything above it -- descent,
- * container loops, ``TryLink``, ``DefaultMutateRaw`` -- keeps working in resolved values, so no
- * engine site has to learn the marker and no ``same_as`` comparison can ever see one.
- */
-/*!
  * \brief Materialize the input as the result of an unchanged mutation.
  *
  * Out of line and by value.  Inlined, its ``Any(const AnyView&)`` needs `value`'s address, and
@@ -128,6 +121,13 @@ TVM_FFI_COLD_CODE TVM_FFI_NO_INLINE inline Expected<Any> StructuralMutateUnchang
   return Expected<Any>(Any(value));
 }
 
+/*!
+ * \brief Resolve a raw structural-mutation result into ``Expected<Any>``.
+ *
+ * The boundary at which the marker is understood.  Everything above it -- descent, container
+ * loops, ``TryLink``, ``DefaultMutateRaw`` -- keeps working in resolved values, so no engine
+ * site has to learn the marker and no ``same_as`` comparison can ever see one.
+ */
 TVM_FFI_INLINE Expected<Any> ResolveStructuralMutateRaw(TVMFFIAny raw, AnyView value) noexcept {
   if (TVM_FFI_PREDICT_FALSE(raw.type_index == TypeIndex::kTVMFFIStructuralMutateUnchanged)) {
     return StructuralMutateUnchangedResult(value);
