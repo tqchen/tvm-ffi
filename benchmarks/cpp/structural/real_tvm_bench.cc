@@ -109,7 +109,35 @@ std::unordered_map<const ffi::Object*, Stmt>* SwapTable() {
   return &table;
 }
 
-Stmt LongSeq(int length, int density) {
+/*!
+ * \brief Partner table for the intra-element swap: the `IntImm` multiplier inside one element
+ *        maps to the multiplier inside its partner.
+ *
+ * The element-swap arm above replaces whole `Evaluate` nodes, so nothing *inside* an element
+ * ever changes and element-level in-place mutation has no work to do however well it is
+ * implemented.  This arm changes a leaf inside the element instead: the `Evaluate`'s `value`
+ * field must be updated, which makes the `Evaluate` node itself a candidate for in-place
+ * mutation, and the same for the `Add` and `Mul` above the leaf.  That is the workload a real
+ * substitution pass performs, and the only one on which the `SeqStmt` unique-array access can
+ * pay.  Still an involution, so the fixture stays stationary.
+ */
+std::unordered_map<const ffi::Object*, PrimExpr>* IntraSwapTable() {
+  static std::unordered_map<const ffi::Object*, PrimExpr> table;
+  return &table;
+}
+
+/*! \brief The `IntImm` multiplier inside `Evaluate(v * imm + inner)`. */
+PrimExpr MultiplierOf(const Stmt& element) {
+  const auto* eval = element.as<EvaluateNode>();
+  const auto* add = eval->value.as<prim::AddNode>();
+  const auto* mul = add->a.as<prim::MulNode>();
+  return mul->b;
+}
+
+/*! \brief Which swap table a fixture build populates. See IntraSwapTable. */
+enum class SwapMode { kElement, kIntraElement };
+
+Stmt LongSeq(int length, int density, SwapMode mode) {
   ffi::Array<Stmt> body;
   body.reserve(length);
   for (int i = 0; i < length; ++i) {
@@ -117,10 +145,21 @@ Stmt LongSeq(int length, int density) {
     body.push_back(Evaluate(Outer() * (i + 2) + Inner()));
   }
   SwapTable()->clear();
+  IntraSwapTable()->clear();
   for (const SwapPair& pair : SwapPairs(length, density)) {
     Stmt lo = body[pair.lo], hi = body[pair.hi];
-    (*SwapTable())[lo.get()] = hi;
-    (*SwapTable())[hi.get()] = lo;
+    if (mode == SwapMode::kElement) {
+      // Holds a handle to each swapped element, which is harmless here because the arm
+      // replaces elements rather than mutating them.
+      (*SwapTable())[lo.get()] = hi;
+      (*SwapTable())[hi.get()] = lo;
+    } else {
+      // Holds handles to the leaves only. Holding the elements too would give them a second
+      // reference and suppress the in-place mutation this arm exists to exercise.
+      PrimExpr lo_imm = MultiplierOf(lo), hi_imm = MultiplierOf(hi);
+      (*IntraSwapTable())[lo_imm.get()] = hi_imm;
+      (*IntraSwapTable())[hi_imm.get()] = lo_imm;
+    }
   }
   return SeqStmt(body);
 }
@@ -234,6 +273,13 @@ ffi::Any SwapEvaluates(const Stmt& stmt) {
   if (it != SwapTable()->end()) return ffi::Any(it->second);
   return ffi::Any(stmt);
 }
+/*! \brief The intra-element replacement: swap the multipliers of two elements. */
+ffi::Any SwapMultipliers(const IntImm& imm) {
+  auto it = IntraSwapTable()->find(imm.get());
+  if (it != IntraSwapTable()->end()) return ffi::Any(it->second);
+  return ffi::Any(imm);
+}
+
 ffi::Optional<Expr> SwapVarsFn(const Var& var) {
   Expr mapped = SwapAllVars(var).cast<Expr>();
   if (mapped.same_as(var)) return std::nullopt;
@@ -359,6 +405,17 @@ void MapReplace(Ownership ownership, ReplaceKind kind, ffi::Any* slot) {
   }
 }
 
+/*!
+ * \brief seq only: change a leaf inside two elements rather than replacing the elements.
+ *
+ * The `Evaluate` above each changed leaf has its `value` field updated, so it is a candidate
+ * for in-place mutation -- which is precisely what `SeqStmt`'s hook decides.
+ */
+void MapReplaceField(Ownership ownership, ReplaceKind, ffi::Any* slot) {
+  Give(ownership, slot,
+       ffi::StructuralMap<ffi::WalkOrder::kPostOrder>(Take(ownership, slot), SwapMultipliers));
+}
+
 /*! \brief One-off probe; see ReplaceNoRemap. split/fuse only. */
 void MapReplaceNoRemap(Ownership ownership, ReplaceKind, ffi::Any* slot) {
   Give(ownership, slot,
@@ -407,6 +464,9 @@ constexpr MapArm kMapArms[] = {
     {"map_identity", &MapIdentity, false}, {"map_replace", &MapReplace, true},
     {"map_functor", &MapFunctor, true},    {"map_old", &MapOld, true},
 };
+
+/*! \brief seq only; see MapReplaceField. */
+constexpr MapArm kFieldArm = {"map_replace_field", &MapReplaceField, true};
 
 // ---------------------------------------------------------------------------
 // Untimed checks.  These run once per fixture before anything is timed; nothing here executes
@@ -459,7 +519,7 @@ void CheckInplace(const FixtureInfo& info, ffi::Any (*build)()) {
  */
 void CheckSeqSwap(int length, int density) {
   const std::string tag = "seqswap/L=" + std::to_string(length) + "/d=" + std::to_string(density);
-  ffi::Any root = ffi::Any(LongSeq(length, density));
+  ffi::Any root = ffi::Any(LongSeq(length, density, SwapMode::kElement));
   const auto* seq = static_cast<const SeqStmtNode*>(root.cast<ffi::ObjectRef>().get());
   std::vector<const ffi::Object*> before;
   for (int i = 0; i < length; ++i) before.push_back(seq->seq[i].get());
@@ -584,7 +644,7 @@ int main() {
   for (int length : kSeqLengths) {
     static int current_length = 0;
     current_length = length;
-    auto build = [] { return ffi::Any(LongSeq(current_length, 1)); };
+    auto build = [] { return ffi::Any(LongSeq(current_length, 1, SwapMode::kElement)); };
     CheckHookCoverage(build, "seq");
     CheckSeqSwap(length, 1);
     std::string name = "seq-" + std::to_string(length);
@@ -601,6 +661,41 @@ int main() {
     RunFixture(info, build);
   }
 
+  // The intra-element workload: change a leaf inside two elements rather than replacing the
+  // elements. The Evaluate above each changed leaf has its `value` field updated, so it is a
+  // candidate for in-place mutation -- which is what SeqStmt's hook decides, and the only
+  // workload on which the repaired hook can pay. Run across the seq sweep and, at the L2 size,
+  // across density.
+  {
+    static int intra_length = 0;
+    static int intra_density = 0;
+    auto build = [] { return ffi::Any(LongSeq(intra_length, intra_density, SwapMode::kIntraElement)); };
+    for (int length : kSeqLengths) {
+      intra_length = length;
+      intra_density = 1;
+      std::string name = "intra-seq-" + std::to_string(length);
+      for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
+        ffi::Any slot = build();
+        double ns = MeasureStationary(
+            SeqRepeats(length), [&] { MapReplaceField(ownership, ReplaceKind::kSingleVar, &slot); });
+        EmitResult(kHarness, name, OwnershipName(ownership), "map_replace_field", ns);
+      }
+    }
+    intra_length = kDensitySweepLength;
+    for (int density : kDensities) {
+      intra_density = density;
+      std::string name = "intra-density-" + std::to_string(2 * density) + "of" +
+                         std::to_string(kDensitySweepLength);
+      for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
+        ffi::Any slot = build();
+        double ns = MeasureStationary(SeqRepeats(kDensitySweepLength), [&] {
+          MapReplaceField(ownership, ReplaceKind::kSingleVar, &slot);
+        });
+        EmitResult(kHarness, name, OwnershipName(ownership), "map_replace_field", ns);
+      }
+    }
+  }
+
   // Change-density sweep, on the L2 fixture only: does moved stop losing to retained once
   // enough of the body changes? The mechanism says the in-place path pays a uniqueness check
   // at every node it descends through, O(N), and saves a rebuild only where something
@@ -611,7 +706,7 @@ int main() {
     for (int density : kDensities) {
       static int current_density = 0;
       current_density = density;
-      auto build = [] { return ffi::Any(LongSeq(sweep_length, current_density)); };
+      auto build = [] { return ffi::Any(LongSeq(sweep_length, current_density, SwapMode::kElement)); };
       CheckSeqSwap(sweep_length, density);
       std::string name = "density-" + std::to_string(2 * density) + "of" +
                          std::to_string(sweep_length);

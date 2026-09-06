@@ -197,6 +197,24 @@ def render_extras(merged, out):
             w("| %s | %.0f | %.0f | %s |\n"
               % (name.split("-")[1].replace("of256", ""), r, m, pct(m, r)))
         w("\n")
+    intra_seq = sorted({k[0] for k in merged["results"] if k[0].startswith("intra-seq-")},
+                       key=lambda n: int(n.rsplit("-", 1)[1]))
+    intra_den = sorted({k[0] for k in merged["results"] if k[0].startswith("intra-density-")},
+                       key=lambda n: int(n.split("-")[2].split("of")[0]))
+    if intra_seq or intra_den:
+        w("#### intra-element workload -- `map_replace_field`, ns per traversal\n\n")
+        w("Changes a leaf *inside* two elements rather than replacing the elements, so each\n"
+          "changed `Evaluate` has its field updated and is a candidate for in-place mutation.\n\n")
+        w("| case | retained | moved | moved vs retained |\n| --- | ---: | ---: | ---: |\n")
+        for name in intra_seq + intra_den:
+            r = merged["results"].get((name, "retained", "map_replace_field"))
+            m = merged["results"].get((name, "moved", "map_replace_field"))
+            if r is None or m is None:
+                continue
+            label = name.replace("intra-seq-", "L=").replace("intra-density-", "").replace(
+                "of256", " of 256 changed, L=256")
+            w("| %s | %.0f | %.0f | %s |\n" % (label, r, m, pct(m, r)))
+        w("\n")
     noremap = [k for k in merged["results"] if k[2] == "map_replace_noremap"]
     if noremap:
         w("#### remap probe -- `map_replace_noremap`, ns/node\n\n")

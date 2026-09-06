@@ -348,45 +348,78 @@ TVMFFIAny MaybeInplaceMutateSeqStmtRaw(ffi::StructuralMutatorObj* mutator,
 
 // HARNESS DEVIATION 1 of 2, and the only change to a hook body.
 //
-// 20275 dropped main's `Array<Stmt> mapped_seq = self->seq` handle copy, so the sequence
-// itself is no longer copied.  But `self->seq[i]` returns `Stmt` *by value*
-// (`Array::operator[]` is `const T operator[](int64_t) const`), so the element still gains a
-// second reference for the duration of the call and `MaybeInplaceMutateIfUniqueExpected`
-// still finds it non-unique.  Every element therefore still takes the copy-on-write path;
-// only the array-level copy was fixed.
+// The defect it addresses, stated as a fact about the code and independently of whether
+// repairing it is worthwhile: 20275 dropped main's `Array<Stmt> mapped_seq = self->seq` handle
+// copy, so the sequence itself is no longer copied. But `Array::operator[]` is
+// `const T operator[](int64_t) const` -- it returns *by value* -- so `self->seq[i]` materialises
+// a second handle to the element for the duration of the call, and
+// `MaybeInplaceMutateIfUniqueExpected` therefore never finds an element unique.
+// **20275's hook cannot mutate any element in place.** Only the array-level copy was fixed.
 //
-// This variant extends the path invariant instead.  In-place mutation is sound only while
-// every node from the root down is uniquely owned, and this hook is dispatched under exactly
-// that condition; `MutateByApply` on a uniquely owned array moves each element out and clears
-// its slot before calling back, so the handle handed down is the sole reference.  A shared
-// array still takes 20275's path above, which is what correctness requires.
+// The repair is tvm-ffi's own pattern, `MaybeInplaceMutateSeqContainerRaw`
+// (src/ffi/extra/structural_mutate.cc:198): bind `const Any&` into the sequence object's
+// storage instead of taking `Array::operator[]`'s by-value return, so no reference is added,
+// the element's count stays at one, and the hook sees it as unique. Writing back through
+// `SetItemAfterCheck` only when the value actually changed. Nothing is moved out of a slot, so
+// there is no restore obligation on the error paths and nothing unsafe to justify.
 //
-// It cannot splice, so it defers to the ported body whenever an element maps to a nested
-// SeqStmt.  These fixtures never produce one.
+// Two additions over tvm-ffi's version, both because `SeqStmt` differs from a bare container:
+//
+//   * **The precondition is checked rather than assumed.** tvm-ffi's version is dispatched by
+//     the engine only after the engine has established that the container is uniquely owned.
+//     Here the sequence is a *field* of the node, so the hook has to establish it itself. When
+//     the array is shared this falls through to `MutateSeqStmtRaw` entirely unchanged -- no
+//     copy-on-write, no allocation on the shared path. `ObjectRef::unique()` (object.h:499) is
+//     `data_ != nullptr && data_->use_count() == 1` and binds no new reference, so reading it
+//     does not perturb the count it reads.
+//   * **Splice survives.** An element that mutates into a nested `SeqStmt` cannot be written
+//     back with `SetItemAfterCheck`, so 20275's `growing` flag and prefix back-fill are kept
+//     for that case and the in-place element loop runs only while not splicing.
 TVMFFIAny MaybeInplaceMutateSeqStmtRepaired(ffi::StructuralMutatorObj* mutator,
                                             ffi::AnyView value) noexcept {
   SeqStmtNode* self = const_cast<SeqStmtNode*>(
       ffi::details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const SeqStmtNode>(value));
   if (!self->seq.unique()) {
-    return MaybeInplaceMutateSeqStmtRaw(mutator, value);
+    return MutateSeqStmtRaw(mutator, value);
   }
-  ffi::Any failure;
-  bool failed = false;
-  bool nested_seen = false;
-  self->seq.MutateByApply([&](Stmt statement) -> Stmt {
-    if (TVM_FFI_PREDICT_FALSE(failed || nested_seen)) return statement;
-    ffi::Expected<ffi::Any> mapped = mutator->MaybeInplaceMutateIfUniqueExpected(statement);
-    if (TVM_FFI_PREDICT_FALSE(mapped.is_err())) {
-      failed = true;
-      failure = ffi::Any(std::move(mapped).error());
-      return statement;
+  // Sole owner from here. `get()` hands back the pointer without taking a reference.
+  ffi::ArrayObj* arr =
+      static_cast<ffi::ArrayObj*>(const_cast<ffi::Object*>(self->seq.get()));
+  ffi::Array<Stmt> output;
+  bool growing = false;
+  for (int64_t i = 0; i < static_cast<int64_t>(arr->size()); ++i) {
+    if (!growing) {
+      // A const reference into storage: no refcount bump, so the element stays unique and
+      // MaybeInplaceMutateIfUniqueExpected can take the in-place path.
+      const ffi::Any& item = arr->begin()[i];
+      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ffi::Any, mapped,
+                                        mutator->MaybeInplaceMutateIfUniqueExpected(item));
+      if (const auto* nested = mapped.as<SeqStmtNode>()) {
+        growing = true;
+        output.reserve(arr->size());
+        for (int64_t j = 0; j < i; ++j) {
+          output.push_back(arr->begin()[j].cast<Stmt>());
+        }
+        for (const Stmt& stmt : nested->seq) {
+          output.push_back(stmt);
+        }
+      } else if (!item.same_as(mapped)) {
+        arr->SetItemAfterCheck(i, std::move(mapped));
+      }
+    } else {
+      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
+          Stmt, mapped, mutator->MaybeInplaceMutateIfUniqueExpected(arr->begin()[i]));
+      if (const auto* nested = mapped.as<SeqStmtNode>()) {
+        for (const Stmt& stmt : nested->seq) {
+          output.push_back(stmt);
+        }
+      } else {
+        output.push_back(std::move(mapped));
+      }
     }
-    Stmt out = ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Stmt>(std::move(mapped).value());
-    if (TVM_FFI_PREDICT_FALSE(out.as<SeqStmtNode>() != nullptr)) nested_seen = true;
-    return out;
-  });
-  if (TVM_FFI_PREDICT_FALSE(failed)) {
-    return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(failure));
+  }
+  if (growing) {
+    self->seq = std::move(output);
   }
   return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
 }
