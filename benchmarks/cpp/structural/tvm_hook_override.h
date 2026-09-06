@@ -372,9 +372,24 @@ TVMFFIAny MaybeInplaceMutateSeqStmtRaw(ffi::StructuralMutatorObj* mutator,
 //     copy-on-write, no allocation on the shared path. `ObjectRef::unique()` (object.h:499) is
 //     `data_ != nullptr && data_->use_count() == 1` and binds no new reference, so reading it
 //     does not perturb the count it reads.
-//   * **Splice survives.** An element that mutates into a nested `SeqStmt` cannot be written
-//     back with `SetItemAfterCheck`, so 20275's `growing` flag and prefix back-fill are kept
-//     for that case and the in-place element loop runs only while not splicing.
+//   * **Splice is handled in the same pass, without direction cases.** An element that maps to
+//     a nested `SeqStmt` of n statements replaces itself with all n, so n > 1 grows, n == 1
+//     leaves the length alone and n == 0 shrinks. A read cursor and a write cursor make those
+//     the same code: the write cursor advances by however many statements the result
+//     contributes. `output` is null while writing in place and is allocated once, carrying the
+//     already-mutated prefix, at the first write that has nowhere to go -- the tvm-ffi idiom
+//     from `MutateMapValuesRaw` (structural_mutate.cc:221).
+//
+//     One deviation from the instruction as given, because capacity alone is not a sufficient
+//     trigger: a write also has nowhere to go when it would pass the read cursor and clobber
+//     input not yet consumed, which a growing splice does even with capacity to spare. The
+//     condition is therefore `write >= capacity || write > read`. Slack opened by an earlier
+//     shrink is still reused by a later grow, so a pass that nets out even or shorter never
+//     allocates -- which was the point of judging against the running length.
+//
+//     The in-place path must produce exactly what the non-in-place path produces: it is an
+//     optimization of the same semantics, and `real_tvm_bench.cc` differential-tests the two
+//     against each other across the splice matrix.
 TVMFFIAny MaybeInplaceMutateSeqStmtRepaired(ffi::StructuralMutatorObj* mutator,
                                             ffi::AnyView value) noexcept {
   SeqStmtNode* self = const_cast<SeqStmtNode*>(
@@ -382,44 +397,55 @@ TVMFFIAny MaybeInplaceMutateSeqStmtRepaired(ffi::StructuralMutatorObj* mutator,
   if (!self->seq.unique()) {
     return MutateSeqStmtRaw(mutator, value);
   }
-  // Sole owner from here. `get()` hands back the pointer without taking a reference.
-  ffi::ArrayObj* arr =
-      static_cast<ffi::ArrayObj*>(const_cast<ffi::Object*>(self->seq.get()));
-  ffi::Array<Stmt> output;
-  bool growing = false;
-  for (int64_t i = 0; i < static_cast<int64_t>(arr->size()); ++i) {
-    if (!growing) {
-      // A const reference into storage: no refcount bump, so the element stays unique and
-      // MaybeInplaceMutateIfUniqueExpected can take the in-place path.
-      const ffi::Any& item = arr->begin()[i];
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ffi::Any, mapped,
-                                        mutator->MaybeInplaceMutateIfUniqueExpected(item));
-      if (const auto* nested = mapped.as<SeqStmtNode>()) {
-        growing = true;
-        output.reserve(arr->size());
-        for (int64_t j = 0; j < i; ++j) {
-          output.push_back(arr->begin()[j].cast<Stmt>());
-        }
-        for (const Stmt& stmt : nested->seq) {
-          output.push_back(stmt);
-        }
-      } else if (!item.same_as(mapped)) {
-        arr->SetItemAfterCheck(i, std::move(mapped));
-      }
-    } else {
-      TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
-          Stmt, mapped, mutator->MaybeInplaceMutateIfUniqueExpected(arr->begin()[i]));
-      if (const auto* nested = mapped.as<SeqStmtNode>()) {
-        for (const Stmt& stmt : nested->seq) {
-          output.push_back(stmt);
-        }
-      } else {
-        output.push_back(std::move(mapped));
+  // Sole owner. One pass, a read cursor and a write cursor over the array the node already
+  // owns. Growing and shrinking are not cases: the write cursor simply advances by however
+  // many statements each result contributes -- zero for an empty nested SeqStmt, one for an
+  // ordinary result, several for a nested one.
+  ffi::ArrayObj* arr = static_cast<ffi::ArrayObj*>(const_cast<ffi::Object*>(self->seq.get()));
+  const int64_t size = static_cast<int64_t>(arr->size());
+  const int64_t capacity = static_cast<int64_t>(self->seq.capacity());
+  ffi::Array<Stmt> output;  // null until a write has nowhere to go
+  bool spilled = false;
+  int64_t write = 0;
+
+  // A write has nowhere to go when it would run past the buffer, or when it would run past the
+  // read cursor and clobber input not yet consumed. Slack opened by an earlier shrink is
+  // therefore reused by a later grow, and a sequence that nets out even or shorter never
+  // allocates at all.
+  auto emit = [&](Stmt stmt, int64_t read) {
+    if (!spilled && (write >= capacity || write > read)) {
+      spilled = true;
+      output.reserve(size);
+      for (int64_t j = 0; j < write; ++j) {
+        output.push_back(arr->begin()[j].cast<Stmt>());  // the already-mutated prefix
       }
     }
+    if (spilled) {
+      output.push_back(std::move(stmt));
+    } else {
+      arr->SetItemAfterCheck(write, std::move(stmt));
+    }
+    ++write;
+  };
+
+  for (int64_t read = 0; read < size; ++read) {
+    // A const reference into storage: no refcount bump, so the element stays unique and
+    // MaybeInplaceMutateIfUniqueExpected can take the in-place path. This is the whole fix.
+    // Reading precedes any write for this element, and while not spilled `write <= read`, so
+    // no write can clobber an element still to be read.
+    const ffi::Any& item = arr->begin()[read];
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ffi::Any, mapped,
+                                      mutator->MaybeInplaceMutateIfUniqueExpected(item));
+    if (const auto* nested = mapped.as<SeqStmtNode>()) {
+      for (const Stmt& stmt : nested->seq) emit(stmt, read);
+    } else {
+      emit(ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Stmt>(std::move(mapped)), read);
+    }
   }
-  if (growing) {
+  if (spilled) {
     self->seq = std::move(output);
+  } else if (write != size) {
+    self->seq.resize(write);  // the sequence shrank; drop the tail in place
   }
   return ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(ffi::Any(self));
 }

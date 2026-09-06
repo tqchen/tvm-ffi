@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 #include "timer.h"
 
@@ -117,6 +118,25 @@ struct FixtureInfo {
 #ifndef TVM_FFI_BENCH_CXX_FLAGS
 #define TVM_FFI_BENCH_CXX_FLAGS "unknown"
 #endif
+
+/*!
+ * \brief Where a rebuilding arm parks its output so teardown falls outside the clock.
+ *
+ * Releasing a rebuilt subgraph walks and frees every node in it. Left in the timed region that
+ * cost is charged to the arm that built it, which systematically inflates whichever arms
+ * allocate most -- the exact axis these tables compare. Moving an `Any` in is a pointer copy
+ * and a null-out, negligible against a graph teardown.
+ */
+inline std::vector<Any>& ResultSink() {
+  static std::vector<Any> sink;
+  return sink;
+}
+/*! \brief Reserve before timing so no growth happens inside the clock. */
+inline void ReserveResultSink(size_t n) {
+  ResultSink().clear();
+  ResultSink().reserve(n);
+}
+inline void DrainResultSink() { ResultSink().clear(); }
 
 inline void Emit(const std::string& line) { std::printf("%s\n", line.c_str()); }
 

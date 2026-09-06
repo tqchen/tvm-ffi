@@ -234,73 +234,50 @@ void WalkOld(AnyView root) {
 }
 
 /*!
- * \brief Take the root the way this ownership variant means.
+ * \brief Map arms take the input and return the output. Ownership lives at the call site.
  *
- * `retained` keeps the caller's handle alive, so the root's refcount is at least two and the
- * engine takes the copy-on-write path.  `moved` hands the sole reference over, so the engine
- * takes the in-place path; the result goes back into the slot, which keeps the next
- * repetition uniquely owned and the working set fixed at one fixture.  The difference between
- * a whole column of this report and the next is this one `std::move`.
+ * `retained` hands over a second handle while the caller keeps one, so the engine takes the
+ * copy-on-write path; `moved` hands over the sole reference, so it takes the in-place path.
+ * Neither destroys anything: the driver retains every output and frees them after the clock.
  */
-Any Take(Ownership ownership, Any* slot) {
-  return ownership == Ownership::kMoved ? std::move(*slot) : Any(*slot);
-}
-void Give(Ownership ownership, Any* slot, Any result) {
-  if (ownership == Ownership::kMoved) {
-    *slot = std::move(result);
-  } else {
-    g_sink += result.type_index();
-  }
-}
-
-void MapFloor(Ownership ownership, ReplaceKind, Any* slot) {
+Any MapFloor(Any input, ReplaceKind, Ownership ownership) {
   MinimalMutatorObj mutator;
-  Any input = Take(ownership, slot);
   Expected<Any> result = ownership == Ownership::kMoved
                              ? mutator.MaybeInplaceMutateIfUniqueExpected(input)
                              : mutator.MutateExpected(input);
   g_sink += result.is_err();
-  Give(ownership, slot, result.value());
+  return result.value();
 }
 
-void MapNever(Ownership ownership, ReplaceKind, Any* slot) {
-  Give(ownership, slot,
-       StructuralMap<WalkOrder::kPostOrder>(Take(ownership, slot),
-                                            [](const HPrimType& v) { return Any(v); }));
+Any MapNever(Any input, ReplaceKind, Ownership) {
+  return StructuralMap<WalkOrder::kPostOrder>(std::move(input),
+                                              [](const HPrimType& v) { return Any(v); });
 }
 
-void MapIdentity(Ownership ownership, ReplaceKind kind, Any* slot) {
+Any MapIdentity(Any input, ReplaceKind kind, Ownership) {
   if (kind == ReplaceKind::kSingleVar) {
-    Give(ownership, slot,
-         StructuralMap<WalkOrder::kPostOrder>(Take(ownership, slot),
-                                              [](const HStmt& stmt) { return Any(stmt); }));
-  } else {
-    Give(ownership, slot,
-         StructuralMap<WalkOrder::kPostOrder>(Take(ownership, slot),
-                                              [](const HVar& var) { return Any(var); }));
+    return StructuralMap<WalkOrder::kPostOrder>(std::move(input),
+                                                [](const HStmt& stmt) { return Any(stmt); });
   }
+  return StructuralMap<WalkOrder::kPostOrder>(std::move(input),
+                                              [](const HVar& var) { return Any(var); });
 }
 
-void MapReplace(Ownership ownership, ReplaceKind kind, Any* slot) {
+Any MapReplace(Any input, ReplaceKind kind, Ownership) {
   if (kind == ReplaceKind::kSingleVar) {
-    Give(ownership, slot,
-         StructuralMap<WalkOrder::kPostOrder>(Take(ownership, slot), SwapEvaluates));
-  } else {
-    Give(ownership, slot,
-         StructuralMap<WalkOrder::kPostOrder>(Take(ownership, slot), SwapAllVars));
+    return StructuralMap<WalkOrder::kPostOrder>(std::move(input), SwapEvaluates);
   }
+  return StructuralMap<WalkOrder::kPostOrder>(std::move(input), SwapAllVars);
 }
 
 /*! \brief The functor-era Substitute: ExprMutator/StmtMutator vtable + IRSubstitute. */
-/*! \brief The functor-era Substitute: ExprMutator/StmtMutator vtable + IRSubstitute. */
-void MapFunctor(Ownership ownership, ReplaceKind, Any* slot) {
-  Give(ownership, slot, FunctorSubstitute(Take(ownership, slot), SwapVarsFn));
+Any MapFunctor(Any input, ReplaceKind, Ownership) {
+  return FunctorSubstitute(std::move(input), SwapVarsFn);
 }
 
 /*! \brief What the pinned TVM ships: a StructuralMutatorObj owning its own var remap. */
-/*! \brief What the pinned TVM ships: a StructuralMutatorObj owning its own var remap. */
-void MapOld(Ownership ownership, ReplaceKind, Any* slot) {
-  Give(ownership, slot, ShippingSubstitute(Take(ownership, slot), SwapVarsFn));
+Any MapOld(Any input, ReplaceKind, Ownership) {
+  return ShippingSubstitute(std::move(input), SwapVarsFn);
 }
 
 struct WalkArm {
@@ -314,8 +291,7 @@ constexpr WalkArm kWalkArms[] = {
 
 struct MapArm {
   const char* name;
-  void (*run)(Ownership, ReplaceKind, Any*);
-  /*! \brief Whether the arm changes the graph, which is what makes it consume a shared DAG. */
+  Any (*run)(Any, ReplaceKind, Ownership);
   bool rebuilds;
 };
 constexpr MapArm kMapArms[] = {
@@ -328,33 +304,74 @@ constexpr MapArm kMapArms[] = {
 // main: build, declare, time, print.
 // ---------------------------------------------------------------------------
 
+/*!
+ * \brief Time one map arm. The timed region is `batch`, and nothing enters or leaves it
+ *        implicitly. See real_tvm_bench.cc for the full statement of the boundary.
+ */
+double MeasureMapArm(Any (*run)(Any, ReplaceKind, Ownership), Ownership ownership,
+                     ReplaceKind kind, int repeats, Any (*build)(), bool pooled = false) {
+  std::vector<Any>& out = ResultSink();
+  Any held;
+  std::vector<Any> pool;
+  const bool use_pool = pooled && ownership == Ownership::kMoved;
+  const int batch_size = use_pool ? kPoolSize : repeats;
+
+  auto setup = [&] {  // untimed: fixtures built, buffer reserved for the whole batch
+    ReserveResultSink(static_cast<size_t>(batch_size) + 1);
+    if (use_pool) {
+      pool.clear();
+      pool.reserve(batch_size);
+      for (int i = 0; i < batch_size; ++i) pool.push_back(build());
+    } else if (ownership == Ownership::kRetained) {
+      held = build();
+    } else {
+      out.push_back(build());
+    }
+  };
+  auto batch = [&] {  // timed: only this
+    if (use_pool) {
+      for (int i = 0; i < batch_size; ++i) out.push_back(run(std::move(pool[i]), kind, ownership));
+    } else if (ownership == Ownership::kRetained) {
+      for (int i = 0; i < batch_size; ++i) out.push_back(run(Any(held), kind, ownership));
+    } else {
+      for (int i = 0; i < batch_size; ++i) out.push_back(run(std::move(out[i]), kind, ownership));
+    }
+  };
+  auto teardown = [&] {  // untimed: every retained output destroyed here
+    DrainResultSink();
+    held = Any();
+    pool.clear();
+  };
+
+  setup();
+  batch();
+  teardown();
+  std::vector<double> samples;
+  samples.reserve(kSamples);
+  for (int sample = 0; sample < kSamples; ++sample) {
+    setup();
+    double begin = NowNs();
+    batch();
+    double elapsed = NowNs() - begin;
+    teardown();
+    samples.push_back(elapsed / batch_size);
+  }
+  return Median(std::move(samples));
+}
+
 void RunFixture(const FixtureInfo& info, Any (*build)()) {
   EmitFixture(kHarness, info);
 
   for (const WalkArm& arm : kWalkArms) {
     Any root = build();
-    double ns = MeasureStationary(info.repeats, [&] { arm.run(root); });
+    double ns = MeasureStationary(info.repeats, [&] { arm.run(root); }, [] {});
     EmitResult(kHarness, info.name, "-", arm.name, ns);
   }
-
   for (Ownership ownership : {Ownership::kRetained, Ownership::kMoved}) {
     for (const MapArm& arm : kMapArms) {
-      double ns = 0;
-      // An in-place rebuilding arm on a fixture with a pointer-shared subtree un-shares it,
-      // so the fixture is not stationary: it runs over a pool of independent copies rebuilt
-      // untimed between passes.
-      if (ownership == Ownership::kMoved && arm.rebuilds && info.has_sharing) {
-        std::vector<Any> pool(kPoolSize);
-        int passes = info.repeats / kPoolSize;
-        if (passes < 1) passes = 1;
-        ns = MeasurePooled(
-            passes, [&] { for (Any& slot : pool) slot = build(); },
-            [&](int i) { arm.run(ownership, info.replace_kind, &pool[i]); });
-      } else {
-        Any slot = build();
-        ns = MeasureStationary(info.repeats,
-                               [&] { arm.run(ownership, info.replace_kind, &slot); });
-      }
+      if (std::string(arm.name) == "map_old" && !info.run_old) continue;
+      double ns = MeasureMapArm(arm.run, ownership, info.replace_kind, info.repeats, build,
+                                arm.rebuilds && info.has_sharing);
       EmitResult(kHarness, info.name, OwnershipName(ownership), arm.name, ns);
     }
   }

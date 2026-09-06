@@ -30,6 +30,11 @@
 // Both are templates, so the arm is inlined into the loop and nothing type-erased sits in the
 // timed path -- `walk_floor` is a ~4 ns/node quantity and an indirect call would show.
 //
+// Both also take a `drain`, run after the clock is read. A rebuilding arm parks its output
+// rather than destroying it, because releasing a rebuilt subgraph walks and frees every node in
+// it and that teardown would otherwise be charged to the arm that built it -- inflating exactly
+// the arms that allocate most.
+//
 // Repeat counts are fixed per fixture, declared where the fixture is, and chosen so a sample
 // lands in the milliseconds: far above the two clock reads bracketing it.
 
@@ -68,15 +73,18 @@ inline double Median(std::vector<double> samples) {
  * \brief Time a stationary arm: \p repeats traversals of one fixture, nine times.
  * \return Nanoseconds per traversal, the median of the nine samples.
  */
-template <typename Run>
-double MeasureStationary(int repeats, Run run) {
+template <typename Run, typename Drain>
+double MeasureStationary(int repeats, Run run, Drain drain) {
   for (int i = 0; i < repeats; ++i) run();  // warm-up, untimed
+  drain();
   std::vector<double> samples;
   samples.reserve(kSamples);
   for (int sample = 0; sample < kSamples; ++sample) {
     double begin = NowNs();
     for (int i = 0; i < repeats; ++i) run();
-    samples.push_back((NowNs() - begin) / repeats);
+    double elapsed = NowNs() - begin;
+    drain();  // teardown of everything the batch built, outside the clock
+    samples.push_back(elapsed / repeats);
   }
   return Median(std::move(samples));
 }
@@ -88,10 +96,11 @@ double MeasureStationary(int repeats, Run run) {
  * whole pool, and \p passes of them make a sample, so the pool is rebuilt between passes and
  * no traversal ever sees a graph an earlier one already changed.
  */
-template <typename Refill, typename Run>
-double MeasurePooled(int passes, Refill refill, Run run) {
+template <typename Refill, typename Run, typename Drain>
+double MeasurePooled(int passes, Refill refill, Run run, Drain drain) {
   refill();
   for (int i = 0; i < kPoolSize; ++i) run(i);  // warm-up, untimed
+  drain();
   std::vector<double> samples;
   samples.reserve(kSamples);
   for (int sample = 0; sample < kSamples; ++sample) {
@@ -101,6 +110,7 @@ double MeasurePooled(int passes, Refill refill, Run run) {
       double begin = NowNs();
       for (int i = 0; i < kPoolSize; ++i) run(i);
       total += NowNs() - begin;
+      drain();  // outside the clock
     }
     samples.push_back(total / (static_cast<double>(passes) * kPoolSize));
   }
