@@ -115,7 +115,7 @@ TVMFFIAny VisitSeqContainer(StructuralVisitorObj* visitor, const SeqBaseObj* sel
   for (const Any& item : *self) {
     TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(item));
   }
-  return ExpectedUnsafe::MoveToTVMFFIAny(Expected<Optional<VisitInterrupt>>(std::nullopt));
+  TVM_FFI_S_VISIT_RETURN_NONE();
 }
 
 /*! \brief Visit values in a map container while treating keys as structural anchors. */
@@ -123,7 +123,7 @@ TVMFFIAny VisitMapContainer(StructuralVisitorObj* visitor, const MapBaseObj* sel
   for (const auto& kv : *self) {
     TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(kv.second));
   }
-  return ExpectedUnsafe::MoveToTVMFFIAny(Expected<Optional<VisitInterrupt>>(std::nullopt));
+  TVM_FFI_S_VISIT_RETURN_NONE();
 }
 
 /*! \brief Structural visit hook for ArrayObj. */

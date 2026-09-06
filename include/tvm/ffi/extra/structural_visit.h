@@ -487,9 +487,31 @@ enum class WalkOrder : int32_t {
 
 namespace details {
 
-/// \cond Doxygen_Suppress
-// Return from the current raw or same-T Expected visit function if Result stops traversal.
-// The rvalue-only proxy lets the enclosing return type select the representation.
+/*!
+ * \brief Return from a visit hook if \p Result stops traversal.
+ *
+ * Propagates an ``Error`` or a ``VisitInterrupt`` out of the enclosing function
+ * and otherwise falls through. Works from a raw ``TVMFFIAny`` hook and from a
+ * typed ``Expected`` helper alike; the rvalue-only proxy lets the return type
+ * select the representation.
+ *
+ * A registered ``__s_visit__`` hook is one line per traversed field followed by
+ * the terminal return. A field skipped on purpose is guarded by a condition and
+ * carries a ``// skips:`` note saying why.
+ *
+ * \code{.cpp}
+ * TVMFFIAny FooVisit(StructuralVisitorObj* visitor, AnyView value) noexcept {
+ *   const FooNode* self =
+ *       details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const FooNode>(value);
+ *   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->a));
+ *   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->b));
+ *   TVM_FFI_S_VISIT_RETURN_NONE();
+ * }
+ * \endcode
+ *
+ * \param Result An expression yielding the descent result to inspect.
+ * \sa TVM_FFI_S_VISIT_RETURN_NONE
+ */
 #define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result)                                \
   do {                                                                            \
     auto&& tvm_ffi_res_ = (Result);                                               \
@@ -498,7 +520,18 @@ namespace details {
       return ::tvm::ffi::details::MaybeReturnHelper(::std::move(tvm_ffi_res_));   \
     }                                                                             \
   } while (0)
-/// \endcond
+
+/*!
+ * \brief Return the completed result -- no interrupt -- from a visit hook.
+ *
+ * Terminal statement of a hook that traversed every field it intends to. Works
+ * from a raw ``TVMFFIAny`` hook and a typed ``Expected`` helper alike.
+ *
+ * \sa TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN
+ */
+#define TVM_FFI_S_VISIT_RETURN_NONE()            \
+  return ::tvm::ffi::details::MaybeReturnHelper( \
+      ::tvm::ffi::Expected<::tvm::ffi::Optional<::tvm::ffi::VisitInterrupt>>(::std::nullopt))
 
 }  // namespace details
 
