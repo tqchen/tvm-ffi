@@ -342,7 +342,10 @@ class StructuralMutatorObj : public Object {
   TVM_FFI_INLINE TVMFFIAny DefaultMutateRaw(AnyView value) noexcept {
     static reflection::TypeAttrColumn column(reflection::type_attr::kStructuralMutate);
     AnyView attr = column[value.type_index()];
-    const Object* node = value.as<Object>();
+    const Object* node =
+        value.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin
+            ? details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const Object>(value)
+            : nullptr;
     // Exactly one frame per node: hooks propagate errors untouched, and this is the engine
     // dispatching into `value`, so both exits below name it here and nowhere else.
     TVMFFIAny result;
