@@ -92,6 +92,49 @@ namespace details {
 TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMutatorObj* mutator,
                                                                   AnyView value) noexcept;
 
+/*!
+ * \brief The raw ABI spelling of an "unchanged" structural-mutation result.
+ *
+ * A hook may return this instead of an owning copy of its input.  It is a bare type index in an
+ * otherwise empty ``TVMFFIAny``: no object, no refcount, nothing to destroy.  Widening the ABI
+ * to permit it is what this representation is for; no hook in this tree returns it.
+ */
+TVM_FFI_INLINE TVMFFIAny StructuralMutateUnchangedRaw() noexcept {
+  TVMFFIAny raw;
+  raw.type_index = TypeIndex::kTVMFFIStructuralMutateUnchanged;
+  raw.zero_padding = 0;
+  raw.v_int64 = 0;
+  return raw;
+}
+
+/*!
+ * \brief Resolve a raw structural-mutation result into ``Expected<Any>``.
+ *
+ * The single boundary at which the marker is understood.  Everything above it -- descent,
+ * container loops, ``TryLink``, ``DefaultMutateRaw`` -- keeps working in resolved values, so no
+ * engine site has to learn the marker and no ``same_as`` comparison can ever see one.
+ */
+/*!
+ * \brief Materialize the input as the result of an unchanged mutation.
+ *
+ * Out of line and by value.  Inlined, its ``Any(const AnyView&)`` needs `value`'s address, and
+ * the address forces `value` to a stack slot that the caller then fills on *every* node --
+ * paying for the unchanged path on the path that never takes it.  Out of line it takes the
+ * AnyView in registers, so the only thing the hot path keeps is `value` itself, live across the
+ * hook call.
+ */
+TVM_FFI_COLD_CODE TVM_FFI_NO_INLINE inline Expected<Any> StructuralMutateUnchangedResult(
+    AnyView value) noexcept {
+  return Expected<Any>(Any(value));
+}
+
+TVM_FFI_INLINE Expected<Any> ResolveStructuralMutateRaw(TVMFFIAny raw, AnyView value) noexcept {
+  if (TVM_FFI_PREDICT_FALSE(raw.type_index == TypeIndex::kTVMFFIStructuralMutateUnchanged)) {
+    return StructuralMutateUnchangedResult(value);
+  }
+  return ExpectedUnsafe::MoveFromTVMFFIAny<Any>(raw);
+}
+
 }  // namespace details
 
 /*!
@@ -163,7 +206,7 @@ class StructuralMutatorObj : public Object {
    * \return The mutated owning value, or an Error if mutation failed.
    */
   TVM_FFI_INLINE Expected<Any> MutateExpected(AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>((*vtable_->mutate)(this, value));
+    return details::ResolveStructuralMutateRaw((*vtable_->mutate)(this, value), value);
   }
 
   /*!
@@ -190,8 +233,8 @@ class StructuralMutatorObj : public Object {
    *       only for a value whose entire path from the root is uniquely owned.
    */
   TVM_FFI_INLINE Expected<Any> MaybeInplaceMutateExpected(AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(
-        (*vtable_->maybe_inplace_mutate)(this, value));
+    return details::ResolveStructuralMutateRaw((*vtable_->maybe_inplace_mutate)(this, value),
+                                               value);
   }
 
   /*!
@@ -225,7 +268,7 @@ class StructuralMutatorObj : public Object {
    */
 
   TVM_FFI_INLINE Expected<Any> DefaultMutateExpected(AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(DefaultMutateRaw(value));
+    return details::ResolveStructuralMutateRaw(DefaultMutateRaw(value), value);
   }
 
   /*!
@@ -241,7 +284,7 @@ class StructuralMutatorObj : public Object {
    *       \ref DefaultMutateExpected.
    */
   TVM_FFI_INLINE Expected<Any> DefaultMaybeInplaceMutateExpected(AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(DefaultMaybeInplaceMutateRaw(value));
+    return details::ResolveStructuralMutateRaw(DefaultMaybeInplaceMutateRaw(value), value);
   }
 
   /*!

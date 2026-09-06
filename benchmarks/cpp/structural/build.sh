@@ -115,7 +115,11 @@ prepare_ffi_state() {
     rm -rf "${dir}/3rdparty/${sub}"
     ln -s "${FFI_ROOT}/3rdparty/${sub}" "${dir}/3rdparty/${sub}"
   done
-  git -C "${FFI_ROOT}" show "$(guard_commit)" | git -C "${dir}" apply -
+  # A state ref taken from this branch already carries the guard commit; one taken from an
+  # upstream ref does not.  Apply it only when it is missing, so both shapes work.
+  if ! git -C "${dir}" merge-base --is-ancestor "$(guard_commit)" HEAD 2>/dev/null; then
+    git -C "${FFI_ROOT}" show "$(guard_commit)" | git -C "${dir}" apply -
+  fi
   echo "${dir}"
 }
 
