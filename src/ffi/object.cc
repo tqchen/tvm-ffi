@@ -324,6 +324,17 @@ class TypeTable {
     column->size = static_cast<int32_t>(column->data_.size());
     column->begin_index = 0;
     Any& slot = column->data_[type_index - column->begin_index];
+#if defined(TVM_FFI_BENCH_ALLOW_TYPE_ATTR_OVERRIDE) && TVM_FFI_BENCH_ALLOW_TYPE_ATTR_OVERRIDE
+    // BRANCH-LOCAL BENCHMARK BUILD ONLY (see benchmarks/cpp/README.md).
+    //
+    // The real-TVM structural benchmark installs its own `__s_visit__` / `__s_mutate__`
+    // hooks over the ones TVM already registered from its static-init blocks, so that a
+    // single process can time an arm against the hooks that ship today.  That requires
+    // the write-once guard below to be disabled.  This define is never set by any build
+    // that is not the benchmark, and this whole `#if` must never be merged to `main`.
+    (void)name_str;
+    slot = value_view;
+#else
     if (slot.type_index() != kTVMFFINone) {
       TVM_FFI_THROW(RuntimeError)
           << "TypeAttr `" << name_str << "` is already registered for type index " << type_index
@@ -331,6 +342,7 @@ class TypeTable {
           << "once and mutate it in place on subsequent calls.";
     }
     slot = value_view;
+#endif
   }
   const TVMFFITypeAttrColumn* GetTypeAttrColumn(const TVMFFIByteArray* name) {
     String name_str(*name);
