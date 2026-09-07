@@ -172,16 +172,14 @@ TVM_FFI_INLINE TVMFFIAny MutateSeqContainerChanged(StructuralMutatorObj* mutator
   int64_t size = static_cast<int64_t>(self->size());
   const Any* items = self->begin();
   ObjectPtr<SeqObj> output = SeqObj::CreateRepeated(size, Any());
-  output->InitRange(0, items, items + size);
+  output->InitRange(0, items, items + index);
   output->SetItemAfterCheck(index, std::move(first));
 
   for (int64_t i = index + 1; i < size; ++i) {
     const Any& item = items[i];
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, mapped_value,
                                       mutator->MutateExpected(item));
-    if (!mapped_value.UnchangedOrSameAs(item)) {
-      output->SetItemAfterCheck(i, std::move(mapped_value).ValueUnchecked());
-    }
+    output->SetItemAfterCheck(i, std::move(mapped_value).ValueOrUnchanged(AnyView(item)));
   }
   return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
 }
