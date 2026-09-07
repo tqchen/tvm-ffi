@@ -432,6 +432,14 @@ class StructuralMutatorObj : public Object {
     }
   }
 
+  // EXPERIMENT (task #387): the typed overloads 31f6948 had beside the AnyView forms, restored
+  // verbatim, so a hook's MaybeInplaceMutateIfUniqueExpected(self->field) resolves through them.
+  template <typename T, typename = std::enable_if_t<std::is_base_of_v<ObjectRef, T>>>
+  TVM_FFI_INLINE Expected<UnchangedOr<T>> MaybeInplaceMutateExpected(const T& value) noexcept {
+    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(
+        (*vtable_->maybe_inplace_mutate)(this, AnyView(value)));
+  }
+
   /*!
    * \brief Mutate a value, using in-place mutation only for a uniquely owned object.
    * \tparam T The declared replacement type.
@@ -449,6 +457,16 @@ class StructuralMutatorObj : public Object {
     const Object* obj = value.as<Object>();
     if (obj != nullptr && obj->unique()) {
       return MaybeInplaceMutateExpected<T>(value);
+    }
+    return MutateExpected<T>(value);
+  }
+
+  template <typename T, typename = std::enable_if_t<std::is_base_of_v<ObjectRef, T>>>
+  TVM_FFI_INLINE Expected<UnchangedOr<T>> MaybeInplaceMutateIfUniqueExpected(
+      const T& value) noexcept {
+    const Object* obj = value.get();
+    if (obj != nullptr && obj->unique()) {
+      return MaybeInplaceMutateExpected(value);
     }
     return MutateExpected<T>(value);
   }
