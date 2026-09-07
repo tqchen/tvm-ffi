@@ -56,6 +56,8 @@ pub enum TVMFFITypeIndex {
     kTVMFFISmallStr = 11,
     /// Small bytes on stack
     kTVMFFISmallBytes = 12,
+    /// Unchanged state of UnchangedOr
+    kTVMFFIUnchanged = 13,
     /// Start of statically defined objects.
     kTVMFFIStaticObjectBegin = 64,
     /// String object, layout = { TVMFFIObject, TVMFFIByteArray, ... }

@@ -254,11 +254,13 @@ class TMutatePairObj : public Object {
     const auto* self = value.cast<const TMutatePairObj*>();
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef, lhs, mutator->MutateExpected(self->lhs));
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef, rhs, mutator->MutateExpected(self->rhs));
-    if (lhs.same_as(self->lhs) && rhs.same_as(self->rhs)) {
-      return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
+    if (lhs.UnchangedOrSameAs(self->lhs) && rhs.UnchangedOrSameAs(self->rhs)) {
+      return details::UnchangedOrUnsafe::MoveToTVMFFIAny(UnchangedOr<Any>::Unchanged());
     }
+    ObjectRef lhs_value = std::move(lhs).ValueOrUnchanged(self->lhs);
+    ObjectRef rhs_value = std::move(rhs).ValueOrUnchanged(self->rhs);
     return details::AnyUnsafe::MoveAnyToTVMFFIAny(
-        Any(make_object<TMutatePairObj>(std::move(lhs), std::move(rhs))));
+        Any(make_object<TMutatePairObj>(std::move(lhs_value), std::move(rhs_value))));
   }
 
   static void RegisterReflection() {
