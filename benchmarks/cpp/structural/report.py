@@ -250,6 +250,7 @@ def render(merged, runs, out):
     for key, label in [("harness_branch_commit", "harness branch commit"),
                        ("tvm_ffi_engine_sha", "tvm-ffi engine sha"),
                        ("engine_header", "engine header"),
+                       ("expected_header", "expected.h"),
                        ("hook_header", "hook header"),
                        ("tvm_sha", "apache/tvm sha"),
                        ("compiler", "compiler"), ("flags", "flags"),
