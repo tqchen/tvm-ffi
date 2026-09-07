@@ -603,6 +603,13 @@ TVM_FFI_INLINE Expected<Any> ResolveStructuralMutateResult(MaybeUnchanged<Any>&&
   return ExpectedUnsafe::MoveFromTVMFFIAny<Any>(AnyUnsafe::MoveAnyToTVMFFIAny(std::move(data)));
 }
 
+// UC's form of the same cold error, for the UnchangedOr descent: an Unexpected<Error>, which
+// converts to whichever Expected<UnchangedOr<T>> the typed entry returns.
+TVM_FFI_COLD_CODE inline Unexpected<Error> SMutateDeclaredTypeUnexpected() noexcept {
+  return Unexpected(
+      Error("TypeError", "structural mutate result does not match the declared type", ""));
+}
+
 }  // namespace details
 
 /*!
@@ -729,6 +736,88 @@ class StructuralMutatorObj : public Object {
   template <typename T, typename = std::enable_if_t<std::is_base_of_v<ObjectRef, T>>>
   TVM_FFI_INLINE Expected<Any> MaybeInplaceMutateIfUniqueExpected(const T& value) noexcept {
     return details::ResolveStructuralMutateResult(MaybeInplaceMutateIfUnique(value), value);
+  }
+
+  // --- The UnchangedOr descent, beside the MaybeUnchanged one -----------------------------
+  //
+  // UC's entry points -- `MutateExpected`, `MaybeInplaceMutateExpected` and
+  // `MaybeInplaceMutateIfUniqueExpected` on refactor/structural-mutate-unchanged-or 31f6948 --
+  // under names that do not collide with the compatibility forms above. The bodies are UC's,
+  // and they call through the same vtable slots as the MaybeUnchanged descent: a hook produces
+  // the same raw ``TVMFFIAny`` whichever entry its caller used, and only the C++ carrier the
+  // caller receives differs. That is what makes a hook file written against each protocol
+  // comparable inside one binary.
+
+  /*!
+   * \brief Mutate a value through the mutator vtable, as ``Expected<UnchangedOr<T>>``.
+   *
+   * \param value The value to mutate.
+   * \tparam T The declared replacement type.
+   * \return The replacement or unchanged marker, or an Error if mutation failed.
+   */
+  template <typename T = Any>
+  TVM_FFI_INLINE Expected<UnchangedOr<T>> MutateUnchangedOr(AnyView value) noexcept {
+    if constexpr (std::is_same_v<T, Any>) {
+      return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
+          (*vtable_->mutate)(this, value));
+    } else {
+      TVMFFIAny result = (*vtable_->mutate)(this, value);
+      if (TVM_FFI_PREDICT_FALSE(result.type_index != TypeIndex::kTVMFFIError &&
+                                !TypeTraits<UnchangedOr<T>>::CheckAnyStrict(&result))) {
+        return details::SMutateDeclaredTypeUnexpected();
+      }
+      return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(result);
+    }
+  }
+
+  /*!
+   * \brief Mutate a value in place when it is safe, as ``Expected<UnchangedOr<Any>>``.
+   *
+   * \param value The borrowed value to mutate.
+   * \return The replacement or unchanged marker, or an Error if mutation failed.
+   *
+   * \note Call only from a ``__s_maybe_inplace_mutate__`` hook, which is dispatched
+   *       only for a value whose entire path from the root is uniquely owned.
+   */
+  TVM_FFI_INLINE Expected<UnchangedOr<Any>> MaybeInplaceMutateUnchangedOr(AnyView value) noexcept {
+    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
+        (*vtable_->maybe_inplace_mutate)(this, value));
+  }
+
+  /*! \brief Typed form of \ref MaybeInplaceMutateUnchangedOr. */
+  template <typename T, typename = std::enable_if_t<std::is_base_of_v<ObjectRef, T>>>
+  TVM_FFI_INLINE Expected<UnchangedOr<T>> MaybeInplaceMutateUnchangedOr(const T& value) noexcept {
+    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(
+        (*vtable_->maybe_inplace_mutate)(this, AnyView(value)));
+  }
+
+  /*!
+   * \brief Mutate a value, in place only when uniquely owned, as ``Expected<UnchangedOr<Any>>``.
+   *
+   * \param value The borrowed value to mutate.
+   * \return The replacement or unchanged marker, or an Error if mutation failed.
+   *
+   * \note The caller must already know the entire path from the root is uniquely owned; this
+   *       method checks only \p value itself, not its ancestors.
+   */
+  TVM_FFI_INLINE Expected<UnchangedOr<Any>> MaybeInplaceMutateIfUniqueUnchangedOr(
+      AnyView value) noexcept {
+    const Object* obj = value.as<Object>();
+    if (obj != nullptr && obj->unique()) {
+      return MaybeInplaceMutateUnchangedOr(value);
+    }
+    return MutateUnchangedOr(value);
+  }
+
+  /*! \brief Typed form of \ref MaybeInplaceMutateIfUniqueUnchangedOr. */
+  template <typename T, typename = std::enable_if_t<std::is_base_of_v<ObjectRef, T>>>
+  TVM_FFI_INLINE Expected<UnchangedOr<T>> MaybeInplaceMutateIfUniqueUnchangedOr(
+      const T& value) noexcept {
+    const Object* obj = value.get();
+    if (obj != nullptr && obj->unique()) {
+      return MaybeInplaceMutateUnchangedOr(value);
+    }
+    return MutateUnchangedOr<T>(value);
   }
 
   /*!
