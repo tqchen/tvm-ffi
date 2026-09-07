@@ -53,6 +53,9 @@ SEQ_MAP_ARMS = ["map_floor", "map_never", "map_identity_stmt", "map_swap"]
 MUTATE_ARM = {"subst": "map_subst", "swap": "map_swap"}
 IDENTITY_ARM = {"subst": "map_identity_var", "swap": "map_identity_stmt"}
 
+# Machine state at both ends of the run, stamped into every provenance table.
+MACHINE = {"before": None, "after": None}
+
 # The benchmark machine's data-cache geometry, stated rather than probed.
 CACHE = [("L1d", 32 * 1024), ("L2", 1024 * 1024), ("L3", 32 * 1024 * 1024)]
 
@@ -62,6 +65,94 @@ def fits(working_set):
         if working_set <= size:
             return name
     return "DRAM"
+
+
+# ---------------------------------------------------------------------------
+# The quiet-machine gate.
+#
+# A run of this harness is one single-threaded process pinned to one core, so on a many-core
+# host a run in progress and an empty machine give the same reading: load ~2, ~98% idle.
+# Load average sees a parallel `cmake --build` and nothing else.  The check that sees another
+# run is process presence, so that is the check, and it is recorded with the run rather than
+# left to whoever remembers to look.
+#
+# Two corollaries the interleaving does not cover.  Interleaving protects a delta against slow
+# drift; it protects neither absolutes nor anything at all against a competing pinned run,
+# because that run contends unevenly across arms -- the allocating arms absorb most of it -- so
+# it moves cells relative to each other and not together.  And `--cpu` is core isolation, not
+# workload isolation: `taskset` grants a private core, never private L3 or memory bandwidth.
+# ---------------------------------------------------------------------------
+
+def competing_processes():
+    """Benchmark processes on this host that are not part of this run."""
+    try:
+        listing = subprocess.run(["ps", "-eo", "pid=,ppid=,args="],
+                                 capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ["(ps unavailable -- the quiet-machine check could not run)"]
+    rows = []
+    for line in listing.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            rows.append((int(parts[0]), int(parts[1]), parts[2]))
+
+    me = os.getpid()
+    parent = {pid: ppid for pid, ppid, _ in rows}
+    children = {}
+    for pid, ppid, _ in rows:
+        children.setdefault(ppid, []).append(pid)
+    related, cur = set(), me
+    while cur and cur not in related:            # this process and everything that launched it
+        related.add(cur)
+        cur = parent.get(cur, 0)
+    stack = [me]                                  # and everything it launched
+    while stack:
+        for kid in children.get(stack.pop(), []):
+            if kid not in related:
+                related.add(kid)
+                stack.append(kid)
+
+    # Matched on what is being executed -- the first two argv tokens' basenames -- and not on
+    # anything the command line merely mentions.  A shell wrapper whose text contains
+    # "report.py" (another agent's own `pgrep`, say) is not a benchmark.  Under-detection is
+    # the dangerous direction and a wider match would seem the safer error, but a check that
+    # trips on a `pgrep` is a check someone switches off, which is the same failure with
+    # extra steps.
+    def is_benchmark(args):
+        for token in args.split()[:2]:
+            base = os.path.basename(token)
+            if base == "report.py" or "_bench" in base:
+                return True
+        return False
+
+    return ["%d %s" % (pid, args) for pid, _ppid, args in rows
+            if pid not in related and is_benchmark(args)]
+
+
+def machine_state():
+    try:
+        load = os.getloadavg()[0]
+    except (OSError, AttributeError):
+        load = float("nan")
+    return {"load": load, "competing": competing_processes()}
+
+
+def machine_row(before, after):
+    """One provenance row saying what the machine was doing, checked the way that works."""
+    seen, competing = set(), []
+    for entry in (before["competing"] if before else []) + (after["competing"] if after else []):
+        pid = entry.split(None, 1)[0]
+        if pid not in seen:
+            seen.add(pid)
+            competing.append(entry)
+    loads = "load average %.2f at start, %.2f at end" % (before["load"], after["load"])
+    if competing:
+        return ("**contended** -- %d other benchmark process(es) live during this run (%s). "
+                "Absolutes are not usable and the deltas are suspect; %s"
+                % (len(competing), "; ".join(c.split(None, 1)[0] for c in competing), loads))
+    return ("quiet -- no other benchmark process at start or end, %s. Checked by process "
+            "presence rather than load, because a pinned single-threaded run reads as an idle "
+            "machine" % loads)
 
 
 def run_once(binary, cpu):
@@ -143,7 +234,8 @@ def render(merged, runs, out):
                        ("structural_hooks", "structural hooks")]:
         if key in prov:
             w("| %s | `%s` |\n" % (label, prov[key]))
-    w("| method | %s |\n| processes | %d |\n\n" % (prov["method"], len(runs)))
+    w("| method | %s |\n| processes | %d |\n" % (prov["method"], len(runs)))
+    w("| machine | %s |\n\n" % machine_row(MACHINE["before"], MACHINE["after"]))
 
     w("### Fixtures -- %s\n\n" % harness)
     w("| fixture | N | occurrences | working set | fits | operation | rebuilt retained "
@@ -242,7 +334,8 @@ def render_compare(merged, states, runs, differs, out):
       "`port_check.sh --header` checks both against apache/tvm |\n")
     w("| method | %s, processes interleaved %s/%s/%s/%s |\n"
       % (merged[a_label]["provenance"]["method"], a_label, b_label, a_label, b_label))
-    w("| processes | %d per state |\n\n" % runs)
+    w("| processes | %d per state |\n" % runs)
+    w("| machine | %s |\n\n" % machine_row(MACHINE["before"], MACHINE["after"]))
     w("**Absolutes come from two separately compiled binaries and are not comparable across "
       "states; only the delta in each cell is claimed.** Two builds differ in inlining, layout "
       "and allocator luck for reasons unrelated to what is under study. The processes are "
@@ -365,7 +458,8 @@ def render_fidelity(merged, labels, runs, out):
     w("| node layouts | all %d counterpart types identical in size |\n" % len(COUNTERPART_NODES))
     w("| method | %s, processes interleaved %s/%s/%s/%s |\n"
       % (a["provenance"]["method"], a_label, b_label, a_label, b_label))
-    w("| processes | %d per harness |\n\n" % runs)
+    w("| processes | %d per harness |\n" % runs)
+    w("| machine | %s |\n\n" % machine_row(MACHINE["before"], MACHINE["after"]))
     w("Cells are `%s / %s (delta)`. **This is a within-host comparison and the only kind the "
       "harness makes**: both binaries were built by one compiler on one machine against one "
       "engine, and the processes are interleaved so drift and thermal state hit both "
@@ -419,7 +513,19 @@ def main():
     ap.add_argument("--cpu", type=int, default=0)
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--out", default="-")
+    ap.add_argument("--allow-contention", action="store_true",
+                    help="run even though another benchmark process is live, and say so in "
+                         "the provenance. For a deliberately contended run only")
     args = ap.parse_args()
+
+    MACHINE["before"] = machine_state()
+    if MACHINE["before"]["competing"] and not args.allow_contention:
+        raise SystemExit(
+            "another benchmark process is live, so this run would be contended:\n  %s\n\n"
+            "Load average will not tell you this -- a pinned single-threaded run reads as an "
+            "idle machine -- which is why the check is process presence. Wait for the other "
+            "run to finish, or pass --allow-contention to record an explicitly contended run."
+            % "\n  ".join(MACHINE["before"]["competing"]))
 
     out = sys.stdout if args.out == "-" else open(args.out, "w")
     if args.two_state:
@@ -431,6 +537,7 @@ def main():
             ref, _, path = rest.partition(":")
             states.append((label, ref, os.path.abspath(path)))
         merged = interleave(states, args.cpu, args.runs)
+        MACHINE["after"] = machine_state()
         render_compare(merged, states, args.runs, args.differs, out)
     elif args.fidelity:
         if len(args.binary) != 2:
@@ -445,11 +552,13 @@ def main():
             raise SystemExit("--fidelity compares two different harnesses; both are %s"
                              % labels[0])
         merged = {labels[i]: by_path[paths[i]] for i in (0, 1)}
+        MACHINE["after"] = machine_state()
         render_fidelity(merged, labels, args.runs, out)
     else:
         for binary in args.binary:
             binary = os.path.abspath(binary)
             runs = [run_once(binary, args.cpu) for _ in range(args.runs)]
+            MACHINE["after"] = machine_state()
             render(median_runs(runs), runs, out)
     if out is not sys.stdout:
         out.close()

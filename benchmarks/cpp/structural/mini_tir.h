@@ -1268,25 +1268,58 @@ inline void HVisitArray(const Array<T>& arr, F fvisit) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Why every `VisitExpr_` / `VisitStmt_` body below carries `H_LIBRARY_BODY`.
+//
+// apache/tvm declares `ExprVisitor`, `ExprMutator`, `StmtVisitor` and `StmtMutator` `TVM_DLL`
+// and compiles every one of their `VisitExpr_` / `VisitStmt_` bodies -- and the node
+// constructors those bodies reach, `TVM_DEFINE_BINOP_CONSTRUCTOR` -- into
+// libtvm_compiler.so.  An arm in `real_tvm_bench.cc` calls them across that boundary, so not
+// one of them inlines into the arm, and none is visible to the optimizer that compiles the
+// arm.  mini-TIR is a single translation unit, so at -O3 every one of them inlines unless it
+// is told not to.  That is a difference in the compiled shape of the thing being measured,
+// not in its algorithm, and it is the same arrangement `ShippingPostOrderVisit` and
+// `ShippingSubstitute` below already use for the two entry points.
+//
+// It is worth what it costs: with the bodies inlined, mini's `map_functor` and `map_old` ran
+// 25-32% under real-TVM's on every Expr fixture, which is enough to reverse the report's
+// headline -- real reads `subst` against `old` at -26% to -51% on those rows and inlined mini
+// read +4% to -24%.
+//
+// Not applied to `HIRSubstitute` / `HIRApplyVisit`, whose apache/tvm counterparts
+// (`FunctorSubstitute`, `FunctorApplyVisit`) are written in `real_tvm_bench.cc` itself and so
+// are inlinable on both sides; it is applied to `HShippingSubstitute` /
+// `HShippingApplyVisit`, whose counterparts are `tirx::IRSubstitute` and `tirx::IRApplyVisit`
+// inside the library.
+//
+// `-DMINI_TIR_INLINE_LIBRARY_BODIES` builds the control: same algorithm, bodies inlinable.
+// It exists so the choice above stays a measurement rather than an assertion.
+// ---------------------------------------------------------------------------
+#ifdef MINI_TIR_INLINE_LIBRARY_BODIES
+#define H_LIBRARY_BODY
+#else
+#define H_LIBRARY_BODY TVM_FFI_NO_INLINE
+#endif
+
 class HExprVisitor : public HExprFunctor<void(const HExpr&)> {
  public:
   using HExprFunctor::operator();
 
  protected:
   using HExprFunctor::VisitExpr;
-  void VisitExpr_(const HVarObj*) override {}
-  void VisitExpr_(const HIntImmObj*) override {}
+  H_LIBRARY_BODY void VisitExpr_(const HVarObj*) override {}
+  H_LIBRARY_BODY void VisitExpr_(const HIntImmObj*) override {}
   /*! \brief Ported from ExprVisitor::VisitExpr_(const CallNode*). */
-  void VisitExpr_(const HCallObj* op) override {
+  H_LIBRARY_BODY void VisitExpr_(const HCallObj* op) override {
     if (op->op.as<HOpaqueExprObj>()) {
       this->VisitExpr(op->op);
     }
     HVisitArray(op->args, [this](const HExpr& e) { this->VisitExpr(e); });
   }
-#define H_DEFINE_BINOP_VISIT(OP)                 \
-  void VisitExpr_(const OP* op) override {       \
-    this->VisitExpr(op->a);                      \
-    this->VisitExpr(op->b);                      \
+#define H_DEFINE_BINOP_VISIT(OP)                          \
+  H_LIBRARY_BODY void VisitExpr_(const OP* op) override { \
+    this->VisitExpr(op->a);                               \
+    this->VisitExpr(op->b);                               \
   }
   H_DEFINE_BINOP_VISIT(HAddObj)
   H_DEFINE_BINOP_VISIT(HMulObj)
@@ -1302,8 +1335,10 @@ class HStmtVisitor : public HStmtFunctor<void(const HStmt&)> {
  protected:
   using HStmtFunctor::VisitStmt;
   virtual void VisitExpr(const HExpr&) {}
-  void VisitStmt_(const HEvaluateObj* op) override { this->VisitExpr(op->value); }
-  void VisitStmt_(const HSeqStmtObj* op) override {
+  H_LIBRARY_BODY void VisitStmt_(const HEvaluateObj* op) override {
+    this->VisitExpr(op->value);
+  }
+  H_LIBRARY_BODY void VisitStmt_(const HSeqStmtObj* op) override {
     HVisitArray(op->seq, [this](const HStmt& s) { this->VisitStmt(s); });
   }
 };
@@ -1329,7 +1364,7 @@ class HStmtExprVisitor : public HExprVisitor, public HStmtVisitor {
  *        result type is copied from `a`.
  */
 template <typename T>
-inline HPrimExpr HMakeBinOp(HPrimExpr a, HPrimExpr b) {
+H_LIBRARY_BODY inline HPrimExpr HMakeBinOp(HPrimExpr a, HPrimExpr b) {
   const HPrimTypeObj* a_ty = a.get()->ty.as<HPrimTypeObj>();
   const HPrimTypeObj* b_ty = b.get()->ty.as<HPrimTypeObj>();
   if (a_ty == nullptr || b_ty == nullptr || a_ty->dtype.code != b_ty->dtype.code ||
@@ -1351,10 +1386,10 @@ class HExprMutator : public HExprFunctor<HExpr(const HExpr&)> {
   using HExprFunctor::VisitExpr;
   /*! \brief Mirrors ExprMutator::VisitPrimExpr, including the cast back to the narrow type. */
   HPrimExpr VisitPrimExpr(const HPrimExpr& expr) { return VisitExpr(expr).as_or_throw<HPrimExpr>(); }
-  HExpr VisitExpr_(const HVarObj* op) override { return GetRef<HExpr>(op); }
-  HExpr VisitExpr_(const HIntImmObj* op) override { return GetRef<HExpr>(op); }
+  H_LIBRARY_BODY HExpr VisitExpr_(const HVarObj* op) override { return GetRef<HExpr>(op); }
+  H_LIBRARY_BODY HExpr VisitExpr_(const HIntImmObj* op) override { return GetRef<HExpr>(op); }
   /*! \brief Ported from ExprMutator::VisitExpr_(const CallNode*). */
-  HExpr VisitExpr_(const HCallObj* op) override {
+  H_LIBRARY_BODY HExpr VisitExpr_(const HCallObj* op) override {
     HExpr call_op = op->op;
     if (op->op.as<HOpaqueExprObj>()) {
       call_op = this->VisitExpr(op->op);
@@ -1371,7 +1406,7 @@ class HExprMutator : public HExprFunctor<HExpr(const HExpr&)> {
   // Mirrors DEFINE_BIOP_EXPR_MUTATE_: on a change the operator's own constructor rebuilds the
   // node, which re-reads and compares the operand types.
 #define H_DEFINE_BINOP_MUTATE(OP)                                    \
-  HExpr VisitExpr_(const OP* op) override {                          \
+  H_LIBRARY_BODY HExpr VisitExpr_(const OP* op) override {           \
     HPrimExpr a = this->VisitPrimExpr(op->a);                        \
     HPrimExpr b = this->VisitPrimExpr(op->b);                        \
     if (a.same_as(op->a) && b.same_as(op->b)) {                      \
@@ -1426,14 +1461,14 @@ class HStmtMutator : public HStmtFunctor<HStmt(const HStmt&)> {
   }
   virtual HExpr VisitExpr(const HExpr& e) { return e; }
   HPrimExpr VisitPrimExpr(const HPrimExpr& e) { return VisitExpr(e).as_or_throw<HPrimExpr>(); }
-  HStmt VisitStmt_(const HEvaluateObj* op) override {
+  H_LIBRARY_BODY HStmt VisitStmt_(const HEvaluateObj* op) override {
     HExpr value = this->VisitExpr(op->value);
     if (value.same_as(op->value)) return GetRef<HStmt>(op);
     ObjectPtr<HEvaluateObj> n = CopyOnWrite(op);
     n->value = std::move(value);
     return HStmt(n);
   }
-  HStmt VisitStmt_(const HSeqStmtObj* op) override {
+  H_LIBRARY_BODY HStmt VisitStmt_(const HSeqStmtObj* op) override {
     Array<HStmt> seq = MutateArray(op->seq, [this](const HStmt& s) { return this->VisitStmt(s); });
     if (seq.same_as(op->seq)) return GetRef<HStmt>(op);
     ObjectPtr<HSeqStmtObj> n = CopyOnWrite(op);
@@ -1537,13 +1572,13 @@ class HShippingApplyVisit : public HStmtExprVisitor {
  public:
   explicit HShippingApplyVisit(std::function<void(const ObjectRef&)> f) : f_(f) {}
 
-  void VisitExpr(const HExpr& node) final {
+  H_LIBRARY_BODY void VisitExpr(const HExpr& node) final {
     if (visited_.count(node.get()) != 0) return;
     visited_.insert(node.get());
     HExprVisitor::VisitExpr(node);
     f_(node);
   }
-  void VisitStmt(const HStmt& node) final {
+  H_LIBRARY_BODY void VisitStmt(const HStmt& node) final {
     if (visited_.count(node.get()) != 0) return;
     visited_.insert(node.get());
     HStmtVisitor::VisitStmt(node);
@@ -1580,7 +1615,7 @@ class HShippingSubstitute : public HStmtExprMutator {
   explicit HShippingSubstitute(std::function<Optional<HExpr>(const HVar&)> vmap)
       : vmap_(std::move(vmap)) {}
 
-  HExpr VisitExpr_(const HVarObj* op) final {
+  H_LIBRARY_BODY HExpr VisitExpr_(const HVarObj* op) final {
     HVar var = GetRef<HVar>(op);
     auto ret = vmap_(var);
     if (ret.has_value()) {

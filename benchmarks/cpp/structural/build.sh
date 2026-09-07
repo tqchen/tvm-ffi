@@ -23,6 +23,12 @@
 #   ./build.sh                       # mini-TIR only
 #   ./build.sh --tvm /path/to/tvm    # mini-TIR and real TVM
 #
+#   --inline-control additionally emits mini_tir_bench_inline, the same source built with
+#   -DMINI_TIR_INLINE_LIBRARY_BODIES so mini's visit/mutate bodies and node constructors
+#   inline into the arm.  apache/tvm's are in libtvm_compiler.so and cannot, so the control is
+#   the wrong shape on purpose: it exists to measure what that difference is worth, and is
+#   never the binary a fidelity run reports.  See mini_tir.h's H_LIBRARY_BODY.
+#
 # TWO STATES -- one real-TVM binary per tvm-ffi ref, for an interleaved A/B run:
 #
 #   ./build.sh --tvm /path/to/tvm \
@@ -62,12 +68,14 @@ JOBS="${JOBS:-$(nproc)}"
 TVM_ROOT=""
 TVM_BUILD=""
 STATES=()
+INLINE_CONTROL="no"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tvm) TVM_ROOT="$(cd "$2" && pwd)"; shift 2 ;;
     --tvm-build) TVM_BUILD="$(cd "$2" && pwd)"; shift 2 ;;
     --state) STATES+=("$2"); shift 2 ;;
+    --inline-control) INLINE_CONTROL="yes"; shift ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -217,6 +225,18 @@ ${CXX} ${FLAGS} \
   "${HERE}/mini_tir_bench.cc" \
   -L"${ffi_lib}" -ltvm_ffi -Wl,-rpath,"${ffi_lib}" \
   -o "${OUT}/mini_tir_bench"
+
+if [[ "${INLINE_CONTROL}" == "yes" ]]; then
+  echo "building mini-TIR inline-bodies control"
+  ${CXX} ${FLAGS} -DMINI_TIR_INLINE_LIBRARY_BODIES \
+    -I"${ffi_include}" -I"${FFI_ROOT}/3rdparty/dlpack/include" -I"${HERE}" \
+    "${common_defs[@]}" \
+    "-DTVM_FFI_BENCH_ENGINE_SHA=\"${ffi_sha}\"" \
+    -DTVM_FFI_BENCH_TVM_SHA="\"n/a (mini-TIR builds from tvm-ffi types alone)\"" \
+    "${HERE}/mini_tir_bench.cc" \
+    -L"${ffi_lib}" -ltvm_ffi -Wl,-rpath,"${ffi_lib}" \
+    -o "${OUT}/mini_tir_bench_inline"
+fi
 
 if [[ -n "${TVM_ROOT}" ]]; then
   tvm_sha="$(git -C "${TVM_ROOT}" rev-parse HEAD)"

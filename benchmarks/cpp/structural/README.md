@@ -117,8 +117,35 @@ Nothing in the TVM checkout is modified. The harness lives here and links TVM fr
 `build.sh` emits `mini_tir_bench` and `real_tvm_bench`. `report.py` takes any number of
 `--binary` arguments and renders one set of tables per binary.
 
+`build.sh --inline-control` emits one more, `mini_tir_bench_inline`: the same source with
+`-DMINI_TIR_INLINE_LIBRARY_BODIES`, so mini-TIR's visit/mutate bodies and node constructors
+inline into the arm the way apache/tvm's cannot. It is the wrong shape on purpose and is never
+the binary a fidelity run reports; it exists so
+[the compiled-shape term](#the-two-harnesses-and-what-may-differ-between-them) can be
+re-measured instead of taken on trust.
+
 **Wall time.** One `real_tvm_bench` process is about twenty seconds and `--runs 5` a couple of
 minutes. Pin with `--cpu`; leave the machine otherwise idle.
+
+**The quiet-machine gate is process presence, not load average, and `report.py` enforces it.**
+A run of this harness is one single-threaded process pinned to one core, so on a many-core
+machine a run in progress reads as load ~2 and ~98% idle — indistinguishable from an empty
+machine, and exactly the reading that invites a second run alongside it. Load average catches
+a parallel `cmake --build` and nothing else; it cannot see the thing that actually spoils a
+measurement. So `report.py` looks for other `report.py` and `*_bench` processes at both ends
+of the run, refuses to start when one is live, and stamps what it saw — both readings — into
+every provenance table as a `machine` row. `--allow-contention` records a deliberately
+contended run rather than bypassing the record.
+
+Two things that gate does not follow from, and that are easy to assume:
+
+- **Interleaving does not cover it.** A/B/A/B protects a delta against slow drift. It protects
+  neither absolutes nor anything at all against a competing pinned run, because that run
+  contends unevenly across arms — the allocating arms absorb most of it — so it moves cells
+  relative to each other rather than together. A contended run is not slow-but-usable.
+- **`--cpu` is core isolation, not workload isolation.** `taskset` grants a private core. It
+  never grants private L3 or private memory bandwidth, which is what the competing process
+  takes.
 
 ## Two-state runs
 
@@ -288,13 +315,29 @@ different era of traversal. An earlier pin had both built on the structural engi
 port has to follow whichever it is rather than assume: mini-TIR kept the engine-based reading
 for one revision too long and its `old` arms became a different algorithm from real TVM's.
 
-**One residual gap the port cannot close.** On the real side `*_functor` and `*_old` run inside
-`libtvm_compiler.so`, through a `NodeFunctor` table covering thirty-four `Expr` types, with
-every `VisitExpr_` body across a shared-library boundary. mini-TIR has no shared library and,
-by the reduced-node-set licence, a seven-type table. `walk_old` and `map_old` model the
-boundary with non-inlined entry points; the functor layer's whole class hierarchy would have to
-become a library to model it properly, which the harness does not do today. Read a
-`*_functor` fidelity delta with that in mind.
+**The functor layer's compiled shape is part of the port, not an accident of it.** apache/tvm
+declares `ExprVisitor`, `ExprMutator`, `StmtVisitor` and `StmtMutator` `TVM_DLL` and compiles
+every one of their `VisitExpr_` / `VisitStmt_` bodies — and the node constructors those bodies
+reach, `TVM_DEFINE_BINOP_CONSTRUCTOR` — into `libtvm_compiler.so`. An arm calls them across
+that boundary, so none inlines into the arm and none is visible to the optimizer that compiles
+it. mini-TIR is one translation unit, so at `-O3` every one of them inlines unless told
+otherwise. `mini_tir.h` marks them `H_LIBRARY_BODY`, the same device
+`ShippingPostOrderVisit` and `ShippingSubstitute` already use for the two entry points.
+
+This is a real term, not a rounding error: built with the bodies inlinable, mini-TIR's
+`map_functor` and `map_old` ran 25–32% under real TVM's on every Expr fixture — enough to
+reverse the headline, since real reads `subst` against `old` at −26% to −51% on those rows and
+inlined mini read +4% to −24%. `build.sh --inline-control` emits that binary as
+`mini_tir_bench_inline` so the size of the term stays measurable rather than remembered.
+
+Table *size* is not part of it. The earlier reading — that the gap came from real TVM's
+thirty-four-type `NodeFunctor` table against mini-TIR's seven, or from the PLT hop — is
+**retracted**. `walk_functor` crosses exactly the same table and the same library boundary
+once per node and agrees to −6.1%/+3.8%; a table or a PLT hop costing ~12 ns/node would have
+shown there too. What separates the walk arms from the map arms is that the walk arms' cost is
+dominated by `IRApplyVisit`'s `visited_` set, which is harness-local on both sides, while the
+map arms' cost is the rebuild bodies, which are not. The reduced node set remains the one
+permitted difference.
 
 ### The ownership axis
 
@@ -584,7 +627,7 @@ drifted from what the format was built to say — fix that first.
 | `real_tvm_bench.cc` | real-TVM fixtures, arms, checks, `main` |
 | `build.sh` | builds each harness, single-state or one binary per engine state, stamping provenance in |
 | `port_check.sh` | diffs the ported hooks against the TVM revision they came from |
-| `report.py` | runs each binary N pinned processes, medians the process medians, renders the tables; `--two-state` interleaves A/B/A/B and renders the comparison; `--fidelity` interleaves the two harnesses and checks their engine and node layouts before rendering |
+| `report.py` | runs each binary N pinned processes, medians the process medians, renders the tables; `--two-state` interleaves A/B/A/B and renders the comparison; `--fidelity` interleaves the two harnesses and checks their engine and node layouts before rendering; refuses to start beside another benchmark process and stamps the machine's state at both ends into the provenance |
 
 The two hook headers are deliberately **not** factored against each other. Their bodies read
 almost identically and are written out twice on purpose: a reader can follow either without
