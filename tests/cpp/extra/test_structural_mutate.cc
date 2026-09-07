@@ -44,8 +44,6 @@ using StringMap = Map<String, Any>;
 // Unchanged result protocol.
 // ---------------------------------------------------------------------------
 
-Expected<Any> Increment(int64_t value) { return Any(value + 1); }
-
 Expected<UnchangedOr<String>> ReturnTypedUnchangedExpected() { return Unchanged(); }
 
 TEST(UnchangedOr, ErrorRoundTrip) {
@@ -79,6 +77,12 @@ TEST(UnchangedOr, ErrorRoundTrip) {
   ASSERT_TRUE(unexpected_error.is_err());
   EXPECT_EQ(unexpected_error.error().kind(), "IndexError");
   EXPECT_EQ(unexpected_error.error().message(), "unexpected failure");
+
+  Expected<UnchangedOr<Any>> unexpected_result =
+      Unexpected(Error("RuntimeError", "unchanged-or unexpected failure", ""));
+  ASSERT_TRUE(unexpected_result.is_err());
+  EXPECT_EQ(unexpected_result.error().kind(), "RuntimeError");
+  EXPECT_EQ(unexpected_result.error().message(), "unchanged-or unexpected failure");
 }
 
 TEST(StructuralMutate, UnchangedProtocolResolvesAtThrowingEntryPoints) {
@@ -115,8 +119,10 @@ TEST(StructuralMutate, UnchangedProtocolResolvesAtThrowingEntryPoints) {
   ASSERT_TRUE(typed_unique.is_ok());
   EXPECT_TRUE(std::move(typed_unique).value().IsUnchanged());
   EXPECT_TRUE(StructuralMutateExpected(Any(value), never_matches).value().same_as(value));
-  EXPECT_TRUE(
-      StructuralMapExpected<WalkOrder::kPostOrder>(Any(value), Increment).value().same_as(value));
+  EXPECT_TRUE(StructuralMapExpected<WalkOrder::kPostOrder>(
+                  Any(value), [](int64_t item) -> Expected<Any> { return Any(item + 1); })
+                  .value()
+                  .same_as(value));
 
   auto replace_int_with_string = [](int64_t, StructuralMutatorObj*) -> Expected<Any> {
     return String("wrong replacement uses heap storage");
@@ -181,13 +187,12 @@ class TNestedMapHookObj : public Object {
 
   static TVMFFIAny MaybeInplaceMutate(StructuralMutatorObj*, AnyView value) noexcept {
     auto* self = value.cast<TNestedMapHookObj*>();
-    Expected<Any> mapped = StructuralMapExpected<WalkOrder::kPostOrder>(
-        Any(std::move(self->field)), [](int64_t item) -> Expected<Any> { return Any(item + 1); });
-    if (TVM_FFI_PREDICT_FALSE(mapped.is_err())) {
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(mapped));
-    }
-    self->field = details::AnyUnsafe::MoveFromAnyAfterCheck<AnyArray>(
-        std::move(details::ExpectedUnsafe::GetData(mapped)));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
+        Any, mapped,
+        StructuralMapExpected<WalkOrder::kPostOrder>(
+            Any(std::move(self->field)),
+            [](int64_t item) -> Expected<Any> { return Any(item + 1); }));
+    self->field = mapped.cast<AnyArray>();
     return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
   }
 
@@ -221,6 +226,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   TMutatePairObj::RegisterReflection();
   TNestedMapHookObj::RegisterReflection();
 }
+
+Expected<Any> Increment(int64_t value) { return Any(value + 1); }
 
 struct MutateCount {
   int value = 0;

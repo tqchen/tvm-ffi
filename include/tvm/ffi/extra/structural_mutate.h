@@ -326,6 +326,9 @@ namespace details {
 // Out of line so its strings and Error construction stay out of the hot path of whatever hook
 // body TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN expands into. Same reason as
 // BadStructuralMutateHookError.
+// Takes nothing on purpose. Naming the offending type in the message would keep the result live
+// across the predicted-not-taken guard in the hot path. The declared type is already present in
+// the source line to which the diagnostic points.
 TVM_FFI_COLD_CODE inline Unexpected<Error> SMutateDeclaredTypeError() noexcept {
   return Unexpected(
       Error("TypeError", "structural mutate result does not match the declared type", ""));
@@ -490,6 +493,20 @@ class StructuralMutatorObj : public Object {
   }
 
   /*!
+   * \brief Raw form of \ref VarRemapGetExpected, for the descent's own lookup.
+   * \param var The borrowed variable identity to look up.
+   * \return Raw ``TVMFFIAny`` holding the stored replacement, FFI None on a miss, or an Error.
+   *
+   * The environment stores values, not protocol state. On a hit the stored value is already the
+   * answer, so the descent forwards it: the caller reads one type index to tell a miss (descend)
+   * from everything else (this is the result), and moves. A miss leaves a None ``TVMFFIAny``,
+   * which owns nothing, so the miss path constructs and destroys no ``Expected<Any>`` at all.
+   */
+  TVM_FFI_INLINE TVMFFIAny VarRemapGetRaw(AnyView var) noexcept {
+    return (*vtable_->var_remap_get)(this, var);
+  }
+
+  /*!
    * \brief Record the replacement for a variable identity.
    *
    * \param var The borrowed variable identity to bind.
@@ -616,29 +633,26 @@ class StructuralMutatorObj : public Object {
     }
     // No hook at all. A POD carries through unchanged; an object walks its reflected fields.
     if (value.type_index() < TypeIndex::kTVMFFIStaticObjectBegin) {
-      Any unchanged = Unchanged();
-      return details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(unchanged));
+      return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
     }
     // A FreeVar or DAG node maps once and every later occurrence reuses that result, so the
     // reflected walk runs under an identity remap.
     const bool remappable = IsRemappableIdentity(value.type_index());
     if (remappable) {
-      Expected<Any> mapped = VarRemapGetExpected(value);
-      if (TVM_FFI_PREDICT_FALSE(mapped.is_err()) ||
-          details::ExpectedUnsafe::GetData(mapped).type_index() != TypeIndex::kTVMFFINone) {
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(mapped));
-      }
+      // Only None means "no entry, descend". A hit is the answer and so is an Error, and both
+      // are already in the right shape, so they are forwarded rather than unwrapped and rebuilt.
+      TVMFFIAny mapped = VarRemapGetRaw(value);
+      if (mapped.type_index != TypeIndex::kTVMFFINone) return mapped;
     }
     Expected<Any> result = details::MutateReflectedFieldsExpected(this, value);
     if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
       return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
     }
     if (remappable) {
-      const Any& result_data = details::ExpectedUnsafe::GetData(result);
-      // Resolve the marker to a borrowed view; an owning value would cost a refcount here.
-      AnyView mapped_value =
-          result_data.type_index() == TypeIndex::kTVMFFIUnchanged ? value : AnyView(result_data);
-      Expected<void> set_result = VarRemapSetExpected(value, mapped_value);
+      const Any& result_value = details::ExpectedUnsafe::GetData(result);
+      AnyView value_to_store =
+          result_value.type_index() == TypeIndex::kTVMFFIUnchanged ? value : AnyView(result_value);
+      Expected<void> set_result = VarRemapSetExpected(value, value_to_store);
       if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
         return details::ExpectedUnsafe::MoveToTVMFFIAny(
             Expected<Any>(Unexpected(std::move(set_result).error())));
@@ -772,6 +786,10 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
             return true;
           }
 
+          // The reflected walk is a descent like any other, so it uses the descent protocol:
+          // an unchanged field says so, and this loop skips it without the owning copy of
+          // `field_value` that a resolving entry point would have had to build to say the
+          // same thing. That copy was paid on every unchanged field of every walked node.
           Expected<UnchangedOr<Any>> mutated_field = [&]() -> Expected<UnchangedOr<Any>> {
             if (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive) {
               return mutator->WithDefRegionKind(kTVMFFIDefRegionKindNonRecursive, [&]() {
@@ -785,15 +803,18 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
               return mutator->MutateExpected(field_value);
             }
           }();
-          if (TVM_FFI_PREDICT_FALSE(mutated_field.is_err())) {
-            result = Unexpected(std::move(mutated_field).error());
+          const Any& mutated_field_data = details::ExpectedUnsafe::GetData(mutated_field);
+          if (TVM_FFI_PREDICT_FALSE(mutated_field_data.type_index() == TypeIndex::kTVMFFIError)) {
+            result = Unexpected(mutated_field_data.cast<Error>());
             return true;
           }
-          const Any& new_field = details::ExpectedUnsafe::GetData(mutated_field);
-          if (new_field.type_index() == TypeIndex::kTVMFFIUnchanged ||
-              new_field.same_as(field_value)) {
+          // Unchanged first: it is the common case, and it is one type-index test where the
+          // resolved form ran a full same_as against a value it had just been handed back.
+          if (mutated_field_data.type_index() == TypeIndex::kTVMFFIUnchanged ||
+              field_value.same_as(mutated_field_data)) {
             return false;
           }
+          const Any& new_field = mutated_field_data;
 
           if (TVM_FFI_PREDICT_FALSE(field_info->setter == nullptr)) {
             result = Unexpected(Error(
@@ -1155,8 +1176,7 @@ class StructuralMapEngine : public Parent {
   TVM_FFI_INLINE Expected<Any> InvokeTypedCallbackLink(Callback& callback, Value&& value,
                                                        std::index_sequence<Is...>) noexcept {
     using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
-    using RetType = typename FuncInfo::RetType;
-    static_assert(std::is_convertible_v<RetType, Expected<Any>>,
+    static_assert(std::is_convertible_v<typename FuncInfo::RetType, Expected<Any>>,
                   "StructuralMap callbacks must return a replacement value, Error, Unexpected, "
                   "unchanged marker, or Expected<Any>");
     static_assert(
@@ -1167,16 +1187,12 @@ class StructuralMapEngine : public Parent {
       static_assert(std::is_same_v<decltype(this->StateTuple()), StateTupleType>,
                     "Parent::StateTuple() must return Parent::StateTupleType by value");
       StateTupleType states = this->StateTuple();
-      auto invoke_callback = [&]() -> RetType {
-        if constexpr (FuncInfo::num_args == 1 + sizeof...(Is)) {
-          return callback(std::forward<Value>(value), std::get<Is>(states)...);
-        } else {
-          return callback(std::forward<Value>(value), std::get<Is>(states)...,
-                          this->def_region_kind());
-        }
-      };
-
-      return invoke_callback();
+      if constexpr (FuncInfo::num_args == 1 + sizeof...(Is)) {
+        return callback(std::forward<Value>(value), std::get<Is>(states)...);
+      } else {
+        return callback(std::forward<Value>(value), std::get<Is>(states)...,
+                        this->def_region_kind());
+      }
     } catch (const Error& err) {
       return Unexpected(err);
     }
@@ -1243,13 +1259,12 @@ class StructuralMapEngine : public Parent {
     // A FreeVar or DAG node maps once and every later occurrence reuses that result, so if
     // this node already has a cached remap entry, return it instead of mutating it again.
     if (remappable) {
-      Expected<Any> mapped = this->VarRemapGetExpected(value);
-      if (mapped.is_err()) {
-        *out = std::move(mapped);
-        return true;
-      }
-      if (ExpectedUnsafe::GetData(mapped).type_index() != TypeIndex::kTVMFFINone) {
-        *out = std::move(mapped);
+      // Only None means "no entry, descend". A hit is the answer and so is an Error, and both
+      // are already in the right shape, so they move straight through: one type-index test and
+      // a move, with no unwrap, no re-wrap, no compare against the input and no marker.
+      TVMFFIAny mapped = this->VarRemapGetRaw(value);
+      if (mapped.type_index != TypeIndex::kTVMFFINone) {
+        *out = ExpectedUnsafe::MoveFromTVMFFIAny<Any>(mapped);
         return true;
       }
     }
@@ -1273,33 +1288,31 @@ class StructuralMapEngine : public Parent {
         *out = std::move(callback_result);
         return true;
       }
-      Any mapped_storage = std::move(ExpectedUnsafe::GetData(callback_result));
-      const bool callback_unchanged = mapped_storage.type_index() == TypeIndex::kTVMFFIUnchanged;
-      // Resolve the marker to a borrowed view; an owning value would cost a refcount here.
-      const AnyView mapped_value_view = callback_unchanged ? value : AnyView(mapped_storage);
+      // Own the callback's result: it is the only reference from here on, and moving it out
+      // beats holding a reference into an Expected that stays alive across the descent below.
+      Any mapped_value = ExpectedUnsafe::GetData(callback_result);
       // Each descent names the node it actually ran on in the error context.
       *out = [&]() -> Expected<Any> {
         if constexpr (kMaybeInplace) {
           // A pre-order result can be mutated in place if unchanged or uniquely owned.
-          const TVMFFIAny mapped_data = mapped_value_view.CopyToTVMFFIAny();
+          const TVMFFIAny* mapped_data = AnyUnsafe::TVMFFIAnyPtrFromAny(mapped_value);
           const TVMFFIAny input_data = value.CopyToTVMFFIAny();
-          if (mapped_data.type_index == input_data.type_index &&
-              mapped_data.zero_padding == input_data.zero_padding &&
-              mapped_data.v_int64 == input_data.v_int64) {
+          if (mapped_data->type_index == input_data.type_index &&
+              mapped_data->zero_padding == input_data.zero_padding &&
+              mapped_data->v_int64 == input_data.v_int64) {
             return this->DefaultMaybeInplaceMutateExpected(value);
           }
-          const Object* mapped_obj = mapped_value_view.as<Object>();
+          const Object* mapped_obj = mapped_value.as<Object>();
           bool can_inplace = mapped_obj != nullptr && mapped_obj->unique();
-          return can_inplace ? this->DefaultMaybeInplaceMutateExpected(mapped_value_view)
-                             : this->DefaultMutateExpected(mapped_value_view);
+          return can_inplace ? this->DefaultMaybeInplaceMutateExpected(mapped_value)
+                             : this->DefaultMutateExpected(mapped_value);
         } else {
-          return this->DefaultMutateExpected(mapped_value_view);
+          return this->DefaultMutateExpected(mapped_value);
         }
       }();
       if (TVM_FFI_PREDICT_FALSE(out->is_err())) return true;
-      if (!callback_unchanged &&
-          ExpectedUnsafe::GetData(*out).type_index() == TypeIndex::kTVMFFIUnchanged) {
-        *out = std::move(mapped_storage);
+      if (ExpectedUnsafe::GetData(*out).type_index() == TypeIndex::kTVMFFIUnchanged) {
+        *out = std::move(mapped_value);
       }
     } else {
       // Post-order: children are mapped first and the callback sees the rebuilt node, so it
@@ -1310,24 +1323,25 @@ class StructuralMapEngine : public Parent {
         *out = std::move(descended);
         return true;
       }
-      // Held by reference, not moved out: the error path below names this node, so it has to
-      // survive the callback. Only a storage-enabled TSub could gain from a move, and that is
-      // exactly the case whose move would empty it.
+      // Two branches, and the unchanged one constructs nothing. The original is already in
+      // hand as `value`, so a borrowed view of it is everything the callback needs; an owning
+      // `Any(value)` here is a construction and a refcount on every unchanged node that reaches
+      // a callback -- the per-node cost this protocol exists to remove, paid back at exactly the
+      // point it was saved.
       const Any& descended_value = ExpectedUnsafe::GetData(descended);
-      // Resolve the marker to a borrowed view; an owning value would cost a refcount here.
-      const AnyView mapped_value = descended_value.type_index() == TypeIndex::kTVMFFIUnchanged
-                                       ? value
-                                       : AnyView(descended_value);
+      const AnyView mapped_view = descended_value.type_index() == TypeIndex::kTVMFFIUnchanged
+                                      ? value
+                                      : AnyView(descended_value);
       *out = [&]() -> Expected<Any> {
         if constexpr (std::is_same_v<TSub, AnyView>) {
-          return InvokeTypedCallbackLink(callback, mapped_value, StateIndices{});
+          return InvokeTypedCallbackLink(callback, mapped_view, StateIndices{});
         } else if constexpr (std::is_same_v<TSub, Any>) {
-          return InvokeTypedCallbackLink(callback, Any(mapped_value), StateIndices{});
+          return InvokeTypedCallbackLink(callback, Any(mapped_view), StateIndices{});
         } else {
           // Re-converted rather than reusing the match: the callback is invoked on the node
           // descent handed back, and must only see the type it asked for. Default mutation is
           // required to preserve the type, so failing here means some hook broke that.
-          std::optional<TSub> descended_sub = mapped_value.template as<TSub>();
+          std::optional<TSub> descended_sub = mapped_view.template as<TSub>();
           if (TVM_FFI_PREDICT_FALSE(!descended_sub.has_value())) {
             return this->SMutateDescentTypeError();
           }
@@ -1335,21 +1349,30 @@ class StructuralMapEngine : public Parent {
         }
       }();
       if (TVM_FFI_PREDICT_FALSE(out->is_err())) {
-        this->UpdateVisitErrorContext(*out, mapped_value);
+        this->UpdateVisitErrorContext(*out, mapped_view);
         return true;
-      }
-      if (ExpectedUnsafe::GetData(*out).type_index() == TypeIndex::kTVMFFIUnchanged) {
-        *out = std::move(descended);
       }
     }
 
-    // Bind this node's identity to its final result, so every later occurrence reuses it.
+    // Unchanged is the dominant case in the workload this protocol exists for, so it is the
+    // first branch and it does nothing beyond the binding. Testing for the marker already
+    // excludes an error, which has its own type index -- an `is_ok()` in front of it is a second
+    // comparison that cannot change the answer, and every path into this tail has already
+    // returned on error.
+    if (TVM_FFI_PREDICT_TRUE(ExpectedUnsafe::GetData(*out).type_index() ==
+                             TypeIndex::kTVMFFIUnchanged)) {
+      // Bind this node's identity to its final result, so every later occurrence reuses it.
+      if (remappable) {
+        Expected<void> set_result = this->VarRemapSetExpected(value, value);
+        if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
+          *out = Unexpected(std::move(set_result).error());
+        }
+      }
+      return true;
+    }
     if (remappable) {
-      const Any& out_data = ExpectedUnsafe::GetData(*out);
-      // Resolve the marker to a borrowed view; an owning value would cost a refcount here.
-      AnyView mapped_value =
-          out_data.type_index() == TypeIndex::kTVMFFIUnchanged ? value : AnyView(out_data);
-      Expected<void> set_result = this->VarRemapSetExpected(value, mapped_value);
+      Expected<void> set_result =
+          this->VarRemapSetExpected(value, AnyView(ExpectedUnsafe::GetData(*out)));
       if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
         *out = Unexpected(std::move(set_result).error());
       }
@@ -1514,13 +1537,12 @@ class StructuralMapDynEngine : public Parent {
     // A FreeVar or DAG node maps once and every later occurrence reuses that result.
     const bool remappable = this->IsRemappableIdentity(value.type_index());
     if (remappable) {
-      Expected<Any> mapped = this->VarRemapGetExpected(value);
-      if (mapped.is_err()) {
-        *out = std::move(mapped);
-        return true;
-      }
-      if (ExpectedUnsafe::GetData(mapped).type_index() != TypeIndex::kTVMFFINone) {
-        *out = std::move(mapped);
+      // Only None means "no entry, descend". A hit is the answer and so is an Error, and both
+      // are already in the right shape, so they move straight through: one type-index test and
+      // a move, with no unwrap, no re-wrap, no compare against the input and no marker.
+      TVMFFIAny mapped = this->VarRemapGetRaw(value);
+      if (mapped.type_index != TypeIndex::kTVMFFINone) {
+        *out = ExpectedUnsafe::MoveFromTVMFFIAny<Any>(mapped);
         return true;
       }
     }
@@ -1535,31 +1557,27 @@ class StructuralMapDynEngine : public Parent {
         *out = std::move(callback_result);
         return true;
       }
-      Any mapped_storage = std::move(ExpectedUnsafe::GetData(callback_result));
-      const bool callback_unchanged = mapped_storage.type_index() == TypeIndex::kTVMFFIUnchanged;
-      // Resolve the marker to a borrowed view; an owning value would cost a refcount here.
-      const AnyView mapped_value_view = callback_unchanged ? value : AnyView(mapped_storage);
+      Any mapped_value = ExpectedUnsafe::GetData(callback_result);
       *out = [&]() -> Expected<Any> {
         if constexpr (kMaybeInplace) {
-          const TVMFFIAny mapped_data = mapped_value_view.CopyToTVMFFIAny();
+          const TVMFFIAny* mapped_data = AnyUnsafe::TVMFFIAnyPtrFromAny(mapped_value);
           const TVMFFIAny input_data = value.CopyToTVMFFIAny();
-          if (mapped_data.type_index == input_data.type_index &&
-              mapped_data.zero_padding == input_data.zero_padding &&
-              mapped_data.v_int64 == input_data.v_int64) {
+          if (mapped_data->type_index == input_data.type_index &&
+              mapped_data->zero_padding == input_data.zero_padding &&
+              mapped_data->v_int64 == input_data.v_int64) {
             return this->DefaultMaybeInplaceMutateExpected(value);
           }
-          const Object* mapped_obj = mapped_value_view.as<Object>();
+          const Object* mapped_obj = mapped_value.as<Object>();
           bool can_inplace = mapped_obj != nullptr && mapped_obj->unique();
-          return can_inplace ? this->DefaultMaybeInplaceMutateExpected(mapped_value_view)
-                             : this->DefaultMutateExpected(mapped_value_view);
+          return can_inplace ? this->DefaultMaybeInplaceMutateExpected(mapped_value)
+                             : this->DefaultMutateExpected(mapped_value);
         } else {
-          return this->DefaultMutateExpected(mapped_value_view);
+          return this->DefaultMutateExpected(mapped_value);
         }
       }();
       if (TVM_FFI_PREDICT_FALSE(out->is_err())) return true;
-      if (!callback_unchanged &&
-          ExpectedUnsafe::GetData(*out).type_index() == TypeIndex::kTVMFFIUnchanged) {
-        *out = std::move(mapped_storage);
+      if (ExpectedUnsafe::GetData(*out).type_index() == TypeIndex::kTVMFFIUnchanged) {
+        *out = std::move(mapped_value);
       }
     } else {
       // Post-order: children are mapped first, so the callback sees the rebuilt node.
@@ -1569,39 +1587,48 @@ class StructuralMapDynEngine : public Parent {
         *out = std::move(descended);
         return true;
       }
+      // See the typed engine: a borrowed view of the original, never an owning copy of it.
       const Any& descended_value = ExpectedUnsafe::GetData(descended);
-      // Resolve the marker to a borrowed view; an owning value would cost a refcount here.
-      const AnyView mapped_value = descended_value.type_index() == TypeIndex::kTVMFFIUnchanged
-                                       ? value
-                                       : AnyView(descended_value);
+      const AnyView mapped_view = descended_value.type_index() == TypeIndex::kTVMFFIUnchanged
+                                      ? value
+                                      : AnyView(descended_value);
       // Selection used the input node. Recheck the descended node against that same registered
       // target before invoking the saved link.
       if (TVM_FFI_PREDICT_FALSE(
-              !details::RuntimeTypeIndexMatch(mapped_value.type_index(), link_type_index))) {
+              !details::RuntimeTypeIndexMatch(mapped_view.type_index(), link_type_index))) {
         *out = this->SMutateDescentTypeError();
-        this->UpdateVisitErrorContext(*out, mapped_value);
+        this->UpdateVisitErrorContext(*out, mapped_view);
         return true;
       }
       // WithDefRegionKind restores its state through RAII, so this late read is equivalent to
       // the typed engine's invocation-time read even after recursive descent.
-      *out = InvokeLink(*matched, with_kind, mapped_value, this->def_region_kind());
+      *out = InvokeLink(*matched, with_kind, mapped_view, this->def_region_kind());
       if (TVM_FFI_PREDICT_FALSE(out->is_err())) {
-        this->UpdateVisitErrorContext(*out, mapped_value);
+        this->UpdateVisitErrorContext(*out, mapped_view);
         return true;
-      }
-      if (ExpectedUnsafe::GetData(*out).type_index() == TypeIndex::kTVMFFIUnchanged) {
-        *out = std::move(descended);
       }
     }
 
-    // --- identity remap, exit half ------------------------------------------
-    // Bind this node's identity to its final result for later occurrences.
+    // Unchanged is the dominant case in the workload this protocol exists for, so it is the
+    // first branch and it does nothing beyond the binding. Testing for the marker already
+    // excludes an error, which has its own type index -- an `is_ok()` in front of it is a second
+    // comparison that cannot change the answer, and every path into this tail has already
+    // returned on error.
+    if (TVM_FFI_PREDICT_TRUE(ExpectedUnsafe::GetData(*out).type_index() ==
+                             TypeIndex::kTVMFFIUnchanged)) {
+      // --- identity remap, exit half ----------------------------------------
+      // Bind this node's identity to its final result for later occurrences.
+      if (remappable) {
+        Expected<void> set_result = this->VarRemapSetExpected(value, value);
+        if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
+          *out = Unexpected(std::move(set_result).error());
+        }
+      }
+      return true;
+    }
     if (remappable) {
-      const Any& out_data = ExpectedUnsafe::GetData(*out);
-      // Resolve the marker to a borrowed view; an owning value would cost a refcount here.
-      AnyView mapped_value =
-          out_data.type_index() == TypeIndex::kTVMFFIUnchanged ? value : AnyView(out_data);
-      Expected<void> set_result = this->VarRemapSetExpected(value, mapped_value);
+      Expected<void> set_result =
+          this->VarRemapSetExpected(value, AnyView(ExpectedUnsafe::GetData(*out)));
       if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
         *out = Unexpected(std::move(set_result).error());
       }
