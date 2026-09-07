@@ -50,6 +50,8 @@ namespace tvm {
 namespace ffi {
 
 class StructuralMutatorObj;
+template <typename T>
+class UnchangedOr;
 
 /*!
  * \brief ABI callback type for structural mutation.
@@ -232,6 +234,303 @@ static_assert(std::is_trivially_move_constructible_v<MaybeUnchanged<Any>> ==
               std::is_trivially_move_constructible_v<Expected<Any>>);
 static_assert(std::is_nothrow_move_constructible_v<MaybeUnchanged<Any>> ==
               std::is_nothrow_move_constructible_v<Expected<Any>>);
+
+namespace details {
+struct UnchangedOrUnsafe;
+}  // namespace details
+
+
+/*! \brief Tag for a mutation result that produced no new value. */
+struct Unchanged {
+  template <typename T>
+  TVM_FFI_INLINE operator Expected<UnchangedOr<T>>() const noexcept {
+    return Expected<UnchangedOr<T>>(UnchangedOr<T>(*this));
+  }
+};
+
+/*!
+ * \brief A structural-mutation result containing a replacement or no new value.
+ *
+ * \tparam T The replacement value type.
+ */
+template <typename T>
+class UnchangedOr {
+ public:
+  static_assert(!std::is_base_of_v<Error, std::remove_cv_t<T>>,
+                "UnchangedOr<Error> is not supported");
+
+  /*!
+   * \brief Construct an unchanged result from its tag.
+   * \param unchanged The unchanged tag.
+   *
+   * The marker needs a reserved type index because every ordinary index is a legal mutation
+   * result. In particular, ``kTVMFFINone`` is a valid replacement and cannot double as the marker.
+   */
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE UnchangedOr(Unchanged unchanged) noexcept {
+    TVMFFIAny raw;
+    raw.type_index = TypeIndex::kTVMFFIUnchanged;
+    // invariance: always set the union padding part to 0
+    raw.zero_padding = 0;
+    raw.v_int64 = 0;
+    data_ = details::AnyUnsafe::MoveTVMFFIAnyToAny(&raw);
+  }
+
+  /*!
+   * \brief Construct a changed result from a replacement value.
+   * \tparam TT The replacement source type.
+   * \param value The replacement value.
+   */
+  template <typename TT,
+            typename = std::enable_if_t<!std::is_same_v<std::decay_t<TT>, UnchangedOr> &&
+                                        std::is_convertible_v<TT, T>>>
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE UnchangedOr(TT&& value) : data_(Any(T(std::forward<TT>(value)))) {}
+
+  /*!
+   * \brief Construct a changed ``UnchangedOr<Any>`` from a borrowed value.
+   * \tparam U The replacement type, constrained to ``Any``.
+   * \param value The borrowed replacement value.
+   */
+  template <typename U = T,
+            typename = std::enable_if_t<std::is_same_v<T, Any> && std::is_same_v<U, T>>>
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE UnchangedOr(AnyView value) : data_(Any(value)) {}
+
+  /*!
+   * \brief Whether this result asks the caller to preserve the original value.
+   * \return Whether the result is unchanged.
+   */
+  TVM_FFI_INLINE bool IsUnchanged() const noexcept {
+    return data_.type_index() == TypeIndex::kTVMFFIUnchanged;
+  }
+
+  /*!
+   * \brief Whether this result is unchanged or contains the original object identity.
+   * \param original The original value.
+   * \return Whether the original identity may be reused.
+   */
+  TVM_FFI_INLINE bool UnchangedOrSameAs(const T& original) const noexcept {
+    return IsUnchanged() || data_.same_as(original);
+  }
+
+  /*!
+   * \brief Move the replacement, or move \p original when unchanged.
+   * \param original The owned original value.
+   * \return The replacement or original value.
+   */
+  TVM_FFI_INLINE T ValueOrUnchanged(T& original) && {
+    return IsUnchanged() ? std::move(original)
+                         : details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
+  }
+
+  /*!
+   * \brief Move the replacement, or move \p original when unchanged.
+   * \param original The owned original value.
+   * \return The replacement or original value.
+   */
+  TVM_FFI_INLINE T ValueOrUnchanged(T&& original) && {
+    return IsUnchanged() ? std::move(original)
+                         : details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
+  }
+
+  /*!
+   * \brief Move the replacement, or copy \p original when unchanged.
+   * \param original The borrowed original value.
+   * \return The replacement or original value.
+   */
+  TVM_FFI_INLINE T ValueOrUnchanged(const T& original) && {
+    return IsUnchanged() ? original
+                         : details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
+  }
+
+  /*!
+   * \brief Copy the replacement, or copy \p original when unchanged.
+   * \param original The borrowed original value.
+   * \return The replacement or original value.
+   */
+  TVM_FFI_INLINE T ValueOrUnchanged(const T& original) const& {
+    return IsUnchanged() ? original : details::AnyUnsafe::CopyFromAnyViewAfterCheck<T>(data_);
+  }
+
+  /*!
+   * \brief Move the replacement, or materialize \p original when unchanged.
+   * \tparam U The replacement type, constrained to ``Any``.
+   * \param original The borrowed original value.
+   * \return The replacement or original value.
+   */
+  template <typename U = T,
+            typename = std::enable_if_t<std::is_same_v<T, Any> && std::is_same_v<U, T>>>
+  TVM_FFI_INLINE Any ValueOrUnchanged(AnyView original) && {
+    return IsUnchanged() ? Any(original)
+                         : details::AnyUnsafe::MoveFromAnyAfterCheck<Any>(std::move(data_));
+  }
+
+  /*!
+   * \brief Copy the replacement, or materialize \p original when unchanged.
+   * \tparam U The replacement type, constrained to ``Any``.
+   * \param original The borrowed original value.
+   * \return The replacement or original value.
+   */
+  template <typename U = T,
+            typename = std::enable_if_t<std::is_same_v<T, Any> && std::is_same_v<U, T>>>
+  TVM_FFI_INLINE Any ValueOrUnchanged(AnyView original) const& {
+    return IsUnchanged() ? Any(original)
+                         : details::AnyUnsafe::CopyFromAnyViewAfterCheck<Any>(data_);
+  }
+
+  /*!
+   * \brief Copy the known-changed replacement without checking its state.
+   * \return The replacement value.
+   * \pre The result is not unchanged.
+   */
+  TVM_FFI_INLINE T ValueUnchecked() const& {
+    return details::AnyUnsafe::CopyFromAnyViewAfterCheck<T>(data_);
+  }
+
+  /*!
+   * \brief Move the known-changed replacement without checking its state.
+   * \return The replacement value.
+   * \pre The result is not unchanged.
+   */
+  TVM_FFI_INLINE T ValueUnchecked() && {
+    return details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
+  }
+
+  /*!
+   * \brief Strictly reinterpret this result as ``UnchangedOr<U>``.
+   * \tparam U The target replacement type.
+   * \return The converted result, or ``std::nullopt`` on a strict type mismatch.
+   */
+  template <typename U>
+  TVM_FFI_INLINE std::optional<UnchangedOr<U>> as() const& {
+    const TVMFFIAny* raw = details::AnyUnsafe::TVMFFIAnyPtrFromAny(data_);
+    if constexpr (!type_subsumes_v<U, T>) {
+      if (!TypeTraits<UnchangedOr<U>>::CheckAnyStrict(raw)) return std::nullopt;
+    }
+    Any copied = data_;
+    TVMFFIAny copy = details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(copied));
+    return UnchangedOr<U>(&copy);
+  }
+
+  /*!
+   * \brief Strictly reinterpret this result as ``UnchangedOr<U>`` by move.
+   * \tparam U The target replacement type.
+   * \return The converted result, or ``std::nullopt`` on a strict type mismatch.
+   */
+  template <typename U>
+  TVM_FFI_INLINE std::optional<UnchangedOr<U>> as() && {
+    const TVMFFIAny* raw = details::AnyUnsafe::TVMFFIAnyPtrFromAny(data_);
+    if constexpr (!type_subsumes_v<U, T>) {
+      if (!TypeTraits<UnchangedOr<U>>::CheckAnyStrict(raw)) return std::nullopt;
+    }
+    TVMFFIAny moved = details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(data_));
+    return UnchangedOr<U>(&moved);
+  }
+
+  /*!
+   * \brief Strictly reinterpret this result as ``UnchangedOr<U>`` or throw.
+   * \tparam U The target replacement type.
+   * \return The converted result.
+   */
+  template <typename U>
+  TVM_FFI_INLINE UnchangedOr<U> as_or_throw() const& {
+    std::optional<UnchangedOr<U>> result = this->template as<U>();
+    if (TVM_FFI_PREDICT_FALSE(!result.has_value())) {
+      TVM_FFI_THROW(TypeError) << "Cannot treat type `"
+                               << TypeTraits<UnchangedOr<U>>::GetMismatchTypeInfo(
+                                      details::AnyUnsafe::TVMFFIAnyPtrFromAny(data_))
+                               << "` as type `" << TypeTraits<UnchangedOr<U>>::TypeStr() << "`";
+    }
+    return *std::move(result);
+  }
+
+  /*!
+   * \brief Strictly reinterpret this result as ``UnchangedOr<U>`` by move or throw.
+   * \tparam U The target replacement type.
+   * \return The converted result.
+   */
+  template <typename U>
+  TVM_FFI_INLINE UnchangedOr<U> as_or_throw() && {
+    const TVMFFIAny* raw = details::AnyUnsafe::TVMFFIAnyPtrFromAny(data_);
+    if constexpr (!type_subsumes_v<U, T>) {
+      if (TVM_FFI_PREDICT_FALSE(!TypeTraits<UnchangedOr<U>>::CheckAnyStrict(raw))) {
+        TVM_FFI_THROW(TypeError) << "Cannot treat type `"
+                                 << TypeTraits<UnchangedOr<U>>::GetMismatchTypeInfo(raw)
+                                 << "` as type `" << TypeTraits<UnchangedOr<U>>::TypeStr() << "`";
+      }
+    }
+    TVMFFIAny moved = details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(data_));
+    return UnchangedOr<U>(&moved);
+  }
+
+ private:
+  friend struct details::UnchangedOrUnsafe;
+  template <typename>
+  friend class UnchangedOr;
+  template <typename, typename>
+  friend struct TypeTraits;
+  TVM_FFI_INLINE explicit UnchangedOr(TVMFFIAny* data) noexcept
+      : data_(details::AnyUnsafe::MoveTVMFFIAnyToAny(data)) {}
+  Any data_;
+};
+
+namespace details {
+/*! \brief Unsafe moves between UnchangedOr and its single Any storage. */
+struct UnchangedOrUnsafe {
+  template <typename T>
+  TVM_FFI_INLINE static UnchangedOr<T> MoveFromTVMFFIAny(TVMFFIAny raw) noexcept {
+    return UnchangedOr<T>(&raw);
+  }
+
+  template <typename T>
+  TVM_FFI_INLINE static TVMFFIAny MoveToTVMFFIAny(UnchangedOr<T>&& result) noexcept {
+    return AnyUnsafe::MoveAnyToTVMFFIAny(std::move(result.data_));
+  }
+};
+
+}  // namespace details
+
+template <typename T>
+inline constexpr bool use_default_type_traits_v<UnchangedOr<T>> = false;
+
+template <typename T>
+struct TypeTraits<UnchangedOr<T>> : public TypeTraitsBase {
+  TVM_FFI_INLINE static void CopyToAnyView(const UnchangedOr<T>& src, TVMFFIAny* result) {
+    *result = src.data_.CopyToTVMFFIAny();
+  }
+
+  TVM_FFI_INLINE static void MoveToAny(UnchangedOr<T> src, TVMFFIAny* result) {
+    *result = details::UnchangedOrUnsafe::MoveToTVMFFIAny(std::move(src));
+  }
+
+  TVM_FFI_INLINE static bool CheckAnyStrict(const TVMFFIAny* src) {
+    if constexpr (std::is_same_v<T, Any>) {
+      return src->type_index != TypeIndex::kTVMFFIError;
+    } else {
+      return src->type_index == TypeIndex::kTVMFFIUnchanged || TypeTraits<T>::CheckAnyStrict(src);
+    }
+  }
+
+  TVM_FFI_INLINE static UnchangedOr<T> CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    if (src->type_index == TypeIndex::kTVMFFIUnchanged) return Unchanged();
+    if constexpr (std::is_same_v<T, Any>) {
+      return UnchangedOr<T>(Any(AnyView::CopyFromTVMFFIAny(*src)));
+    } else {
+      return UnchangedOr<T>(TypeTraits<T>::CopyFromAnyViewAfterCheck(src));
+    }
+  }
+
+  TVM_FFI_INLINE static UnchangedOr<T> MoveFromAnyAfterCheck(TVMFFIAny* src) {
+    return UnchangedOr<T>(src);
+  }
+  TVM_FFI_INLINE static std::string TypeStr() {
+    return "UnchangedOr<" + details::Type2Str<T>::v() + ">";
+  }
+  TVM_FFI_INLINE static std::string TypeSchema() {
+    return R"({"type":"UnchangedOr","args":[)" + details::TypeSchema<T>::v() + "]}";
+  }
+};
 
 namespace details {
 
@@ -874,6 +1173,19 @@ namespace details {
 
 /// \endcond
 
+/*!
+ * \brief Return an unchanged result from a structural-mutation hook.
+ *
+ * Terminal statement of a hook whose traversed fields are all unchanged. Works
+ * from a raw ``TVMFFIAny`` hook and a typed ``Expected`` helper alike.
+ *
+ * \sa TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN
+ */
+#define TVM_FFI_S_MUTATE_RETURN_UNCHANGED()                           \
+  return ::tvm::ffi::details::MaybeReturnHelper(                      \
+      ::tvm::ffi::Expected<::tvm::ffi::UnchangedOr<::tvm::ffi::Any>>( \
+          ::tvm::ffi::UnchangedOr<::tvm::ffi::Any>(::tvm::ffi::Unchanged())))
+
 template <typename T>
 struct StructuralMutateAssignTraits {
   TVM_FFI_INLINE static bool Check(const Any& value) noexcept {
@@ -897,6 +1209,20 @@ struct StructuralMutateAssignTraits<MaybeUnchanged<T>> {
 
   TVM_FFI_INLINE static MaybeUnchanged<T> Move(Any&& value) noexcept {
     return MaybeUnchangedUnsafe::MoveFromAny<T>(std::move(value));
+  }
+};
+
+// The Expected<UnchangedOr<T>> protocol declares UnchangedOr<T>, whose TypeTraits already
+// accept the marker, so the check and the move are the generic Any ones for that type -- which
+// is exactly what UC's own assign macro does.
+template <typename T>
+struct StructuralMutateAssignTraits<UnchangedOr<T>> {
+  TVM_FFI_INLINE static bool Check(const Any& value) noexcept {
+    return AnyUnsafe::CheckAnyStrict<UnchangedOr<T>>(value);
+  }
+
+  TVM_FFI_INLINE static UnchangedOr<T> Move(Any&& value) noexcept {
+    return AnyUnsafe::MoveFromAnyAfterCheck<UnchangedOr<T>>(std::move(value));
   }
 };
 
