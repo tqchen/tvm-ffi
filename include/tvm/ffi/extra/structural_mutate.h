@@ -971,6 +971,32 @@ TVM_FFI_INLINE static Expected<UnchangedOr<Any>> MutateReflectedFieldsExpected(
 
 namespace details {
 
+/*!
+ * \brief The unchanged marker as a return value, with no carrier to construct or destroy.
+ *
+ * ``TVM_FFI_S_MUTATE_RETURN_UNCHANGED()`` returns this. A raw ``TVMFFIAny`` hook receives the
+ * marker as the sixteen-byte POD it is, in registers; a typed ``Expected<UnchangedOr<T>>`` helper
+ * receives it through the carrier's own tag constructor. Neither conversion creates an owning
+ * temporary, so neither leaves a destructor to run on the hot path: the earlier form built an
+ * ``UnchangedOr<Any>``, moved it through an ``Expected`` and a ``MaybeReturnHelper``, and then
+ * called the moved-from temporary's out-of-line destructor at every unchanged exit.
+ */
+struct UnchangedReturnProxy {
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE operator TVMFFIAny() const noexcept {
+    TVMFFIAny raw;
+    raw.type_index = TypeIndex::kTVMFFIUnchanged;
+    raw.zero_padding = 0;
+    raw.v_int64 = 0;
+    return raw;
+  }
+  template <typename T>
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE operator Expected<UnchangedOr<T>>() const noexcept {
+    return Expected<UnchangedOr<T>>(UnchangedOr<T>(Unchanged()));
+  }
+};
+
 /// \cond Doxygen_Suppress
 // Return from the current raw or same-T Expected mutation function if Result is an Error.
 // The rvalue-only proxy lets the enclosing return type select the representation.
@@ -992,10 +1018,7 @@ namespace details {
  *
  * \sa TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN
  */
-#define TVM_FFI_S_MUTATE_RETURN_UNCHANGED()                           \
-  return ::tvm::ffi::details::MaybeReturnHelper(                      \
-      ::tvm::ffi::Expected<::tvm::ffi::UnchangedOr<::tvm::ffi::Any>>( \
-          ::tvm::ffi::UnchangedOr<::tvm::ffi::Any>(::tvm::ffi::Unchanged())))
+#define TVM_FFI_S_MUTATE_RETURN_UNCHANGED() return ::tvm::ffi::details::UnchangedReturnProxy {}
 
 /// \cond Doxygen_Suppress
 #define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Type, Name, ResultExpr)    \
