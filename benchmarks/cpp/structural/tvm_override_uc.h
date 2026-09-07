@@ -256,7 +256,12 @@ TVMFFIAny VarMaybeInplaceMutate(ffi::StructuralMutatorObj* mutator, ffi::AnyView
   }
   // Only NonRecursive is clamped: Recursive co-introduces type fields such as BufferType shape
   // variables, so that ambient region must continue through the dynamic type.
-  auto mutate_ty = [&]() { return mutator->MaybeInplaceMutateIfUniqueExpected(self->ty); };
+  // EXPERIMENT (task #387, this side branch only): with 31f6948's typed overload restored on
+  // a head whose UnchangedOr no longer converts UnchangedOr<Type> to UnchangedOr<Any>, this one
+  // site names <ffi::Any> so it keeps the AnyView form it resolved to on the head. The site is
+  // never executed on the split-fuse fixture: every Var here has a PrimType and the hook
+  // returns through bind_unchanged before reaching it.
+  auto mutate_ty = [&]() { return mutator->MaybeInplaceMutateIfUniqueExpected<ffi::Any>(self->ty); };
   ffi::Expected<ffi::UnchangedOr<ffi::Any>> mapped_ty_result =
       mutator->def_region_kind() == kTVMFFIDefRegionKindNonRecursive
           ? mutator->WithDefRegionKind(kTVMFFIDefRegionKindNone, mutate_ty)
