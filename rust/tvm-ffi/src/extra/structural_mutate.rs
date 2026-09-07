@@ -2239,7 +2239,12 @@ fn call_mutator(
     };
     with_mutator_def_region(mutator, def_region_kind, || unsafe {
         let view = AnyView::from_raw_ffi_any(raw);
-        result_from_raw(callback(mutator, view))
+        let result = result_from_raw(callback(mutator, view))?;
+        if result.type_index() == TVMFFITypeIndex::kTVMFFIUnchanged as i32 {
+            owned_from_raw(raw)
+        } else {
+            Ok(result)
+        }
     })
 }
 
@@ -2279,7 +2284,7 @@ fn call_structural_mutate_hook(
     attr: TVMFFIAny,
 ) -> Result<Any> {
     with_mutator_def_region(mutator, def_region_kind, || unsafe {
-        match attr.type_index {
+        let result = match attr.type_index {
             x if x == TVMFFITypeIndex::kTVMFFIOpaquePtr as i32 => {
                 let pointer = attr.data_union.v_ptr;
                 if pointer.is_null() {
@@ -2303,6 +2308,11 @@ fn call_structural_mutate_hook(
                 "__s_mutate__ must be an opaque function pointer or ffi.Function",
                 "",
             )),
+        }?;
+        if result.type_index() == TVMFFITypeIndex::kTVMFFIUnchanged as i32 {
+            owned_from_raw(raw)
+        } else {
+            Ok(result)
         }
     })
 }

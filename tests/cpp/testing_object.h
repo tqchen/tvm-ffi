@@ -251,14 +251,19 @@ class TMutatePairObj : public Object {
 
   static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
     ++StructuralMutateCallCount();
-    const auto* self = value.cast<const TMutatePairObj*>();
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef, lhs, mutator->MutateExpected(self->lhs));
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(ObjectRef, rhs, mutator->MutateExpected(self->rhs));
-    if (lhs.same_as(self->lhs) && rhs.same_as(self->rhs)) {
-      return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
+    const TMutatePairObj* self =
+        details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const TMutatePairObj>(value);
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, lhs,
+                                      mutator->MutateExpected(self->lhs));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, rhs,
+                                      mutator->MutateExpected(self->rhs));
+    if (lhs.UnchangedOrSameAs(self->lhs) && rhs.UnchangedOrSameAs(self->rhs)) {
+      TVM_FFI_S_MUTATE_RETURN_UNCHANGED();
     }
-    return details::AnyUnsafe::MoveAnyToTVMFFIAny(
-        Any(make_object<TMutatePairObj>(std::move(lhs), std::move(rhs))));
+    ObjectPtr<TMutatePairObj> copy = make_object<TMutatePairObj>(*self);
+    copy->lhs = std::move(lhs).ValueOrUnchanged(std::move(copy->lhs));
+    copy->rhs = std::move(rhs).ValueOrUnchanged(std::move(copy->rhs));
+    return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
   }
 
   static void RegisterReflection() {
