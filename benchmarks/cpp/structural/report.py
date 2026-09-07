@@ -66,6 +66,115 @@ def fits(working_set):
     return "DRAM"
 
 
+# ---------------------------------------------------------------------------
+# The quiet-machine gate, ported from bench/structural-traversal-harness (c4d8ac2, 1c31003).
+#
+# A run of this harness is one single-threaded process pinned to one core, so on a many-core
+# host a run in progress and an empty machine give the same reading: load ~2, ~98% idle.
+# Load average sees a parallel `cmake --build` and nothing else.  The check that sees another
+# run is process presence, so both are checked, and both are recorded with the run rather than
+# left to whoever remembers to look.
+# ---------------------------------------------------------------------------
+
+MACHINE = {"before": None, "after": None}
+
+
+def competing_processes():
+    """Benchmark processes on this host that are not part of this run."""
+    try:
+        listing = subprocess.run(["ps", "-eo", "pid=,ppid=,args="],
+                                 capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ["(ps unavailable -- the quiet-machine check could not run)"]
+    rows = []
+    for line in listing.splitlines():
+        parts = line.split(None, 2)
+        if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+            rows.append((int(parts[0]), int(parts[1]), parts[2]))
+
+    me = os.getpid()
+    parent = {pid: ppid for pid, ppid, _ in rows}
+    children = {}
+    for pid, ppid, _ in rows:
+        children.setdefault(ppid, []).append(pid)
+    related, cur = set(), me
+    while cur and cur not in related:            # this process and everything that launched it
+        related.add(cur)
+        cur = parent.get(cur, 0)
+    stack = [me]                                  # and everything it launched
+    while stack:
+        for kid in children.get(stack.pop(), []):
+            if kid not in related:
+                related.add(kid)
+                stack.append(kid)
+
+    def is_benchmark(args):
+        for token in args.split()[:2]:
+            base = os.path.basename(token)
+            if base == "report.py" or "_bench" in base:
+                return True
+        return False
+
+    return ["%d %s" % (pid, args) for pid, _ppid, args in rows
+            if pid not in related and is_benchmark(args)]
+
+
+def machine_state():
+    try:
+        load = os.getloadavg()[0]
+    except (OSError, AttributeError):
+        load = float("nan")
+    return {"load": load, "competing": competing_processes()}
+
+
+# A build is invisible to the process check and a pinned benchmark is invisible to load, so
+# both readings are judged.  Above this the machine is busy with something, whatever it is.
+BUSY_LOAD = 4.0
+
+
+def machine_row(before, after):
+    """One provenance row saying what the machine was doing, judged on both signals."""
+    seen, competing = set(), []
+    for entry in (before["competing"] if before else []) + (after["competing"] if after else []):
+        pid = entry.split(None, 1)[0]
+        if pid not in seen:
+            seen.add(pid)
+            competing.append(entry)
+    peak = max(before["load"], after["load"])
+    loads = "load average %.2f at start, %.2f at end" % (before["load"], after["load"])
+
+    reasons = []
+    if competing:
+        reasons.append("%d other benchmark process(es) live during this run (%s)"
+                       % (len(competing), "; ".join(c.split(None, 1)[0] for c in competing)))
+    if peak > BUSY_LOAD:
+        reasons.append("load average peaked at %.2f, so something else -- a parallel build, "
+                       "most likely -- was running" % peak)
+    if reasons:
+        return ("**contended** -- %s. Absolutes are not usable and the deltas are suspect; %s"
+                % ("; and ".join(reasons), loads))
+    return ("quiet -- no other benchmark process at start or end, %s. Both are checked: a "
+            "pinned single-threaded run is invisible to load average, and a parallel build is "
+            "invisible to the process check" % loads)
+
+
+def refuse_if_busy(allow_contention):
+    MACHINE["before"] = machine_state()
+    if allow_contention:
+        return
+    blockers = list(MACHINE["before"]["competing"])
+    if MACHINE["before"]["load"] > BUSY_LOAD:
+        blockers.append("load average %.2f -- a parallel build, most likely"
+                        % MACHINE["before"]["load"])
+    if blockers:
+        raise SystemExit(
+            "the machine is busy, so this run would be contended:\n  %s\n\n"
+            "Both signals are checked because neither sees the other's case: a pinned "
+            "single-threaded benchmark is invisible to load average, and a parallel build "
+            "is invisible to the process check. Wait, or pass --allow-contention to record "
+            "an explicitly contended run." % "\n  ".join(blockers))
+
+
 def run_once(binary, cpu):
     cmd = (["taskset", "-c", str(cpu)] if cpu is not None else []) + [binary]
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -137,12 +246,15 @@ def render(merged, runs, out):
     w("### Provenance -- %s\n\n| | |\n| --- | --- |\n" % harness)
     for key, label in [("harness_branch_commit", "harness branch commit"),
                        ("tvm_ffi_engine_sha", "tvm-ffi engine sha"),
+                       ("engine_header", "engine header"),
+                       ("hook_header", "hook header"),
                        ("tvm_sha", "apache/tvm sha"),
                        ("compiler", "compiler"), ("flags", "flags"),
                        ("structural_hooks", "structural hooks")]:
         if key in prov:
             w("| %s | `%s` |\n" % (label, prov[key]))
-    w("| method | %s |\n| processes | %d |\n\n" % (prov["method"], len(runs)))
+    w("| method | %s |\n| processes | %d |\n" % (prov["method"], len(runs)))
+    w("| machine | %s |\n\n" % machine_row(MACHINE["before"], MACHINE["after"]))
 
     w("### Fixtures -- %s\n\n" % harness)
     w("| fixture | N | occurrences | working set | fits | operation | rebuilt retained "
@@ -238,8 +350,11 @@ def render_compare(merged, states, runs, differs, out):
 
     w("### Provenance\n\n| | |\n| --- | --- |\n")
     for label in labels:
-        w("| state %s | tvm-ffi `%s` |\n"
-          % (label, merged[label]["provenance"]["tvm_ffi_engine_sha"]))
+        prov = merged[label]["provenance"]
+        w("| state %s | tvm-ffi `%s` |\n" % (label, prov["tvm_ffi_engine_sha"]))
+        for key, what in [("engine_header", "engine header"), ("hook_header", "hook header")]:
+            if key in prov:
+                w("| state %s %s | `%s` |\n" % (label, what, prov[key]))
     w("| what differs | %s |\n" % differs)
     w("| apache/tvm | `%s`, identical in every state |\n"
       % merged[a_label]["provenance"]["tvm_sha"])
@@ -247,7 +362,8 @@ def render_compare(merged, states, runs, differs, out):
       "`port_check.sh --header` checks each against apache/tvm |\n")
     w("| method | %s, processes interleaved %s |\n"
       % (merged[a_label]["provenance"]["method"], order))
-    w("| processes | %d per state |\n\n" % runs)
+    w("| processes | %d per state |\n" % runs)
+    w("| machine | %s |\n\n" % machine_row(MACHINE["before"], MACHINE["after"]))
     w("**Absolutes come from separately compiled binaries and are not comparable across "
       "states; only the delta in each cell is claimed.** Two builds differ in inlining, layout "
       "and allocator luck for reasons unrelated to what is under study. The processes are "
@@ -315,7 +431,12 @@ def main():
     ap.add_argument("--cpu", type=int, default=0)
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--out", default="-")
+    ap.add_argument("--allow-contention", action="store_true",
+                    help="run even though another benchmark process is live, and say so in "
+                         "the provenance. For a deliberately contended run only")
     args = ap.parse_args()
+
+    refuse_if_busy(args.allow_contention)
 
     out = sys.stdout if args.out == "-" else open(args.out, "w")
     if args.two_state:
@@ -327,11 +448,13 @@ def main():
             ref, _, path = rest.partition(":")
             states.append((label, ref, os.path.abspath(path)))
         merged = interleave(states, args.cpu, args.runs)
+        MACHINE["after"] = machine_state()
         render_compare(merged, states, args.runs, args.differs, out)
     else:
         for binary in args.binary:
             binary = os.path.abspath(binary)
             runs = [run_once(binary, args.cpu) for _ in range(args.runs)]
+            MACHINE["after"] = machine_state()
             render(median_runs(runs), runs, out)
     if out is not sys.stdout:
         out.close()
