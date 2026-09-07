@@ -356,6 +356,19 @@ the rows where real says it is a fifth faster. mini-TIR remains sound for what t
 measure, since those run the same `libtvm_ffi.so` in both binaries and agree; it is not sound
 for anything measured against the functor-era baselines.
 
+**Do not try to close it by giving mini-TIR a shared library.** That was the obvious next move
+and it is measured and ruled out. Denying mini-TIR the cross-TU optimizations a `.so` boundary
+would deny — `-fno-ipa-ra -fno-ipa-cp -fno-ipa-sra -fno-ipa-icf -fno-ipa-pure-const
+-fno-ipa-modref` — moves `map_functor` from −25.5% to −24.0% and `map_old` not at all, while
+the `floor` and `subst` controls move 1.6 and 1.3 points on the same flags. The baselines moved
+no more than the controls did. Three compilation-shaped explanations are now eliminated: table
+size, body inlining (worth 4 points, kept above), and cross-TU optimization (worth none). What
+is left is most likely real per-node work the port does not reproduce, and the cheapest place
+to look is the type metadata `--fidelity` does not yet check: it compares every counterpart
+type's size but not its `_type_index`, `_type_depth` or `_type_child_slots`, and
+`VisitPrimExpr` runs an `as_or_throw<PrimExpr>()` range test on every operand of every binary
+node.
+
 Table *size* is not part of it. The earlier reading — that the gap came from real TVM's
 thirty-four-type `NodeFunctor` table against mini-TIR's seven, or from the PLT hop — is
 **retracted**. `walk_functor` crosses exactly the same table and the same library boundary
