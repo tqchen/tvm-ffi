@@ -1,0 +1,74 @@
++0x0: push   %r15
++0x2: mov    %rdi,%r15
++0x5: push   %r14
++0x7: push   %r13
++0x9: push   %r12
++0xb: push   %rbp
++0xc: push   %rbx
++0xd: mov    %rdx,%rbx
++0x10: sub    $0xa8,%rsp
++0x17: mov    0x28(%rdx),%rax
++0x1b: xor    %edx,%edx
++0x1d: test   %rax,%rax
++0x20: je     0x55f51543d18b <_ZN9tvm_hooks24BinaryMaybeInplaceMutateIN3tvm4prim7AddNodeEEE9TVMFFIAnyPNS1_3ffi20StructuralMutatorObjENS5_7AnyViewE+763>
++0x26: movabs $0x100000001,%rdx
++0x30: mov    (%rax),%rcx
++0x33: cmp    %rdx,%rcx
++0x36: jne    0x55f51543d188 <_ZN9tvm_hooks24BinaryMaybeInplaceMutateIN3tvm4prim7AddNodeEEE9TVMFFIAnyPNS1_3ffi20StructuralMutatorObjENS5_7AnyViewE+760>
++0x3c: mov    0x8(%rax),%edx
++0x3f: mov    0x18(%rdi),%rcx
++0x43: xchg   %rax,%rdx
++0x45: mov    %rax,%rsi
++0x48: call   *0x8(%rcx)
++0x4b: mov    %rax,%r13
++0x4e: mov    %eax,%r12d
++0x51: mov    %rdx,%rbp
++0x54: shr    $0x20,%r13
++0x58: cmp    $0x43,%r12d
++0x5c: je     0x55f51543d2e0 <_ZN9tvm_hooks24BinaryMaybeInplaceMutateIN3tvm4prim7AddNodeEEE9TVMFFIAnyPNS1_3ffi20StructuralMutatorObjENS5_7AnyViewE+1104>
++0x62: test   %r12d,%r12d
++0x65: sete   %al
++0x68: mov    %eax,%r13d
++0x6b: cmp    $0xd,%r12d
++0x6f: je     0x55f51543cf9d <_ZN9tvm_hooks24BinaryMaybeInplaceMutateIN3tvm4prim7AddNodeEEE9TVMFFIAnyPNS1_3ffi20StructuralMutatorObjENS5_7AnyViewE+269>
++0x10d: mov    0x30(%rbx),%rax
++0x111: xor    %edx,%edx
++0x113: test   %rax,%rax
++0x116: je     0x55f51543d2fb <_ZN9tvm_hooks24BinaryMaybeInplaceMutateIN3tvm4prim7AddNodeEEE9TVMFFIAnyPNS1_3ffi20StructuralMutatorObjENS5_7AnyViewE+1131>
++0x11c: movabs $0x100000001,%rdx
++0x126: mov    (%rax),%rcx
++0x129: cmp    %rdx,%rcx
++0x12c: jne    0x55f51543d2f8 <_ZN9tvm_hooks24BinaryMaybeInplaceMutateIN3tvm4prim7AddNodeEEE9TVMFFIAnyPNS1_3ffi20StructuralMutatorObjENS5_7AnyViewE+1128>
++0x132: mov    0x8(%rax),%edx
++0x135: mov    0x18(%r15),%rcx
++0x139: mov    %r15,%rdi
++0x13c: xchg   %rax,%rdx
++0x13e: mov    %rax,%rsi
++0x141: call   *0x8(%rcx)
++0x144: mov    %eax,%r15d
++0x147: shr    $0x20,%rax
++0x14b: mov    %rdx,(%rsp)
++0x14f: mov    %eax,0x10(%rsp)
++0x153: cmp    $0x43,%r15d
++0x157: je     0x55f51543d530 <_ZN9tvm_hooks24BinaryMaybeInplaceMutateIN3tvm4prim7AddNodeEEE9TVMFFIAnyPNS1_3ffi20StructuralMutatorObjENS5_7AnyViewE+1696>
++0x15d: test   %r15d,%r15d
++0x160: sete   %al
++0x163: mov    %eax,%esi
++0x165: cmp    $0xd,%r15d
++0x169: je     0x55f51543d32b <_ZN9tvm_hooks24BinaryMaybeInplaceMutateIN3tvm4prim7AddNodeEEE9TVMFFIAnyPNS1_3ffi20StructuralMutatorObjENS5_7AnyViewE+1179>
++0x49b: cmp    $0xd,%r12d
++0x49f: je     0x55f51543d9f0 <_ZN9tvm_hooks24BinaryMaybeInplaceMutateIN3tvm4prim7AddNodeEEE9TVMFFIAnyPNS1_3ffi20StructuralMutatorObjENS5_7AnyViewE+2912>
++0xb60: lea    0x90(%rsp),%r14
++0xb68: cmp    $0xd,%r15d
++0xb6c: je     0x55f51543d3e6 <_ZN9tvm_hooks24BinaryMaybeInplaceMutateIN3tvm4prim7AddNodeEEE9TVMFFIAnyPNS1_3ffi20StructuralMutatorObjENS5_7AnyViewE+1366>
++0x556: mov    $0xd,%eax
++0x55b: xor    %edx,%edx
++0x55d: add    $0xa8,%rsp
++0x564: pop    %rbx
++0x565: pop    %rbp
++0x566: pop    %r12
++0x568: pop    %r13
++0x56a: pop    %r14
++0x56c: pop    %r15
++0x56e: ret
+# executed 73 instructions, 2 calls, 0 lock-prefixed
