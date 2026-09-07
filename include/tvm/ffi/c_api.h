@@ -138,6 +138,11 @@ typedef enum {
   kTVMFFISmallBytes = 12,
   /*! \brief Unchanged state of UnchangedOr */
   kTVMFFIUnchanged = 13,
+  /*!
+   * \brief GOLD's name for the same reserved index (bench/377-gold-759 730d6fc), kept so
+   *        extra/structural_mutate_gold.h is byte-identical to that commit's engine header.
+   */
+  kTVMFFIStructuralMutateUnchanged = kTVMFFIUnchanged,
   /*! \brief Start of statically defined objects. */
   kTVMFFIStaticObjectBegin = 64,
   /*!
