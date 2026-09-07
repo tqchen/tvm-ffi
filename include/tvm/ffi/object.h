@@ -258,7 +258,7 @@ class Object {
   static constexpr uint64_t kCombinedRefCountWeakOne = details::kCombinedRefCountWeakOne;
   static constexpr uint64_t kCombinedRefCountBothOne = details::kCombinedRefCountBothOne;
   /*! \brief increase strong reference count, the caller must already hold a strong reference */
-  void IncRef() {
+  TVM_FFI_INLINE void IncRef() {
 #ifdef _MSC_VER
     _InterlockedIncrement64(
         reinterpret_cast<volatile __int64*>(&header_.combined_ref_count));  // NOLINT(*)
@@ -313,7 +313,7 @@ class Object {
   }
 
   /*! \brief decrease strong reference count and delete the object */
-  void DecRef() {
+  TVM_FFI_INLINE void DecRef() {
 #ifdef _MSC_VER
     // use simpler impl in windows to ensure correctness
     uint64_t count_before_sub =
@@ -416,6 +416,8 @@ class Object {
 template <typename T>
 class ObjectPtr {
  public:
+  // Core value members that perform ownership work are force-inlined so refcount paths do not
+  // depend on compiler cost models. Defaulted and empty members intentionally stay unmarked.
   /*! \brief default constructor */
   ObjectPtr() = default;
   /*! \brief default constructor */
@@ -439,7 +441,7 @@ class ObjectPtr {
    * \brief move constructor
    * \param other The value to be moved
    */
-  ObjectPtr(ObjectPtr<T>&& other)  // NOLINT(*)
+  TVM_FFI_INLINE ObjectPtr(ObjectPtr<T>&& other)  // NOLINT(*)
       : data_(other.data_) {
     other.data_ = nullptr;
   }
@@ -448,13 +450,13 @@ class ObjectPtr {
    * \param other The value to be moved
    */
   template <typename Y>
-  ObjectPtr(ObjectPtr<Y>&& other)  // NOLINT(*)
+  TVM_FFI_INLINE ObjectPtr(ObjectPtr<Y>&& other)  // NOLINT(*)
       : data_(other.data_) {
     static_assert(std::is_base_of_v<T, Y>, "can only assign of child class ObjectPtr to parent");
     other.data_ = nullptr;
   }
   /*! \brief destructor */
-  ~ObjectPtr() { this->reset(); }
+  TVM_FFI_INLINE ~ObjectPtr() { this->reset(); }
   /*!
    * \brief Swap this array with another Object
    * \param other The other Object
@@ -492,7 +494,7 @@ class ObjectPtr {
    * \param other The value to be assigned.
    * \return reference to self.
    */
-  ObjectPtr<T>& operator=(ObjectPtr<T>&& other) {  // NOLINT(*)
+  TVM_FFI_INLINE ObjectPtr<T>& operator=(ObjectPtr<T>&& other) {  // NOLINT(*)
     // copy-and-swap idiom
     ObjectPtr(std::move(other)).swap(*this);  // NOLINT(*)
     return *this;
@@ -811,11 +813,13 @@ class ObjectRef {
   /*! \brief copy constructor */
   ObjectRef(const ObjectRef& other) = default;
   /*! \brief move constructor */
-  ObjectRef(ObjectRef&& other) noexcept : data_(std::move(other.data_)) { other.data_ = nullptr; }
+  TVM_FFI_INLINE ObjectRef(ObjectRef&& other) noexcept : data_(std::move(other.data_)) {
+    other.data_ = nullptr;
+  }
   /*! \brief copy assignment */
   ObjectRef& operator=(const ObjectRef& other) = default;
   /*! \brief move assignment */
-  ObjectRef& operator=(ObjectRef&& other) noexcept {
+  TVM_FFI_INLINE ObjectRef& operator=(ObjectRef&& other) noexcept {
     data_ = std::move(other.data_);
     other.data_ = nullptr;
     return *this;

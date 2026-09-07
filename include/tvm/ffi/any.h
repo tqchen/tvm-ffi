@@ -73,7 +73,7 @@ class AnyView {
   /*! \return the internal type index */
   TVM_FFI_INLINE int32_t type_index() const noexcept { return data_.type_index; }
   /*! \brief Default constructor */
-  AnyView() {
+  TVM_FFI_INLINE AnyView() {
     data_.type_index = TypeIndex::kTVMFFINone;
     data_.zero_padding = 0;
     data_.v_int64 = 0;
@@ -93,7 +93,7 @@ class AnyView {
    * \param other The value to convert from.
    */
   template <typename T, typename = std::enable_if_t<TypeTraits<T>::convert_enabled>>
-  AnyView(const T& other) {  // NOLINT(*)
+  TVM_FFI_INLINE AnyView(const T& other) {  // NOLINT(*)
     TypeTraits<T>::CopyToAnyView(other, &data_);
   }
   /*!
@@ -258,7 +258,7 @@ class Any {
   /*!
    * \brief Default constructor
    */
-  Any() {
+  TVM_FFI_INLINE Any() {
     data_.type_index = TypeIndex::kTVMFFINone;
     data_.zero_padding = 0;
     data_.v_int64 = 0;
@@ -266,12 +266,12 @@ class Any {
   /*!
    * \brief Destructor
    */
-  ~Any() { this->reset(); }
+  TVM_FFI_INLINE ~Any() { this->reset(); }
   /*!
    * \brief Constructor from another Any
    * \param other The other Any
    */
-  Any(const Any& other) : data_(other.data_) {
+  TVM_FFI_INLINE Any(const Any& other) : data_(other.data_) {
     if (data_.type_index >= TypeIndex::kTVMFFIStaticObjectBegin) {
       details::ObjectUnsafe::IncRefObjectHandle(data_.v_obj);
     }
@@ -280,7 +280,7 @@ class Any {
    * \brief Move constructor from another Any
    * \param other The other Any
    */
-  Any(Any&& other) noexcept : data_(other.data_) {
+  TVM_FFI_INLINE Any(Any&& other) noexcept : data_(other.data_) {
     other.data_.type_index = TypeIndex::kTVMFFINone;
     other.data_.zero_padding = 0;
     other.data_.v_int64 = 0;

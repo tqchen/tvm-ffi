@@ -124,7 +124,7 @@ class Expected {
    * \param value The success value.
    */
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  Expected(T value) : data_(Any(std::move(value))) {}
+  TVM_FFI_INLINE Expected(T value) : data_(Any(std::move(value))) {}
 
   /*!
    * \brief Implicit constructor from a different success value type.
@@ -144,7 +144,7 @@ class Expected {
                                                     !std::is_base_of_v<Error, std::decay_t<U>> &&
                                                     std::is_convertible_v<U, T>>>
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  Expected(U&& value) : data_(Any(T(std::forward<U>(value)))) {}
+  TVM_FFI_INLINE Expected(U&& value) : data_(Any(T(std::forward<U>(value)))) {}
 
   /*!
    * \brief Implicit converting constructor from another Expected success type.
@@ -160,7 +160,7 @@ class Expected {
             typename = std::enable_if_t<!std::is_void_v<U> &&
                                         (type_subsumes_v<T, U> || std::is_convertible_v<U, T>)>>
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  Expected(Expected<U> other) {
+  TVM_FFI_INLINE Expected(Expected<U> other) {
     if constexpr (type_subsumes_v<T, U>) {
       // data_ holds a T or an Error. Subsumption proves the source representation already
       // satisfies that invariant, so the Any moves without inspecting its state. Do not make
@@ -177,12 +177,12 @@ class Expected {
    * \param error The error value.
    */
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  Expected(Error error) : data_(Any(std::move(error))) {}
+  TVM_FFI_INLINE Expected(Error error) : data_(Any(std::move(error))) {}
 
   /*! \brief Implicit constructor from an Unexpected wrapper. */
   template <typename E, typename = std::enable_if_t<std::is_base_of_v<Error, std::remove_cv_t<E>>>>
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  Expected(Unexpected<E> unexpected) : data_(Any(std::move(unexpected).error())) {}
+  TVM_FFI_INLINE Expected(Unexpected<E> unexpected) : data_(Any(std::move(unexpected).error())) {}
 
   /*! \brief Return the raw stored type index. */
   TVM_FFI_INLINE int32_t type_index() const noexcept { return data_.type_index(); }
@@ -287,12 +287,12 @@ class Expected<void> {
    * \param error The error value.
    */
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  Expected(Error error) : data_(Any(std::move(error))) {}
+  TVM_FFI_INLINE Expected(Error error) : data_(Any(std::move(error))) {}
 
   /*! \brief Implicit constructor from an Unexpected wrapper. */
   template <typename E, typename = std::enable_if_t<std::is_base_of_v<Error, std::remove_cv_t<E>>>>
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  Expected(Unexpected<E> unexpected) : data_(Any(std::move(unexpected).error())) {}
+  TVM_FFI_INLINE Expected(Unexpected<E> unexpected) : data_(Any(std::move(unexpected).error())) {}
 
   /*! \brief Return the raw stored type index. */
   TVM_FFI_INLINE int32_t type_index() const noexcept { return data_.type_index(); }
