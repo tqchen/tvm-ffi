@@ -416,8 +416,11 @@ class Object {
 template <typename T>
 class ObjectPtr {
  public:
-  // Core value members that perform ownership work are force-inlined so refcount paths do not
-  // depend on compiler cost models. Defaulted and empty members intentionally stay unmarked.
+  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
+  // and an implicitly-declared destructor is declined by the inliner inside large
+  // functions even when it folds to nothing -- a moved-from instance then costs a real
+  // call. All five are declared together because a destructor alone suppresses the
+  // implicit moves.
   /*! \brief default constructor */
   ObjectPtr() = default;
   /*! \brief default constructor */
@@ -426,14 +429,14 @@ class ObjectPtr {
    * \brief copy constructor
    * \param other The value to be moved
    */
-  ObjectPtr(const ObjectPtr<T>& other)  // NOLINT(*)
+  TVM_FFI_INLINE ObjectPtr(const ObjectPtr<T>& other)  // NOLINT(*)
       : ObjectPtr(other.data_) {}
   /*!
    * \brief copy constructor
    * \param other The value to be moved
    */
   template <typename U>
-  ObjectPtr(const ObjectPtr<U>& other)  // NOLINT(*)
+  TVM_FFI_INLINE ObjectPtr(const ObjectPtr<U>& other)  // NOLINT(*)
       : ObjectPtr(other.data_) {
     static_assert(std::is_base_of_v<T, U>, "can only assign of child class ObjectPtr to parent");
   }
@@ -441,7 +444,7 @@ class ObjectPtr {
    * \brief move constructor
    * \param other The value to be moved
    */
-  TVM_FFI_INLINE ObjectPtr(ObjectPtr<T>&& other)  // NOLINT(*)
+  TVM_FFI_INLINE ObjectPtr(ObjectPtr<T>&& other) noexcept  // NOLINT(*)
       : data_(other.data_) {
     other.data_ = nullptr;
   }
@@ -450,7 +453,7 @@ class ObjectPtr {
    * \param other The value to be moved
    */
   template <typename Y>
-  TVM_FFI_INLINE ObjectPtr(ObjectPtr<Y>&& other)  // NOLINT(*)
+  TVM_FFI_INLINE ObjectPtr(ObjectPtr<Y>&& other) noexcept  // NOLINT(*)
       : data_(other.data_) {
     static_assert(std::is_base_of_v<T, Y>, "can only assign of child class ObjectPtr to parent");
     other.data_ = nullptr;
@@ -483,7 +486,7 @@ class ObjectPtr {
    * \param other The value to be assigned.
    * \return reference to self.
    */
-  ObjectPtr<T>& operator=(const ObjectPtr<T>& other) {  // NOLINT(*)
+  TVM_FFI_INLINE ObjectPtr<T>& operator=(const ObjectPtr<T>& other) {  // NOLINT(*)
     // takes in plane operator to enable copy elison.
     // copy-and-swap idiom
     ObjectPtr(other).swap(*this);  // NOLINT(*)
@@ -494,7 +497,7 @@ class ObjectPtr {
    * \param other The value to be assigned.
    * \return reference to self.
    */
-  TVM_FFI_INLINE ObjectPtr<T>& operator=(ObjectPtr<T>&& other) {  // NOLINT(*)
+  TVM_FFI_INLINE ObjectPtr<T>& operator=(ObjectPtr<T>&& other) noexcept {  // NOLINT(*)
     // copy-and-swap idiom
     ObjectPtr(std::move(other)).swap(*this);  // NOLINT(*)
     return *this;
@@ -564,17 +567,24 @@ class Arc : public ObjectPtr<T> {
   Arc() = delete;
   Arc(std::nullptr_t) = delete;
 
+  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
+  // and an implicitly-declared destructor is declined by the inliner inside large
+  // functions even when it folds to nothing -- a moved-from instance then costs a real
+  // call. All five are declared together because a destructor alone suppresses the
+  // implicit moves.
+  TVM_FFI_INLINE ~Arc() = default;
+
   /*! \brief Copy constructor. */
-  Arc(const Arc&) = default;
+  TVM_FFI_INLINE Arc(const Arc&) = default;
 
   /*! \brief Move constructor. */
-  Arc(Arc&&) = default;
+  TVM_FFI_INLINE Arc(Arc&&) noexcept = default;
 
   /*! \brief Copy assignment operator. */
-  Arc& operator=(const Arc&) = default;
+  TVM_FFI_INLINE Arc& operator=(const Arc&) = default;
 
   /*! \brief Move assignment operator. */
-  Arc& operator=(Arc&&) = default;
+  TVM_FFI_INLINE Arc& operator=(Arc&&) noexcept = default;
 
   /*!
    * \brief Copy-upcast an Arc of a derived Object type.
@@ -810,14 +820,20 @@ class ObjectRef {
  public:
   /*! \brief default constructor */
   ObjectRef() = default;
+  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
+  // and an implicitly-declared destructor is declined by the inliner inside large
+  // functions even when it folds to nothing -- a moved-from instance then costs a real
+  // call. All five are declared together because a destructor alone suppresses the
+  // implicit moves.
+  TVM_FFI_INLINE ~ObjectRef() = default;
   /*! \brief copy constructor */
-  ObjectRef(const ObjectRef& other) = default;
+  TVM_FFI_INLINE ObjectRef(const ObjectRef& other) = default;
   /*! \brief move constructor */
   TVM_FFI_INLINE ObjectRef(ObjectRef&& other) noexcept : data_(std::move(other.data_)) {
     other.data_ = nullptr;
   }
   /*! \brief copy assignment */
-  ObjectRef& operator=(const ObjectRef& other) = default;
+  TVM_FFI_INLINE ObjectRef& operator=(const ObjectRef& other) = default;
   /*! \brief move assignment */
   TVM_FFI_INLINE ObjectRef& operator=(ObjectRef&& other) noexcept {
     data_ = std::move(other.data_);

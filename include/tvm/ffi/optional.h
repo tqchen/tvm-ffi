@@ -83,15 +83,21 @@ class Optional<T,
  public:
   // default constructors.
   Optional() = default;
+  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
+  // and an implicitly-declared destructor is declined by the inliner inside large
+  // functions even when it folds to nothing -- a moved-from instance then costs a real
+  // call. All five are declared together because a destructor alone suppresses the
+  // implicit moves.
+  TVM_FFI_INLINE ~Optional() = default;
   // NOLINTBEGIN(google-explicit-constructor)
-  Optional(const Optional& other) = default;
-  Optional(Optional&& other) noexcept = default;
+  TVM_FFI_INLINE Optional(const Optional& other) = default;
+  TVM_FFI_INLINE Optional(Optional&& other) noexcept = default;
   TVM_FFI_INLINE Optional(std::optional<T> other) : data_(std::move(other)) {}
   Optional(std::nullopt_t) {}
   TVM_FFI_INLINE Optional(T other) : data_(std::move(other)) {}
   // NOLINTEND(google-explicit-constructor)
 
-  Optional& operator=(const Optional& other) = default;
+  TVM_FFI_INLINE Optional& operator=(const Optional& other) = default;
   TVM_FFI_INLINE Optional& operator=(Optional&& other) noexcept {
     data_ = std::move(other.data_);
     return *this;
@@ -180,13 +186,19 @@ class Optional<T,
  public:
   /*! \brief default constructor, represents nullopt (Any() is kTVMFFINone). */
   Optional() = default;
+  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
+  // and an implicitly-declared destructor is declined by the inliner inside large
+  // functions even when it folds to nothing -- a moved-from instance then costs a real
+  // call. All five are declared together because a destructor alone suppresses the
+  // implicit moves.
+  TVM_FFI_INLINE ~Optional() = default;
   // NOLINTBEGIN(google-explicit-constructor)
   /*! \brief construct nullopt from std::nullopt. */
   Optional(std::nullopt_t) {}
   /*! \brief copy constructor. */
-  Optional(const Optional& other) = default;
+  TVM_FFI_INLINE Optional(const Optional& other) = default;
   /*! \brief move constructor. */
-  Optional(Optional&& other) noexcept = default;
+  TVM_FFI_INLINE Optional(Optional&& other) noexcept = default;
   /*! \brief construct from a value of type T (copy). */
   TVM_FFI_INLINE Optional(const T& value) : data_(value) {}
   /*! \brief construct from a value of type T (move). */
@@ -200,7 +212,7 @@ class Optional<T,
   // NOLINTEND(google-explicit-constructor)
 
   /*! \brief copy assignment. */
-  Optional& operator=(const Optional& other) = default;
+  TVM_FFI_INLINE Optional& operator=(const Optional& other) = default;
   /*! \brief move assignment. */
   TVM_FFI_INLINE Optional& operator=(Optional&& other) noexcept {
     data_ = std::move(other.data_);
@@ -375,9 +387,15 @@ class Optional<T, std::enable_if_t<use_object_ref_optional_v<T>>> : public Objec
   static constexpr bool _type_container_is_exact = T::_type_container_is_exact;
 
   Optional() = default;
+  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
+  // and an implicitly-declared destructor is declined by the inliner inside large
+  // functions even when it folds to nothing -- a moved-from instance then costs a real
+  // call. All five are declared together because a destructor alone suppresses the
+  // implicit moves.
+  TVM_FFI_INLINE ~Optional() = default;
   // NOLINTBEGIN(google-explicit-constructor)
-  Optional(const Optional&) = default;
-  Optional(Optional&&) noexcept = default;
+  TVM_FFI_INLINE Optional(const Optional&) = default;
+  TVM_FFI_INLINE Optional(Optional&&) noexcept = default;
   explicit Optional(UnsafeInit tag) : ObjectRef(tag) {}
   Optional(std::nullopt_t) {}
   Optional(std::nullptr_t) {}
@@ -389,7 +407,7 @@ class Optional<T, std::enable_if_t<use_object_ref_optional_v<T>>> : public Objec
   TVM_FFI_INLINE Optional(T other) : ObjectRef(std::move(other)) {}
   // NOLINTEND(google-explicit-constructor)
 
-  Optional& operator=(const Optional&) = default;
+  TVM_FFI_INLINE Optional& operator=(const Optional&) = default;
   TVM_FFI_INLINE Optional& operator=(Optional&& other) noexcept {
     ObjectRef::operator=(std::move(other));
     return *this;
@@ -552,9 +570,15 @@ class Optional<T, std::enable_if_t<is_object_ptr_type_v<T> || is_arc_type_v<T>>>
   using ContainerType = typename Traits::ContainerType;
 
   Optional() = default;
+  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
+  // and an implicitly-declared destructor is declined by the inliner inside large
+  // functions even when it folds to nothing -- a moved-from instance then costs a real
+  // call. All five are declared together because a destructor alone suppresses the
+  // implicit moves.
+  TVM_FFI_INLINE ~Optional() = default;
   // NOLINTBEGIN(google-explicit-constructor)
-  Optional(const Optional&) = default;
-  Optional(Optional&&) noexcept = default;
+  TVM_FFI_INLINE Optional(const Optional&) = default;
+  TVM_FFI_INLINE Optional(Optional&&) noexcept = default;
   Optional(std::nullopt_t) : StorageType(nullptr) {}
   Optional(std::nullptr_t) : StorageType(nullptr) {}
   TVM_FFI_INLINE Optional(std::optional<T> other) {
@@ -565,7 +589,7 @@ class Optional<T, std::enable_if_t<is_object_ptr_type_v<T> || is_arc_type_v<T>>>
   TVM_FFI_INLINE Optional(T value) : StorageType(std::move(value)) {}
   // NOLINTEND(google-explicit-constructor)
 
-  Optional& operator=(const Optional&) = default;
+  TVM_FFI_INLINE Optional& operator=(const Optional&) = default;
   TVM_FFI_INLINE Optional& operator=(Optional&& other) noexcept {
     static_cast<StorageType&>(*this) = std::move(static_cast<StorageType&>(other));
     return *this;
