@@ -127,15 +127,22 @@ re-measured instead of taken on trust.
 **Wall time.** One `real_tvm_bench` process is about twenty seconds and `--runs 5` a couple of
 minutes. Pin with `--cpu`; leave the machine otherwise idle.
 
-**The quiet-machine gate is process presence, not load average, and `report.py` enforces it.**
-A run of this harness is one single-threaded process pinned to one core, so on a many-core
-machine a run in progress reads as load ~2 and ~98% idle — indistinguishable from an empty
-machine, and exactly the reading that invites a second run alongside it. Load average catches
-a parallel `cmake --build` and nothing else; it cannot see the thing that actually spoils a
-measurement. So `report.py` looks for other `report.py` and `*_bench` processes at both ends
-of the run, refuses to start when one is live, and stamps what it saw — both readings — into
-every provenance table as a `machine` row. `--allow-contention` records a deliberately
-contended run rather than bypassing the record.
+**The quiet-machine gate is two signals, and `report.py` enforces both.** A run of this
+harness is one single-threaded process pinned to one core, so on a many-core machine a run in
+progress reads as load ~2 and ~98% idle — indistinguishable from an empty machine, and exactly
+the reading that invites a second run alongside it. Load average sees a parallel
+`cmake --build` and nothing else. Process presence sees the competing run and not the build.
+**Neither signal sees the other's case**, so `report.py` checks both at both ends of the run —
+other `report.py` and `*_bench` processes, and load average against a busy threshold — refuses
+to start when either says busy, and stamps what it saw into every provenance table as a
+`machine` row. `--allow-contention` records a deliberately contended run rather than bypassing
+the record.
+
+Judging on one signal is not a hypothetical failure. The first cut of this gate branched on
+process presence alone and duly stamped a run `quiet` beside its own recorded load average of
+24.70, because a concurrent 32-core build in another worktree was invisible to the check it
+consulted. A run that misdescribes its own conditions is worse than one that says nothing: the
+contention is laundered into the record and read later as a result.
 
 Two things that gate does not follow from, and that are easy to assume:
 

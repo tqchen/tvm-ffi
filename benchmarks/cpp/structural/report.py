@@ -137,22 +137,40 @@ def machine_state():
     return {"load": load, "competing": competing_processes()}
 
 
+# A build is invisible to the process check and a pinned benchmark is invisible to load, so
+# both readings are judged.  Above this the machine is busy with something, whatever it is.
+BUSY_LOAD = 4.0
+
+
 def machine_row(before, after):
-    """One provenance row saying what the machine was doing, checked the way that works."""
+    """One provenance row saying what the machine was doing, checked the way that works.
+
+    Both signals decide it, not just the process one.  Reporting `quiet` beside a load average
+    of 24.70 -- which is what this said before a concurrent 32-core build walked into a run --
+    is worse than reporting nothing, because it launders the contention into the record.
+    """
     seen, competing = set(), []
     for entry in (before["competing"] if before else []) + (after["competing"] if after else []):
         pid = entry.split(None, 1)[0]
         if pid not in seen:
             seen.add(pid)
             competing.append(entry)
+    peak = max(before["load"], after["load"])
     loads = "load average %.2f at start, %.2f at end" % (before["load"], after["load"])
+
+    reasons = []
     if competing:
-        return ("**contended** -- %d other benchmark process(es) live during this run (%s). "
-                "Absolutes are not usable and the deltas are suspect; %s"
-                % (len(competing), "; ".join(c.split(None, 1)[0] for c in competing), loads))
-    return ("quiet -- no other benchmark process at start or end, %s. Checked by process "
-            "presence rather than load, because a pinned single-threaded run reads as an idle "
-            "machine" % loads)
+        reasons.append("%d other benchmark process(es) live during this run (%s)"
+                       % (len(competing), "; ".join(c.split(None, 1)[0] for c in competing)))
+    if peak > BUSY_LOAD:
+        reasons.append("load average peaked at %.2f, so something else -- a parallel build, "
+                       "most likely -- was running" % peak)
+    if reasons:
+        return ("**contended** -- %s. Absolutes are not usable and the deltas are suspect; %s"
+                % ("; and ".join(reasons), loads))
+    return ("quiet -- no other benchmark process at start or end, %s. Both are checked: a "
+            "pinned single-threaded run is invisible to load average, and a parallel build is "
+            "invisible to the process check" % loads)
 
 
 def run_once(binary, cpu):
@@ -519,13 +537,18 @@ def main():
     args = ap.parse_args()
 
     MACHINE["before"] = machine_state()
-    if MACHINE["before"]["competing"] and not args.allow_contention:
-        raise SystemExit(
-            "another benchmark process is live, so this run would be contended:\n  %s\n\n"
-            "Load average will not tell you this -- a pinned single-threaded run reads as an "
-            "idle machine -- which is why the check is process presence. Wait for the other "
-            "run to finish, or pass --allow-contention to record an explicitly contended run."
-            % "\n  ".join(MACHINE["before"]["competing"]))
+    if not args.allow_contention:
+        blockers = list(MACHINE["before"]["competing"])
+        if MACHINE["before"]["load"] > BUSY_LOAD:
+            blockers.append("load average %.2f -- a parallel build, most likely"
+                            % MACHINE["before"]["load"])
+        if blockers:
+            raise SystemExit(
+                "the machine is busy, so this run would be contended:\n  %s\n\n"
+                "Both signals are checked because neither sees the other's case: a pinned "
+                "single-threaded benchmark is invisible to load average, and a parallel build "
+                "is invisible to the process check. Wait, or pass --allow-contention to record "
+                "an explicitly contended run." % "\n  ".join(blockers))
 
     out = sys.stdout if args.out == "-" else open(args.out, "w")
     if args.two_state:
