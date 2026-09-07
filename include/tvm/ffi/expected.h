@@ -43,6 +43,15 @@ class Unexpected {
                 "Unexpected<E> requires E to be Error or a subclass of Error.");
 
  public:
+  // Special members are explicitly inlined to enable move cleanup optimizations
+  TVM_FFI_INLINE ~Unexpected() = default;
+  /// \cond Doxygen_Suppress
+  TVM_FFI_INLINE Unexpected(const Unexpected&) = default;
+  TVM_FFI_INLINE Unexpected(Unexpected&&) noexcept = default;
+  /// \endcond
+  TVM_FFI_INLINE Unexpected& operator=(const Unexpected&) = default;
+  TVM_FFI_INLINE Unexpected& operator=(Unexpected&&) noexcept = default;
+
   /*! \brief Construct from an error value. */
   explicit Unexpected(E error) : error_(std::move(error)) {}
 
@@ -118,6 +127,15 @@ class Expected {
       !std::is_void_v<T>,
       "Expected with a cv-qualified void success type is not allowed. Use Expected<void>.");
   static_assert(!std::is_same_v<T, Error>, "Expected<Error> is not allowed. Use Error directly.");
+
+  // Special members are explicitly inlined to enable move cleanup optimizations
+  TVM_FFI_INLINE ~Expected() = default;
+  /// \cond Doxygen_Suppress
+  TVM_FFI_INLINE Expected(const Expected&) = default;
+  TVM_FFI_INLINE Expected(Expected&&) noexcept = default;
+  /// \endcond
+  TVM_FFI_INLINE Expected& operator=(const Expected&) = default;
+  TVM_FFI_INLINE Expected& operator=(Expected&&) noexcept = default;
 
   /*!
    * \brief Implicit constructor from a success value.
@@ -279,6 +297,15 @@ class Expected {
 template <>
 class Expected<void> {
  public:
+  // Special members are explicitly inlined to enable move cleanup optimizations
+  TVM_FFI_INLINE ~Expected() = default;
+  /// \cond Doxygen_Suppress
+  TVM_FFI_INLINE Expected(const Expected&) = default;
+  TVM_FFI_INLINE Expected(Expected&&) noexcept = default;
+  /// \endcond
+  TVM_FFI_INLINE Expected& operator=(const Expected&) = default;
+  TVM_FFI_INLINE Expected& operator=(Expected&&) noexcept = default;
+
   /*! \brief Construct a successful Expected<void>. */
   Expected() = default;
 
