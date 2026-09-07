@@ -375,6 +375,18 @@ class UnchangedOr {
   TVM_FFI_INLINE explicit UnchangedOr(TVMFFIAny* data) noexcept
       : data_(details::AnyUnsafe::MoveTVMFFIAnyToAny(data)) {}
   Any data_;
+
+ public:
+  // EXPERIMENT (task #387): the special members spelled out and marked TVM_FFI_INLINE, the way
+  // #759 does for Any, so the inliner's budget cannot decline the destructor inside a large
+  // hook. A user-declared destructor alone would suppress the implicit move constructor and
+  // turn every move of an UnchangedOr into a copy, which is a second variable; the four
+  // defaulted members below keep the class's copy/move semantics exactly as they were.
+  TVM_FFI_INLINE ~UnchangedOr() noexcept {}
+  TVM_FFI_INLINE UnchangedOr(const UnchangedOr&) = default;
+  TVM_FFI_INLINE UnchangedOr(UnchangedOr&&) noexcept = default;
+  TVM_FFI_INLINE UnchangedOr& operator=(const UnchangedOr&) = default;
+  TVM_FFI_INLINE UnchangedOr& operator=(UnchangedOr&&) noexcept = default;
 };
 
 namespace details {
