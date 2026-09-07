@@ -972,6 +972,31 @@ void PrepareFixture(const FixtureInfo& info, ffi::Any (*build)(), const char* co
   CheckInplace(info, build);
 }
 
+/*!
+ * \brief The layout-parity evidence.
+ *
+ * `mini_tir_bench.cc` emits the same logical names for its counterparts, and `report.py` fails
+ * a run in which any pair disagrees.  mini-TIR's nodes are these nodes' layouts; the only
+ * permitted difference between the harnesses is which node types exist.
+ */
+void EmitNodeSizes() {
+  EmitNodeSize(kHarness, "Span", sizeof(SpanNode));
+  EmitNodeSize(kHarness, "Type", sizeof(TypeNode));
+  EmitNodeSize(kHarness, "PrimType", sizeof(PrimTypeNode));
+  EmitNodeSize(kHarness, "Expr", sizeof(ExprNode));
+  EmitNodeSize(kHarness, "Var", sizeof(VarNode));
+  EmitNodeSize(kHarness, "IntImm", sizeof(IntImmNode));
+  EmitNodeSize(kHarness, "FloatImm", sizeof(FloatImmNode));
+  EmitNodeSize(kHarness, "Call", sizeof(CallNode));
+  EmitNodeSize(kHarness, "Add", sizeof(prim::AddNode));
+  EmitNodeSize(kHarness, "Mul", sizeof(prim::MulNode));
+  EmitNodeSize(kHarness, "FloorDiv", sizeof(prim::FloorDivNode));
+  EmitNodeSize(kHarness, "FloorMod", sizeof(prim::FloorModNode));
+  EmitNodeSize(kHarness, "Stmt", sizeof(StmtNode));
+  EmitNodeSize(kHarness, "Evaluate", sizeof(EvaluateNode));
+  EmitNodeSize(kHarness, "SeqStmt", sizeof(SeqStmtNode));
+}
+
 }  // namespace real_tvm
 
 int main() {
@@ -982,6 +1007,7 @@ int main() {
   EmitProvenance("structural_hooks",
                  "harness (tvm_hook_override.h), ported from apache/tvm#20275 a1031a2177, "
                  "installed over TVM's");
+  EmitNodeSizes();
 
   CheckSpliceAgainstReference();
 

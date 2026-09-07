@@ -174,6 +174,18 @@ inline void EmitFixture(const std::string& harness, const FixtureInfo& f) {
        (f.arm_kind == ArmKind::kSwap ? "swap" : "subst"));
 }
 
+/*!
+ * \brief One node-size line: `#nodesize <harness> <logical name> <bytes>`.
+ *
+ * The two harnesses emit the same logical names for counterpart node types, and `report.py`
+ * fails a run in which a pair disagrees.  Layout parity between mini-TIR and real TVM is the
+ * fidelity requirement -- the only permitted difference is which node types exist -- and this
+ * is what makes it a checked fact rather than a claim in a comment.
+ */
+inline void EmitNodeSize(const std::string& harness, const std::string& node, size_t bytes) {
+  Emit("#nodesize\t" + harness + "\t" + node + "\t" + std::to_string(bytes));
+}
+
 /*! \brief One timing line. */
 inline void EmitResult(const std::string& harness, const std::string& fixture,
                        const std::string& ownership, const std::string& arm,

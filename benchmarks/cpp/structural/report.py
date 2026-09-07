@@ -75,7 +75,7 @@ def run_once(binary, cpu):
 
 
 def parse(text):
-    out = {"provenance": {}, "fixtures": {}, "order": [], "results": {}}
+    out = {"provenance": {}, "fixtures": {}, "order": [], "results": {}, "nodesizes": {}}
     for line in text.splitlines():
         if not line.startswith("#"):
             continue
@@ -88,6 +88,9 @@ def parse(text):
                                          working_set=int(ws), rebuilt_retained=int(reb_r),
                                          rebuilt_moved=int(reb_m), kind=kind)
             out["order"].append(name)
+        elif parts[0] == "#nodesize":
+            _, harness, node, size = parts
+            out["nodesizes"][node] = int(size)
         elif parts[0] == "#result":
             _, harness, fixture, ownership, arm, ns = parts
             out["results"][(fixture, ownership, arm)] = float(ns)
@@ -289,10 +292,125 @@ def render_compare(merged, states, runs, differs, out):
       "those rows rather than missing from them.\n\n")
 
 
+# ---------------------------------------------------------------------------
+# Fidelity mode: mini-TIR against real TVM, within one host.
+#
+# The requirement the harness is built to: where a fixture exists in both harnesses, the two
+# must agree, on THIS host.  Cross-host comparison is not the goal and is not attempted --
+# different compilers and architectures make nothing cross-host attributable to either side.
+#
+# Two preconditions are checked rather than assumed, and either one failing invalidates the
+# comparison outright:
+#
+#   * ONE ENGINE.  Both binaries must be stamped with the same tvm-ffi engine sha.  Point the
+#     TVM checkout's 3rdparty/tvm-ffi at this checkout and build.sh does that; otherwise mini
+#     and real link different engines and the delta is an engine delta wearing a fidelity
+#     delta's clothes.
+#   * ONE LAYOUT.  Every counterpart node type must be the same size in both.  mini-TIR's node
+#     set is a reduced set of apache/tvm's, and the reduction is in WHICH types exist, never in
+#     what one of them contains.
+# ---------------------------------------------------------------------------
+
+# mini-TIR node types and their apache/tvm counterparts, by the logical name both emit.
+COUNTERPART_NODES = ["Span", "Type", "PrimType", "Expr", "Var", "IntImm", "FloatImm", "Call",
+                     "Add", "Mul", "FloorDiv", "FloorMod", "Stmt", "Evaluate", "SeqStmt"]
+
+FIDELITY_WALK_ARMS = WALK_ARMS
+FIDELITY_MAP_ARMS = {"subst": EXPR_MAP_ARMS, "swap": SEQ_MAP_ARMS}
+
+
+def check_fidelity_preconditions(a, b, a_label, b_label):
+    """Refuse to render a comparison that would be read as a fidelity result and is not."""
+    a_engine = a["provenance"].get("tvm_ffi_engine_sha", "?")
+    b_engine = b["provenance"].get("tvm_ffi_engine_sha", "?")
+    if a_engine != b_engine:
+        raise SystemExit(
+            "fidelity run invalid: %s links tvm-ffi %s and %s links %s.\n"
+            "  Build both against one engine -- point the TVM checkout's 3rdparty/tvm-ffi at\n"
+            "  this checkout and rerun build.sh -- or the delta is an engine delta."
+            % (a_label, a_engine, b_label, b_engine))
+    mismatched = []
+    for node in COUNTERPART_NODES:
+        sa, sb = a["nodesizes"].get(node), b["nodesizes"].get(node)
+        if sa is None or sb is None:
+            mismatched.append((node, sa, sb, "not emitted"))
+        elif sa != sb:
+            mismatched.append((node, sa, sb, "different size"))
+    if mismatched:
+        lines = ["fidelity run invalid: counterpart node layouts disagree."]
+        for node, sa, sb, why in mismatched:
+            lines.append("  %-10s %s=%s  %s=%s  (%s)" % (node, a_label, sa, b_label, sb, why))
+        lines.append("  mini-TIR's nodes are apache/tvm's node layouts; the only permitted")
+        lines.append("  difference between the harnesses is which node types exist.")
+        raise SystemExit("\n".join(lines))
+
+
+def render_fidelity(merged, labels, runs, out):
+    a_label, b_label = labels
+    a, b = merged[a_label], merged[b_label]
+    check_fidelity_preconditions(a, b, a_label, b_label)
+    w = out.write
+
+    def delta(x, y):
+        if x is None or y is None:
+            return None
+        return "%.2f / %.2f (%+.1f%%)" % (x, y, 100.0 * (y - x) / x)
+
+    w("### Fidelity -- %s against %s, one host\n\n" % (a_label, b_label))
+    w("| | |\n| --- | --- |\n")
+    w("| tvm-ffi engine | `%s`, identical in both |\n"
+      % a["provenance"].get("tvm_ffi_engine_sha", "?"))
+    w("| apache/tvm | `%s` |\n" % a["provenance"].get("tvm_sha", "?"))
+    w("| compiler | `%s` |\n" % a["provenance"].get("compiler", "?"))
+    w("| node layouts | all %d counterpart types identical in size |\n" % len(COUNTERPART_NODES))
+    w("| method | %s, processes interleaved %s/%s/%s/%s |\n"
+      % (a["provenance"]["method"], a_label, b_label, a_label, b_label))
+    w("| processes | %d per harness |\n\n" % runs)
+    w("Cells are `%s / %s (delta)`. **This is a within-host comparison and the only kind the "
+      "harness makes**: both binaries were built by one compiler on one machine against one "
+      "engine, and the processes are interleaved so drift and thermal state hit both "
+      "equally.\n\n" % (a_label, b_label))
+
+    w("| node | bytes |\n| --- | ---: |\n")
+    for node in COUNTERPART_NODES:
+        w("| `%s` | %d |\n" % (node, a["nodesizes"][node]))
+    w("\n")
+
+    common = [n for n in a["order"] if n in b["fixtures"]]
+    w("#### walk -- ns/node\n\n")
+    w("| Case | " + " | ".join(header(arm) for arm in FIDELITY_WALK_ARMS) + " |\n")
+    w("| --- |" + " ---: |" * len(FIDELITY_WALK_ARMS) + "\n")
+    for name in common:
+        cells = [delta(ns_per_node(a, name, "-", arm), ns_per_node(b, name, "-", arm))
+                 for arm in FIDELITY_WALK_ARMS]
+        w("| %s | %s |\n" % (name, " | ".join(c or "n/a" for c in cells)))
+    w("\n")
+
+    for kind, title in [("subst", "map, Expr-level `Var` substitution"),
+                        ("swap", "map, Stmt-level `Evaluate` swap")]:
+        rows = [n for n in common if a["fixtures"][n]["kind"] == kind]
+        if not rows:
+            continue
+        arms = FIDELITY_MAP_ARMS[kind]
+        w("#### %s -- ns/node\n\n" % title)
+        w("| Case | own | " + " | ".join(header(arm) for arm in arms) + " |\n")
+        w("| --- | --- |" + " ---: |" * len(arms) + "\n")
+        for name in rows:
+            for ownership in ["retained", "moved"]:
+                cells = [delta(ns_per_node(a, name, ownership, arm),
+                               ns_per_node(b, name, ownership, arm)) for arm in arms]
+                w("| %s | %s | %s |\n" % (name, ownership, " | ".join(c or "n/a" for c in cells)))
+        w("\n")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--binary", action="append", default=[])
     ap.add_argument("--two-state", action="store_true")
+    ap.add_argument("--fidelity", action="store_true",
+                    help="compare the two --binary harnesses within this host: check that "
+                         "they share one engine and one node layout, then render their "
+                         "interleaved agreement tables")
     ap.add_argument("--state", action="append", default=[],
                     help="LABEL=REF:PATH, given twice for a two-state run")
     ap.add_argument("--differs", default="unstated",
@@ -314,6 +432,18 @@ def main():
             states.append((label, ref, os.path.abspath(path)))
         merged = interleave(states, args.cpu, args.runs)
         render_compare(merged, states, args.runs, args.differs, out)
+    elif args.fidelity:
+        if len(args.binary) != 2:
+            raise SystemExit("--fidelity needs exactly two --binary arguments")
+        paths = [os.path.abspath(p) for p in args.binary]
+        labels = [parse(subprocess.run([p], capture_output=True, text=True).stdout)
+                  ["provenance"]["harness"] for p in paths]
+        if labels[0] == labels[1]:
+            raise SystemExit("--fidelity compares two different harnesses; both are %s"
+                             % labels[0])
+        states = [(labels[i], "", paths[i]) for i in (0, 1)]
+        merged = interleave(states, args.cpu, args.runs)
+        render_fidelity(merged, labels, args.runs, out)
     else:
         for binary in args.binary:
             binary = os.path.abspath(binary)

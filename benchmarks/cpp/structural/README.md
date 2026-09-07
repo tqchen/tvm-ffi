@@ -29,15 +29,17 @@ of the earlier work, read it top to bottom once; it is shorter than re-deriving 
 ## Contents
 
 1. [Why this is a branch](#why-this-is-a-branch-and-not-main)
-2. [Running it](#running-it)
-3. [Two-state runs](#two-state-runs)
-4. [The arm vocabulary](#the-arm-vocabulary-which-arm-answers-which-question)
-5. [The fixtures](#the-fixtures)
-6. [Method, and what it protects against](#method-and-what-it-protects-against)
-7. [Reading the tables](#reading-the-tables)
-8. [The port](#the-port)
-9. [Adding an arm or a fixture](#adding-an-arm-or-a-fixture)
-10. [Layout](#layout)
+2. [The two harnesses, and what may differ between them](#the-two-harnesses-and-what-may-differ-between-them)
+3. [Running it](#running-it)
+4. [Two-state runs](#two-state-runs)
+5. [Fidelity runs](#fidelity-runs-mini-tir-against-real-tvm)
+6. [The arm vocabulary](#the-arm-vocabulary-which-arm-answers-which-question)
+7. [The fixtures](#the-fixtures)
+8. [Method, and what it protects against](#method-and-what-it-protects-against)
+9. [Reading the tables](#reading-the-tables)
+10. [The port](#the-port)
+11. [Adding an arm or a fixture](#adding-an-arm-or-a-fixture)
+12. [Layout](#layout)
 
 ## Why this is a branch and not `main`
 
@@ -49,18 +51,46 @@ when the engine moves, and that rebase is when the harness is re-validated again
 The guard is disabled by an off-by-default CMake option added on this branch,
 `TVM_FFI_BENCH_ALLOW_TYPE_ATTR_OVERRIDE`, and the hook override is the only thing that needs it.
 
-**Two harnesses, everything else shared.** `mini-TIR` builds its fixtures from tvm-ffi's own
-types and registers its own hooks: no override, no patch, runs in tvm-ffi's tree alone. `real
-TVM` links TVM and overrides the real hooks from `main()`, which runs after every
-`TVM_FFI_STATIC_INIT_BLOCK`, and needs the guard patch. They differ only in the types they build
-from and how hooks are installed; arms, method, checks and report format are common. Where a
-fixture exists in both, the rows are structural counterparts — same node counts, same
-occurrence counts, same rebuild counts — so disagreement between them is a signal rather than
-noise. `call-split-fuse` is real-TVM only: mini-TIR has no `Call` node, and the guards that
-fixture exists to reach are `Call`'s.
+## The two harnesses, and what may differ between them
 
-**Two-state runs are real-TVM only**, for the same reason in reverse: mini-TIR's hooks are the
-harness's own code rather than a port, so there is no per-state hook file for them.
+`mini-TIR` builds its fixtures from tvm-ffi's own types and registers its own hooks: no
+override, no patch, runs in tvm-ffi's tree alone. `real TVM` links TVM and overrides the real
+hooks from `main()`, which runs after every `TVM_FFI_STATIC_INIT_BLOCK`, and needs the guard
+patch. Arms, method, checks and report format are common to both.
+
+**The only permitted difference is which node types exist.** mini-TIR carries a reduced set —
+four binary operators, one statement pair, no dialect nodes — and that reduction is the whole
+of the modelling licence. Every node type mini-TIR *does* have is its apache/tvm counterpart's
+layout: same fields, in the same order, with the same types, the same `_type_child_slots`,
+`_type_final` and `_type_s_eq_hash_kind`, so a node is the same size and costs the same to
+reach a field on. Every hook mini-TIR *does* have is a port of that counterpart's hook body,
+the same way `tvm_hook_override.h` is, down to the guards a fixture never takes. A node that
+exists in both harnesses is not a model of the other; it is a copy of it.
+
+That extends past the node set to anything a shared arm runs through. `walk_functor` and
+`map_functor` are ports of `IRApplyVisit` and the harness's own lean `FunctorSubstitute`;
+`walk_old` and `map_old` are ports of what `PostOrderVisit` and `Substitute` **are at the
+pinned revision**, which at `a1031a2177` is the functor machinery again rather than the
+structural engine. Re-porting the hooks and leaving these behind is how the two harnesses came
+to disagree by 6.6% to 44.9% on `old` while agreeing on the engine arms.
+
+**The acceptance test is within-host agreement.** Where a fixture exists in both, the rows are
+structural counterparts — same node counts, same occurrence counts, same rebuild counts, same
+node sizes — and they must agree **on one host**, built by one compiler against one engine.
+Cross-host comparison is not the goal and must not be attempted: two machines differ in
+compiler and architecture, so nothing cross-host is attributable to either harness.
+`report.py --fidelity` is that comparison; see [Running it](#running-it).
+
+**mini-TIR keeping its own hook file is not a gap.** It is the same arrangement as
+`tvm_hook_override.h`, which also writes TVM's hooks out locally and always overrides. The two
+files are deliberately unfactored: a reader follows either without instantiating a template,
+and a change to one cannot silently reshape the other. Duplication between them is correct,
+the same principle the two-state hook files apply between states.
+
+**Two-state runs are real-TVM only.** Not because mini-TIR's hooks are the harness's own code
+— so are real TVM's here — but because a two-state run holds apache/tvm fixed and varies the
+engine, and mini-TIR has no apache/tvm to hold fixed. `report.py --fidelity` is the run that
+uses both harnesses.
 
 ## Running it
 
@@ -69,8 +99,9 @@ harness's own code rather than a port, so there is no per-state hook file for th
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DTVM_FFI_BENCH_ALLOW_TYPE_ATTR_OVERRIDE=ON
 cmake --build build -j
 
-# TVM, with its 3rdparty/tvm-ffi submodule checked out to this branch.  TVM builds tvm-ffi
-# through add_subdirectory, so the option reaches it from here.
+# TVM, with its 3rdparty/tvm-ffi pointed at THIS checkout.  TVM builds tvm-ffi through
+# add_subdirectory, so the option reaches it from here -- and pointing the submodule at this
+# checkout is what makes the two binaries share one engine, which a fidelity run requires.
 cmake -S "$TVM" -B "$TVM/build" -DCMAKE_BUILD_TYPE=Release \
       -DTVM_FFI_BENCH_ALLOW_TYPE_ATTR_OVERRIDE=ON
 cmake --build "$TVM/build" -j --target tvm_compiler
@@ -142,6 +173,35 @@ absent on the other is itself a build difference.
 no callbacks, so an engine or protocol change should not touch it, and if it moves the two
 builds differ in something beyond what is under study and nothing else in that row can be
 trusted.
+
+## Fidelity runs: mini-TIR against real TVM
+
+The check that the two harnesses are one harness with two node sets.
+
+```sh
+benchmarks/cpp/structural/report.py --fidelity --cpu 0 --runs 5 \
+    --binary build_bench/real_tvm_bench --binary build_bench/mini_tir_bench \
+    --out fidelity.md
+```
+
+It interleaves the two processes real/mini/real/mini for the same reason a two-state run
+does, and it refuses to render at all unless two preconditions hold.
+
+**One engine.** Both binaries must be stamped with the same `tvm_ffi_engine_sha`. `build.sh`
+stamps them equal when the TVM checkout's `3rdparty/tvm-ffi` resolves to this checkout, and
+prints that it did. Built any other way, mini links this branch's engine and real links
+whatever TVM's submodule pins, and every cell of the comparison carries an engine delta
+wearing a fidelity delta's clothes.
+
+**One layout.** Both binaries emit a `#nodesize` line per counterpart node type, and the run
+fails with the offending pairs listed if any disagree. This is what keeps the layout
+requirement from decaying into a comment: a field added to one side and not the other stops a
+fidelity run rather than shifting a number.
+
+Read it the way the tables above are read — a delta is a delta between two arms measured in
+one host, and **a cross-host reading of these numbers is not one the harness supports.** Two
+machines differ in compiler and architecture, so a mini-versus-real gap seen across hosts is
+attributable to neither harness.
 
 ## The arm vocabulary: which arm answers which question
 
@@ -273,6 +333,13 @@ traversal never evaluates the call, and the hooks skip an `OpNode` operator with
 which one — so four distinct builtins stand in for the four node types, which keeps the `op`
 field varying exactly as the direct form's node type does.
 
+**It exists in both harnesses.** mini-TIR has an `HCallObj` with `CallNode`'s layout — an
+`HExpr op`, an `Array<HExpr> args`, a null `HAttrs attrs`, an empty `Array<HType> ty_args` —
+and a port of all three `Call` hooks, so the fixture that reaches the most interesting hook in
+the port is not a real-TVM-only row. `Call` is where the engine wins most, and having it on
+one side only put the largest result in the map tables out of the fidelity comparison's
+reach.
+
 **seq** is the one that scales, and the three lengths are one per cache level: 16 inside a
 32 KiB L1d, 256 inside a 1 MiB L2, 16384 inside a 32 MiB L3. `report.py` names the level from
 that stated geometry. Any question about how a result behaves as the tree stops fitting in cache
@@ -340,7 +407,8 @@ table.
 - **The swap does what it claims.** Exactly the targeted elements differ, every other is
   pointer-identical to the input, and a second application restores the original pointers. This
   caught a density point whose swap pairs collided.
-- **Splice matches the reference.** The in-place hook must produce exactly what the
+- **Splice matches the reference.** Real-TVM only; mini-TIR has no splice arm. The in-place
+  hook must produce exactly what the
   non-in-place `MutateSeqStmtRaw` produces — it is an optimization of the same semantics. The
   two are differential-tested against each other across thirteen cases: grow at
   first/last/middle, several in one pass, two adjacent, length-preserving, shrink at
@@ -357,9 +425,19 @@ table.
   path. It reads as a bug, it is untested in TVM's own tests, and `CheckNoOpAsymmetry` pins it.
 - **The declared fixture counts are the real ones.** `CheckDeclaredCounts` walks each fixture
   once and fails the run if unique nodes, occurrences or rebuild counts differ from what the
-  builder declared.
+  builder declared. **Both harnesses run it**, which is what keeps their fixture rows
+  counterparts: the same declared numbers on both sides, each checked against what its own
+  builder actually built.
+- **In-place fires in mini-TIR too.** `CheckInplace` runs in both binaries, for the same
+  reason: an in-place path that silently stopped firing on one side would read as a fidelity
+  gap rather than as the broken check it is.
 - **Hook coverage.** Every type a fixture dispatches on must have a harness hook, so a new
   fixture that reaches a new type names it instead of silently falling through to TVM's.
+  Real-TVM only — mini-TIR registers every hook it has and has no TVM registration to fall
+  through to.
+- **Layout parity.** Every counterpart node type must be the same size in both harnesses;
+  `report.py --fidelity` lists the offending pairs and refuses to render otherwise. See
+  [Fidelity runs](#fidelity-runs-mini-tir-against-real-tvm).
 - **Port fidelity.** See [The port](#the-port).
 
 **Splicing can only ever grow, through the public API.** `SeqStmt`'s constructor rejects both
@@ -436,6 +514,14 @@ and in an afternoon.
 It re-extracts each function from the TVM revision and diffs it against the copy in the header.
 **Run it before trusting any measurement**, and after every rebase of the PR.
 
+**`mini_tir.h` is a port too**, of the same functions plus the functor-era `IRApplyVisit`,
+`IRSubstitute`, `ExprFunctor`/`StmtFunctor` and the `TVM_DEFINE_BINOP_CONSTRUCTOR` body, over
+mini-TIR's node names. `port_check.sh` cannot diff it byte-for-byte because every type name is
+renamed, so it is checked by the fidelity run instead: an unported hook shows up as a
+mini-versus-real gap on this host. When a re-port drifts one file, drift the other in the same
+commit — the last time only `tvm_hook_override.h` was re-ported, mini kept a `SeqStmt` mutate
+pair and an `old` pair from an earlier revision and the harnesses disagreed by up to 65%.
+
 **Re-porting when the PR moves:**
 
 1. Fetch the new head and run `port_check.sh` against it. Every function it reports as `DRIFT`
@@ -444,7 +530,8 @@ It re-extracts each function from the TVM revision and diffs it against the copy
 2. Replace the drifted bodies verbatim. Do not hand-merge — copy.
 3. Update the recorded sha in the header's `PORTED FROM` block. `port_check.sh` reads it from
    there, so that one line is the provenance.
-4. If the PR bumped `3rdparty/tvm-ffi`, rebase this branch onto that ref so both harnesses build
+4. Re-port `mini_tir.h`'s counterparts in the same commit, and rerun `report.py --fidelity`.
+5. If the PR bumped `3rdparty/tvm-ffi`, rebase this branch onto that ref so both harnesses build
    against the same engine.
 5. Rebuild both harnesses and re-run. Re-porting is not complete until the numbers are refreshed:
    a hook change that alters a hot path invalidates the previous tables.
@@ -477,15 +564,15 @@ drifted from what the format was built to say — fix that first.
 | --- | --- |
 | `timer.h` | the two timing loops and their constants, and nothing else |
 | `bench_common.h` | the two floor arms, build-time provenance, printing |
-| `mini_tir.h` | mini-TIR's node types, their hooks, and the traversal machinery the baseline arms measure |
+| `mini_tir.h` | mini-TIR's node types — apache/tvm's layouts under mini-TIR names — their hooks, and the traversal machinery the baseline arms measure |
 | `tvm_hook_override.h` | every structural hook the benchmark dispatches into on real TVM types, and the installation that puts them over TVM's |
 | `tvm_hook_override_pre753.h` | the same hooks written against a pre-#753 tvm-ffi, for two-state runs that reach back that far |
 | `state_shims/` | headers force-included into apache/tvm's own translation units so TVM compiles against an older engine; never on the benchmark's include path |
-| `mini_tir_bench.cc` | mini-TIR fixtures, arms, `main` |
+| `mini_tir_bench.cc` | mini-TIR fixtures, arms, checks, `main` |
 | `real_tvm_bench.cc` | real-TVM fixtures, arms, checks, `main` |
 | `build.sh` | builds each harness, single-state or one binary per engine state, stamping provenance in |
 | `port_check.sh` | diffs the ported hooks against the TVM revision they came from |
-| `report.py` | runs each binary N pinned processes, medians the process medians, renders the tables; `--two-state` interleaves A/B/A/B and renders the comparison |
+| `report.py` | runs each binary N pinned processes, medians the process medians, renders the tables; `--two-state` interleaves A/B/A/B and renders the comparison; `--fidelity` interleaves the two harnesses and checks their engine and node layouts before rendering |
 
 The two hook headers are deliberately **not** factored against each other. Their bodies read
 almost identically and are written out twice on purpose: a reader can follow either without

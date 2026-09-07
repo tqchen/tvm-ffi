@@ -191,14 +191,31 @@ fi
 # Single-state mode.
 # ---------------------------------------------------------------------------
 
+# A mini-versus-real fidelity run compares two binaries in one host, so they must be the same
+# engine.  Point the TVM checkout's 3rdparty/tvm-ffi at THIS checkout and it is: both binaries
+# link the one libtvm_ffi.so that TVM's build produced, and both are stamped with the same
+# engine sha.  report.py --fidelity refuses to compare them otherwise, because an engine
+# difference between the harnesses reads exactly like a fidelity gap.
+ffi_lib="${FFI_BUILD}/lib"
+ffi_include="${FFI_ROOT}/include"
+ffi_sha="${harness_commit}"
+same_engine="no"
+if [[ -n "${TVM_ROOT}" ]] &&
+   [[ "$(readlink -f "${TVM_ROOT}/3rdparty/tvm-ffi")" == "$(readlink -f "${FFI_ROOT}")" ]]; then
+  ffi_lib="${TVM_BUILD}/lib"
+  ffi_include="${TVM_ROOT}/3rdparty/tvm-ffi/include"
+  same_engine="yes"
+  echo "tvm-ffi is this checkout: both harnesses link ${ffi_lib}/libtvm_ffi.so"
+fi
+
 echo "building mini-TIR harness"
 ${CXX} ${FLAGS} \
-  -I"${FFI_ROOT}/include" -I"${FFI_ROOT}/3rdparty/dlpack/include" -I"${HERE}" \
+  -I"${ffi_include}" -I"${FFI_ROOT}/3rdparty/dlpack/include" -I"${HERE}" \
   "${common_defs[@]}" \
-  "-DTVM_FFI_BENCH_ENGINE_SHA=\"${harness_commit}\"" \
+  "-DTVM_FFI_BENCH_ENGINE_SHA=\"${ffi_sha}\"" \
   -DTVM_FFI_BENCH_TVM_SHA="\"n/a (mini-TIR builds from tvm-ffi types alone)\"" \
   "${HERE}/mini_tir_bench.cc" \
-  -L"${FFI_BUILD}/lib" -ltvm_ffi -Wl,-rpath,"${FFI_BUILD}/lib" \
+  -L"${ffi_lib}" -ltvm_ffi -Wl,-rpath,"${ffi_lib}" \
   -o "${OUT}/mini_tir_bench"
 
 if [[ -n "${TVM_ROOT}" ]]; then
@@ -206,6 +223,7 @@ if [[ -n "${TVM_ROOT}" ]]; then
   tvm_dirty="$(git -C "${TVM_ROOT}" status --porcelain -- src include CMakeLists.txt | head -1)"
   [[ -n "${tvm_dirty}" ]] && tvm_sha="${tvm_sha}-dirty"
   ffi_pin="$(git -C "${TVM_ROOT}/3rdparty/tvm-ffi" rev-parse HEAD)"
+  [[ "${same_engine}" == "yes" ]] && ffi_pin="${ffi_sha}"
   echo "building real-TVM harness against ${tvm_sha} (tvm-ffi ${ffi_pin})"
   ${CXX} ${FLAGS} \
     -I"${TVM_ROOT}/include" -I"${TVM_ROOT}/3rdparty/tvm-ffi/include" \
