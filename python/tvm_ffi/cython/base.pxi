@@ -139,6 +139,7 @@ cdef extern from "tvm/ffi/c_api.h":
         kTVMFFIObjectRValueRef = 10
         kTVMFFISmallStr = 11
         kTVMFFISmallBytes = 12
+        kTVMFFIUnchanged = 13
         kTVMFFIStaticObjectBegin = 64
         kTVMFFIObject = 64
         kTVMFFIStr = 65

@@ -52,7 +52,7 @@ Expected<Any> StructuralMapExpected(
     Any root,  // NOLINT(performance-unnecessary-value-param)
     const Array<Tuple<int32_t, Function>>& callbacks,
     const Array<Tuple<int32_t, Function>>& callbacks_with_def_region_kind, int order) noexcept {
-  Expected<UnchangedOr<Any>> result = [&]() {
+  Expected<UnchangedOr<Any>> result = [&]() -> Expected<UnchangedOr<Any>> {
     if (order == static_cast<int>(WalkOrder::kPreOrder)) {
       using Mutator = StructuralMapDynEngine<StructuralMapEngineBase, WalkOrder::kPreOrder>;
       StructuralMutator mutator(make_object<Mutator>(callbacks, callbacks_with_def_region_kind));
@@ -63,7 +63,9 @@ Expected<Any> StructuralMapExpected(
     return mutator->MaybeInplaceMutateIfUniqueExpected(root);
   }();
   if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
-  return std::move(result).value().ValueOrUnchanged(root);
+  UnchangedOr<Any> mapped = AnyUnsafe::MoveFromAnyAfterCheck<UnchangedOr<Any>>(
+      std::move(ExpectedUnsafe::GetData(result)));
+  return std::move(mapped).ValueOrUnchanged(std::move(root));
 }
 
 /*! \brief Runtime counterpart of the typed callback-owned mutate engine. */
@@ -93,8 +95,7 @@ class StructuralMutateDynEngine : public Parent {
     return static_cast<StructuralMutateDynEngine*>(mutator)->MaybeInplaceMutateImplRaw(value);
   }
 
-  std::optional<Expected<UnchangedOr<Any>>> DispatchCallback(AnyView value,
-                                                             bool allow_inplace) noexcept {
+  std::optional<Expected<Any>> DispatchCallback(AnyView value, bool allow_inplace) noexcept {
     for (const auto& entry : callbacks_) {
       if (!RuntimeTypeIndexMatch(value.type_index(), entry.template get<0>())) continue;
       if (entry.template get<2>()) {
@@ -108,8 +109,8 @@ class StructuralMutateDynEngine : public Parent {
   }
 
   TVMFFIAny MutateImplRaw(AnyView value) noexcept {
-    if (std::optional<Expected<UnchangedOr<Any>>> matched = DispatchCallback(value, false)) {
-      Expected<UnchangedOr<Any>> result = *std::move(matched);
+    if (std::optional<Expected<Any>> matched = DispatchCallback(value, false)) {
+      Expected<Any> result = *std::move(matched);
       if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
         Parent::UpdateVisitErrorContext(result, value);
       }
@@ -119,8 +120,8 @@ class StructuralMutateDynEngine : public Parent {
   }
 
   TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
-    if (std::optional<Expected<UnchangedOr<Any>>> matched = DispatchCallback(value, true)) {
-      Expected<UnchangedOr<Any>> result = *std::move(matched);
+    if (std::optional<Expected<Any>> matched = DispatchCallback(value, true)) {
+      Expected<Any> result = *std::move(matched);
       if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
         Parent::UpdateVisitErrorContext(result, value);
       }
@@ -148,7 +149,9 @@ Expected<Any> StructuralMutateExpected(
   StructuralMutator mutator(make_object<Mutator>(callbacks));
   auto result = mutator->MaybeInplaceMutateIfUniqueExpected(root);
   if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
-  return std::move(result).value().ValueOrUnchanged(root);
+  UnchangedOr<Any> mapped = AnyUnsafe::MoveFromAnyAfterCheck<UnchangedOr<Any>>(
+      std::move(ExpectedUnsafe::GetData(result)));
+  return std::move(mapped).ValueOrUnchanged(std::move(root));
 }
 
 // ---------------------------------------------------------------------------
@@ -189,13 +192,11 @@ TVM_FFI_INLINE TVMFFIAny MutateSeqContainerChanged(StructuralMutatorObj* mutator
  *
  * \tparam SeqObj The underlying sequence object type.
  * \param mutator The active structural mutator.
- * \param value The borrowed sequence container.
- * \param self The sequence object stored in \p value.
+ * \param self The source sequence object.
  * \return The mutated sequence, or an Error.
  */
 template <typename SeqObj>
-TVMFFIAny MutateSeqContainerRaw(StructuralMutatorObj* mutator, AnyView value,
-                                const SeqObj* self) noexcept {
+TVMFFIAny MutateSeqContainerRaw(StructuralMutatorObj* mutator, const SeqObj* self) noexcept {
   int64_t size = static_cast<int64_t>(self->size());
   const Any* items = self->begin();
 
@@ -215,13 +216,11 @@ TVMFFIAny MutateSeqContainerRaw(StructuralMutatorObj* mutator, AnyView value,
  *
  * \tparam SeqObj The underlying sequence object type.
  * \param mutator The active structural mutator.
- * \param value The borrowed sequence container, which must be safe to mutate in place.
- * \param self The sequence object stored in \p value.
+ * \param self The sequence object, which must be safe to mutate in place.
  * \return The mutated sequence, or an Error.
  */
 template <typename SeqObj>
-TVMFFIAny MaybeInplaceMutateSeqContainerRaw(StructuralMutatorObj* mutator, AnyView value,
-                                            SeqObj* self) noexcept {
+TVMFFIAny MaybeInplaceMutateSeqContainerRaw(StructuralMutatorObj* mutator, SeqObj* self) noexcept {
   for (int64_t i = 0; i < static_cast<int64_t>(self->size()); ++i) {
     const Any& item = self->begin()[i];
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, mapped_value,
@@ -274,13 +273,11 @@ TVM_FFI_INLINE TVMFFIAny MutateMapValuesChanged(StructuralMutatorObj* mutator,
  *
  * \tparam MapObjType The underlying map object type.
  * \param mutator The active structural mutator.
- * \param value The borrowed map container.
- * \param self The map object stored in \p value.
+ * \param self The source map object.
  * \return The mutated map, or an Error.
  */
 template <typename MapObjType>
-TVMFFIAny MutateMapValuesRaw(StructuralMutatorObj* mutator, AnyView value,
-                             const MapObjType* self) noexcept {
+TVMFFIAny MutateMapValuesRaw(StructuralMutatorObj* mutator, const MapObjType* self) noexcept {
   size_t index = 0;
   for (auto source_it = self->begin(); source_it != self->end(); ++source_it, ++index) {
     const Any& old_value = source_it->second;
@@ -299,13 +296,11 @@ TVMFFIAny MutateMapValuesRaw(StructuralMutatorObj* mutator, AnyView value,
  *
  * \tparam MapObjType The underlying map object type.
  * \param mutator The active structural mutator.
- * \param value The borrowed map container, which must be safe to mutate in place.
- * \param self The map object stored in \p value.
+ * \param self The map object, which must be safe to mutate in place.
  * \return The mutated map, or an Error.
  */
 template <typename MapObjType>
-TVMFFIAny MaybeInplaceMutateMapValuesRaw(StructuralMutatorObj* mutator, AnyView value,
-                                         MapObjType* self) noexcept {
+TVMFFIAny MaybeInplaceMutateMapValuesRaw(StructuralMutatorObj* mutator, MapObjType* self) noexcept {
   for (auto it = self->begin(); it != self->end(); ++it) {
     Any& old_value = it->second;
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, new_value,
@@ -318,56 +313,56 @@ TVMFFIAny MaybeInplaceMutateMapValuesRaw(StructuralMutatorObj* mutator, AnyView 
 }
 
 /*! \brief Identity structural mutation hook for immutable String and Bytes leaves. */
-TVMFFIAny MutateImmutableLeaf(StructuralMutatorObj*, AnyView value) noexcept {
+TVMFFIAny MutateImmutableLeaf(StructuralMutatorObj*, AnyView) noexcept {
   TVM_FFI_S_MUTATE_RETURN_UNCHANGED();
 }
 
 /*! \brief Structural mutation hook for ArrayObj. */
 TVMFFIAny MutateArray(StructuralMutatorObj* mutator, AnyView value) noexcept {
   return MutateSeqContainerRaw(
-      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const ArrayObj>(value));
+      mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const ArrayObj>(value));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for ArrayObj. */
 TVMFFIAny MaybeInplaceMutateArray(StructuralMutatorObj* mutator, AnyView value) noexcept {
   return MaybeInplaceMutateSeqContainerRaw(
-      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<ArrayObj>(value));
+      mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<ArrayObj>(value));
 }
 
 /*! \brief Structural mutation hook for ListObj. */
 TVMFFIAny MutateList(StructuralMutatorObj* mutator, AnyView value) noexcept {
   return MutateSeqContainerRaw(
-      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const ListObj>(value));
+      mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const ListObj>(value));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for ListObj. */
 TVMFFIAny MaybeInplaceMutateList(StructuralMutatorObj* mutator, AnyView value) noexcept {
   return MaybeInplaceMutateSeqContainerRaw(
-      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<ListObj>(value));
+      mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<ListObj>(value));
 }
 
 /*! \brief Structural mutation hook for MapObj. */
 TVMFFIAny MutateMap(StructuralMutatorObj* mutator, AnyView value) noexcept {
   return MutateMapValuesRaw(
-      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const MapObj>(value));
+      mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const MapObj>(value));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for MapObj. */
 TVMFFIAny MaybeInplaceMutateMap(StructuralMutatorObj* mutator, AnyView value) noexcept {
   return MaybeInplaceMutateMapValuesRaw(
-      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<MapObj>(value));
+      mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<MapObj>(value));
 }
 
 /*! \brief Structural mutation hook for DictObj. */
 TVMFFIAny MutateDict(StructuralMutatorObj* mutator, AnyView value) noexcept {
   return MutateMapValuesRaw(
-      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const DictObj>(value));
+      mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const DictObj>(value));
 }
 
 /*! \brief Maybe-in-place structural mutation hook for DictObj. */
 TVMFFIAny MaybeInplaceMutateDict(StructuralMutatorObj* mutator, AnyView value) noexcept {
   return MaybeInplaceMutateMapValuesRaw(
-      mutator, value, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<DictObj>(value));
+      mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<DictObj>(value));
 }
 }  // namespace details
 
@@ -383,11 +378,12 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                   [](const StructuralMutator& mutator, AnyView value) {
                     return std::move(mutator->Mutate(value)).ValueOrUnchanged(value);
                   })
-      .def_method(
-          "ffi.StructuralMutatorDefaultMutate",
-          [](const StructuralMutator& mutator, AnyView value) -> Any {
-            return std::move(mutator->DefaultMutateExpected(value)).value().ValueOrUnchanged(value);
-          })
+      .def_method("ffi.StructuralMutatorDefaultMutate",
+                  [](const StructuralMutator& mutator, AnyView value) -> Any {
+                    Any result = std::move(mutator->DefaultMutateExpected(value)).value();
+                    return result.type_index() == TypeIndex::kTVMFFIUnchanged ? Any(value)
+                                                                              : std::move(result);
+                  })
       .def_method("ffi.StructuralMutatorVarRemapGet",
                   [](const StructuralMutator& mutator, AnyView var) {
                     return mutator->VarRemapGetExpected(var).value();

@@ -1234,6 +1234,11 @@ structural child, and returns an interrupt if one occurs:
 
 A custom ``__s_mutate__`` hook similarly receives the active mutator.  It should
 recursively call ``mutator.mutate`` and return a new value only when needed.
+In C++, a hook can return ``Unchanged()`` when it produces no new value, or use
+``UnchangedOr<T>`` to carry either that marker or a replacement.  The mutator
+propagates the marker through recursive callback-facing entry points.  The
+top-level ``StructuralMap`` and ``StructuralMutate`` functions resolve it to the
+original value, so it never escapes as a mapped value.
 An optional ``__s_maybe_inplace_mutate__`` hook may implement an in-place
 optimization.  The structural-map engine dispatches it only when the input is
 safe to mutate, so the optional hook may rely on that ownership guarantee.  A
@@ -1291,8 +1296,9 @@ subtree. An unmatched value uses default descent:
          return visitor->VisitExpected(pair->lhs);
        });
 
-Walk callbacks return ``Expected<WalkResult>``.  Map callbacks return
-``Expected<Any>`` and must obey the same non-in-place callback contract as the
-Python API.  For ``Map`` and ``Dict``, both APIs process values and skip keys.
+Walk callbacks return ``Expected<WalkResult>``.  Map callbacks may return a bare
+replacement, ``Unchanged``, or ``Expected<Any>``, and must obey the same
+non-in-place callback contract as the Python API.
+For ``Map`` and ``Dict``, both APIs process values and skip keys.
 ``StructuralWalk``, ``StructuralVisit`` and ``StructuralMap`` are the
 corresponding throwing convenience forms.

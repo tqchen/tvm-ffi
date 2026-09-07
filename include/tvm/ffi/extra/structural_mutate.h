@@ -91,8 +91,8 @@ using FStructuralVarRemapSet = TVMFFIAny (*)(StructuralMutatorObj* mutator, AnyV
 namespace details {
 
 // Copy and structurally mutate the reflected fields of an object-backed value.
-TVM_FFI_INLINE static Expected<UnchangedOr<Any>> MutateReflectedFieldsExpected(
-    StructuralMutatorObj* mutator, AnyView value) noexcept;
+TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMutatorObj* mutator,
+                                                                  AnyView value) noexcept;
 
 }  // namespace details
 
@@ -144,9 +144,20 @@ struct UnchangedOrUnsafe;
 
 /*! \brief Tag for a mutation result that produced no new value. */
 struct Unchanged {
-  template <typename T>
-  TVM_FFI_INLINE operator Expected<UnchangedOr<T>>() const noexcept {
-    return Expected<UnchangedOr<T>>(UnchangedOr<T>(*this));
+  /*!
+   * \brief Convert this tag to its raw marker representation.
+   * \return An owning ``Any`` carrying the reserved unchanged type index.
+   */
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE operator Any() const noexcept {
+    // The marker needs a reserved type index because every ordinary index is a legal mutation
+    // result. In particular, kTVMFFINone is a valid replacement and cannot double as the marker.
+    TVMFFIAny raw;
+    raw.type_index = TypeIndex::kTVMFFIUnchanged;
+    // invariance: always set the union padding part to 0
+    raw.zero_padding = 0;
+    raw.v_int64 = 0;
+    return details::AnyUnsafe::MoveTVMFFIAnyToAny(&raw);
   }
 };
 
@@ -154,6 +165,15 @@ struct Unchanged {
  * \brief A structural-mutation result containing a replacement or no new value.
  *
  * \tparam T The replacement value type.
+ * \note ``UnchangedOr`` is deliberately designed to only have rvalue-qualified value accessors,
+ *       so the compiler forces a value to leave the container exactly once, via a move.
+ *
+ * \code{.cpp}
+ * // resolves to the original when the descent reported unchanged
+ * copy->a = std::move(a).ValueOrUnchanged(std::move(copy->a));
+ * // already known to be changed, so no original is needed
+ * copy->b = std::move(b).ValueUnchecked();
+ * \endcode
  */
 template <typename T>
 class UnchangedOr {
@@ -164,46 +184,27 @@ class UnchangedOr {
   /*!
    * \brief Construct an unchanged result from its tag.
    * \param unchanged The unchanged tag.
-   *
-   * The marker needs a reserved type index because every ordinary index is a legal mutation
-   * result. In particular, ``kTVMFFINone`` is a valid replacement and cannot double as the marker.
    */
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  TVM_FFI_INLINE UnchangedOr(Unchanged unchanged) noexcept {
-    TVMFFIAny raw;
-    raw.type_index = TypeIndex::kTVMFFIUnchanged;
-    // invariance: always set the union padding part to 0
-    raw.zero_padding = 0;
-    raw.v_int64 = 0;
-    data_ = details::AnyUnsafe::MoveTVMFFIAnyToAny(&raw);
-  }
+  TVM_FFI_INLINE UnchangedOr(Unchanged unchanged) noexcept : data_(static_cast<Any>(unchanged)) {}
 
   /*!
    * \brief Construct a changed result from a replacement value.
-   * \tparam TT The replacement source type.
    * \param value The replacement value.
    */
-  template <typename TT,
-            typename = std::enable_if_t<!std::is_same_v<std::decay_t<TT>, UnchangedOr> &&
-                                        std::is_convertible_v<TT, T>>>
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  TVM_FFI_INLINE UnchangedOr(TT&& value) : data_(Any(T(std::forward<TT>(value)))) {}
+  TVM_FFI_INLINE UnchangedOr(T value) : data_(Any(std::move(value))) {}
 
-  /*!
-   * \brief Construct a changed ``UnchangedOr<Any>`` from a borrowed value.
-   * \tparam U The replacement type, constrained to ``Any``.
-   * \param value The borrowed replacement value.
-   */
-  template <typename U = T,
-            typename = std::enable_if_t<std::is_same_v<T, Any> && std::is_same_v<U, T>>>
-  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  TVM_FFI_INLINE UnchangedOr(AnyView value) : data_(Any(value)) {}
+  template <typename U, std::enable_if_t<std::is_base_of_v<Error, std::decay_t<U>> ||
+                                             details::is_unexpected_v<std::decay_t<U>>,
+                                         int> = 0>
+  UnchangedOr(U&&) = delete;
 
   /*!
    * \brief Whether this result asks the caller to preserve the original value.
    * \return Whether the result is unchanged.
    */
-  TVM_FFI_INLINE bool IsUnchanged() const noexcept {
+  TVM_FFI_INLINE bool IsUnchanged() const& noexcept {
     return data_.type_index() == TypeIndex::kTVMFFIUnchanged;
   }
 
@@ -212,7 +213,7 @@ class UnchangedOr {
    * \param original The original value.
    * \return Whether the original identity may be reused.
    */
-  TVM_FFI_INLINE bool UnchangedOrSameAs(const T& original) const noexcept {
+  TVM_FFI_INLINE bool UnchangedOrSameAs(const T& original) const& noexcept {
     return IsUnchanged() || data_.same_as(original);
   }
 
@@ -220,6 +221,7 @@ class UnchangedOr {
    * \brief Move the replacement, or move \p original when unchanged.
    * \param original The owned original value.
    * \return The replacement or original value.
+   * \note Passing a named lvalue transfers ownership and may leave it moved-from.
    */
   TVM_FFI_INLINE T ValueOrUnchanged(T& original) && {
     return IsUnchanged() ? std::move(original)
@@ -237,25 +239,6 @@ class UnchangedOr {
   }
 
   /*!
-   * \brief Move the replacement, or copy \p original when unchanged.
-   * \param original The borrowed original value.
-   * \return The replacement or original value.
-   */
-  TVM_FFI_INLINE T ValueOrUnchanged(const T& original) && {
-    return IsUnchanged() ? original
-                         : details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
-  }
-
-  /*!
-   * \brief Copy the replacement, or copy \p original when unchanged.
-   * \param original The borrowed original value.
-   * \return The replacement or original value.
-   */
-  TVM_FFI_INLINE T ValueOrUnchanged(const T& original) const& {
-    return IsUnchanged() ? original : details::AnyUnsafe::CopyFromAnyViewAfterCheck<T>(data_);
-  }
-
-  /*!
    * \brief Move the replacement, or materialize \p original when unchanged.
    * \tparam U The replacement type, constrained to ``Any``.
    * \param original The borrowed original value.
@@ -269,28 +252,6 @@ class UnchangedOr {
   }
 
   /*!
-   * \brief Copy the replacement, or materialize \p original when unchanged.
-   * \tparam U The replacement type, constrained to ``Any``.
-   * \param original The borrowed original value.
-   * \return The replacement or original value.
-   */
-  template <typename U = T,
-            typename = std::enable_if_t<std::is_same_v<T, Any> && std::is_same_v<U, T>>>
-  TVM_FFI_INLINE Any ValueOrUnchanged(AnyView original) const& {
-    return IsUnchanged() ? Any(original)
-                         : details::AnyUnsafe::CopyFromAnyViewAfterCheck<Any>(data_);
-  }
-
-  /*!
-   * \brief Copy the known-changed replacement without checking its state.
-   * \return The replacement value.
-   * \pre The result is not unchanged.
-   */
-  TVM_FFI_INLINE T ValueUnchecked() const& {
-    return details::AnyUnsafe::CopyFromAnyViewAfterCheck<T>(data_);
-  }
-
-  /*!
    * \brief Move the known-changed replacement without checking its state.
    * \return The replacement value.
    * \pre The result is not unchanged.
@@ -299,92 +260,18 @@ class UnchangedOr {
     return details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
   }
 
-  /*!
-   * \brief Strictly reinterpret this result as ``UnchangedOr<U>``.
-   * \tparam U The target replacement type.
-   * \return The converted result, or ``std::nullopt`` on a strict type mismatch.
-   */
-  template <typename U>
-  TVM_FFI_INLINE std::optional<UnchangedOr<U>> as() const& {
-    const TVMFFIAny* raw = details::AnyUnsafe::TVMFFIAnyPtrFromAny(data_);
-    if constexpr (!type_subsumes_v<U, T>) {
-      if (!TypeTraits<UnchangedOr<U>>::CheckAnyStrict(raw)) return std::nullopt;
-    }
-    Any copied = data_;
-    TVMFFIAny copy = details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(copied));
-    return UnchangedOr<U>(&copy);
-  }
-
-  /*!
-   * \brief Strictly reinterpret this result as ``UnchangedOr<U>`` by move.
-   * \tparam U The target replacement type.
-   * \return The converted result, or ``std::nullopt`` on a strict type mismatch.
-   */
-  template <typename U>
-  TVM_FFI_INLINE std::optional<UnchangedOr<U>> as() && {
-    const TVMFFIAny* raw = details::AnyUnsafe::TVMFFIAnyPtrFromAny(data_);
-    if constexpr (!type_subsumes_v<U, T>) {
-      if (!TypeTraits<UnchangedOr<U>>::CheckAnyStrict(raw)) return std::nullopt;
-    }
-    TVMFFIAny moved = details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(data_));
-    return UnchangedOr<U>(&moved);
-  }
-
-  /*!
-   * \brief Strictly reinterpret this result as ``UnchangedOr<U>`` or throw.
-   * \tparam U The target replacement type.
-   * \return The converted result.
-   */
-  template <typename U>
-  TVM_FFI_INLINE UnchangedOr<U> as_or_throw() const& {
-    std::optional<UnchangedOr<U>> result = this->template as<U>();
-    if (TVM_FFI_PREDICT_FALSE(!result.has_value())) {
-      TVM_FFI_THROW(TypeError) << "Cannot treat type `"
-                               << TypeTraits<UnchangedOr<U>>::GetMismatchTypeInfo(
-                                      details::AnyUnsafe::TVMFFIAnyPtrFromAny(data_))
-                               << "` as type `" << TypeTraits<UnchangedOr<U>>::TypeStr() << "`";
-    }
-    return *std::move(result);
-  }
-
-  /*!
-   * \brief Strictly reinterpret this result as ``UnchangedOr<U>`` by move or throw.
-   * \tparam U The target replacement type.
-   * \return The converted result.
-   */
-  template <typename U>
-  TVM_FFI_INLINE UnchangedOr<U> as_or_throw() && {
-    const TVMFFIAny* raw = details::AnyUnsafe::TVMFFIAnyPtrFromAny(data_);
-    if constexpr (!type_subsumes_v<U, T>) {
-      if (TVM_FFI_PREDICT_FALSE(!TypeTraits<UnchangedOr<U>>::CheckAnyStrict(raw))) {
-        TVM_FFI_THROW(TypeError) << "Cannot treat type `"
-                                 << TypeTraits<UnchangedOr<U>>::GetMismatchTypeInfo(raw)
-                                 << "` as type `" << TypeTraits<UnchangedOr<U>>::TypeStr() << "`";
-      }
-    }
-    TVMFFIAny moved = details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(data_));
-    return UnchangedOr<U>(&moved);
-  }
-
  private:
   friend struct details::UnchangedOrUnsafe;
-  template <typename>
-  friend class UnchangedOr;
   template <typename, typename>
   friend struct TypeTraits;
-  TVM_FFI_INLINE explicit UnchangedOr(TVMFFIAny* data) noexcept
-      : data_(details::AnyUnsafe::MoveTVMFFIAnyToAny(data)) {}
+  struct UnsafeInit {};
+  TVM_FFI_INLINE explicit UnchangedOr(UnsafeInit, Any data) noexcept : data_(std::move(data)) {}
   Any data_;
 };
 
 namespace details {
 /*! \brief Unsafe moves between UnchangedOr and its single Any storage. */
 struct UnchangedOrUnsafe {
-  template <typename T>
-  TVM_FFI_INLINE static UnchangedOr<T> MoveFromTVMFFIAny(TVMFFIAny raw) noexcept {
-    return UnchangedOr<T>(&raw);
-  }
-
   template <typename T>
   TVM_FFI_INLINE static TVMFFIAny MoveToTVMFFIAny(UnchangedOr<T>&& result) noexcept {
     return AnyUnsafe::MoveAnyToTVMFFIAny(std::move(result.data_));
@@ -424,7 +311,8 @@ struct TypeTraits<UnchangedOr<T>> : public TypeTraitsBase {
   }
 
   TVM_FFI_INLINE static UnchangedOr<T> MoveFromAnyAfterCheck(TVMFFIAny* src) {
-    return UnchangedOr<T>(src);
+    return UnchangedOr<T>(typename UnchangedOr<T>::UnsafeInit{},
+                          details::AnyUnsafe::MoveTVMFFIAnyToAny(src));
   }
   TVM_FFI_INLINE static std::string TypeStr() {
     return "UnchangedOr<" + details::Type2Str<T>::v() + ">";
@@ -435,6 +323,9 @@ struct TypeTraits<UnchangedOr<T>> : public TypeTraitsBase {
 };
 
 namespace details {
+// Out of line so its strings and Error construction stay out of the hot path of whatever hook
+// body TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN expands into. Same reason as
+// BadStructuralMutateHookError.
 TVM_FFI_COLD_CODE inline Unexpected<Error> SMutateDeclaredTypeError() noexcept {
   return Unexpected(
       Error("TypeError", "structural mutate result does not match the declared type", ""));
@@ -461,7 +352,7 @@ class StructuralMutatorObj : public Object {
    * also use \ref Mutate.
    *
    * \code{.cpp}
-   * Expr new_node = mutator->Mutate<Expr>(node).ValueOrUnchanged(node);
+   * Expr new_node = mutator->Mutate<Expr>(node).ValueOrUnchanged(std::move(node));
    * \endcode
    */
   template <typename T = Any>
@@ -478,95 +369,77 @@ class StructuralMutatorObj : public Object {
    */
   template <typename T = Any>
   TVM_FFI_INLINE Expected<UnchangedOr<T>> MutateExpected(AnyView value) noexcept {
-    if constexpr (std::is_same_v<T, Any>) {
-      return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
-          (*vtable_->mutate)(this, value));
-    } else {
-      TVMFFIAny result = (*vtable_->mutate)(this, value);
-      if (TVM_FFI_PREDICT_FALSE(result.type_index != TypeIndex::kTVMFFIError &&
-                                !TypeTraits<UnchangedOr<T>>::CheckAnyStrict(&result))) {
-        return details::SMutateDeclaredTypeError();
-      }
+    TVMFFIAny result = (*vtable_->mutate)(this, value);
+    if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
       return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(result);
     }
+    if constexpr (!std::is_same_v<T, Any>) {
+      if (TVM_FFI_PREDICT_FALSE(!TypeTraits<UnchangedOr<T>>::CheckAnyStrict(&result))) {
+        (void)details::AnyUnsafe::MoveTVMFFIAnyToAny(&result);
+        return details::SMutateDeclaredTypeError();
+      }
+    }
+    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(result);
   }
 
   /*!
    * \brief Mutate a value, permitting an in-place implementation when it is safe.
    *
    * \param value The borrowed value to mutate.
-   * \return The mutated owning value.
+   * \tparam T The declared replacement type.
+   * \return The replacement or unchanged marker.
    * \throws Error if mutation fails.
    *
    * The returned value may refer to the same object as \p value. Callers must use the return value
    * as the result of the mutation rather than assuming that the input object was reused.
    */
-  TVM_FFI_INLINE Any MaybeInplaceMutate(AnyView value) {
-    return std::move(MaybeInplaceMutateExpected(value)).value().ValueOrUnchanged(value);
-  }
-
-  template <typename T, typename = std::enable_if_t<std::is_base_of_v<ObjectRef, T>>>
-  TVM_FFI_INLINE T MaybeInplaceMutate(const T& value) {
-    return std::move(MaybeInplaceMutateExpected(value)).value().ValueOrUnchanged(value);
+  template <typename T = Any>
+  TVM_FFI_INLINE UnchangedOr<T> MaybeInplaceMutate(AnyView value) {
+    return std::move(MaybeInplaceMutateExpected<T>(value)).value();
   }
 
   /*!
    * \brief Exception-free form of \ref MaybeInplaceMutate.
    *
    * \param value The borrowed value to mutate.
-   * \return The mutated owning value, or an Error if mutation failed.
+   * \tparam T The declared replacement type.
+   * \return The replacement or unchanged marker, or an Error if mutation failed.
    *
    * \note Call only from a ``__s_maybe_inplace_mutate__`` hook, which is dispatched
    *       only for a value whose entire path from the root is uniquely owned.
    */
-  TVM_FFI_INLINE Expected<UnchangedOr<Any>> MaybeInplaceMutateExpected(AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
-        (*vtable_->maybe_inplace_mutate)(this, value));
-  }
-
-  template <typename T, typename = std::enable_if_t<std::is_base_of_v<ObjectRef, T>>>
-  TVM_FFI_INLINE Expected<UnchangedOr<T>> MaybeInplaceMutateExpected(const T& value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(
-        (*vtable_->maybe_inplace_mutate)(this, AnyView(value)));
+  template <typename T = Any>
+  TVM_FFI_INLINE Expected<UnchangedOr<T>> MaybeInplaceMutateExpected(AnyView value) noexcept {
+    TVMFFIAny result = (*vtable_->maybe_inplace_mutate)(this, value);
+    if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
+      return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(result);
+    }
+    if constexpr (!std::is_same_v<T, Any>) {
+      if (TVM_FFI_PREDICT_FALSE(!TypeTraits<UnchangedOr<T>>::CheckAnyStrict(&result))) {
+        (void)details::AnyUnsafe::MoveTVMFFIAnyToAny(&result);
+        return details::SMutateDeclaredTypeError();
+      }
+    }
+    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(result);
   }
 
   /*!
    * \brief Mutate a value, using in-place mutation only for a uniquely owned object.
-   *
+   * \tparam T The declared replacement type.
    * \param value The borrowed value to mutate.
-   * \return The mutated owning value.
-   * \throws Error if mutation fails.
+   * \return The replacement or unchanged marker, or an Error if mutation failed.
    *
    * \note The caller must already know the entire path from the root is uniquely
    *       owned, either through an owning moved-in root or while handling a
    *       ``__s_maybe_inplace_mutate__`` hook. This method checks only \p value
    *       itself, not its ancestors.
    */
-  TVM_FFI_INLINE Any MaybeInplaceMutateIfUnique(AnyView value) {
-    return std::move(MaybeInplaceMutateIfUniqueExpected(value)).value().ValueOrUnchanged(value);
-  }
-
-  template <typename T, typename = std::enable_if_t<std::is_base_of_v<ObjectRef, T>>>
-  TVM_FFI_INLINE T MaybeInplaceMutateIfUnique(const T& value) {
-    return std::move(MaybeInplaceMutateIfUniqueExpected(value)).value().ValueOrUnchanged(value);
-  }
-
-  /*! \brief Exception-free form of \ref MaybeInplaceMutateIfUnique. */
-  TVM_FFI_INLINE Expected<UnchangedOr<Any>> MaybeInplaceMutateIfUniqueExpected(
+  template <typename T = Any>
+  TVM_FFI_INLINE Expected<UnchangedOr<T>> MaybeInplaceMutateIfUniqueExpected(
       AnyView value) noexcept {
     const Object* obj = value.as<Object>();
     if (obj != nullptr && obj->unique()) {
-      return MaybeInplaceMutateExpected(value);
-    }
-    return MutateExpected(value);
-  }
-
-  template <typename T, typename = std::enable_if_t<std::is_base_of_v<ObjectRef, T>>>
-  TVM_FFI_INLINE Expected<UnchangedOr<T>> MaybeInplaceMutateIfUniqueExpected(
-      const T& value) noexcept {
-    const Object* obj = value.get();
-    if (obj != nullptr && obj->unique()) {
-      return MaybeInplaceMutateExpected(value);
+      return MaybeInplaceMutateExpected<T>(value);
     }
     return MutateExpected<T>(value);
   }
@@ -582,8 +455,8 @@ class StructuralMutatorObj : public Object {
    *       identity. Automatic remapping applies only to the reflected fallback.
    */
 
-  TVM_FFI_INLINE Expected<UnchangedOr<Any>> DefaultMutateExpected(AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(DefaultMutateRaw(value));
+  TVM_FFI_INLINE Expected<Any> DefaultMutateExpected(AnyView value) noexcept {
+    return details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(DefaultMutateRaw(value));
   }
 
   /*!
@@ -598,10 +471,8 @@ class StructuralMutatorObj : public Object {
    *       any variable-remap handling. When the hook is absent, this method calls
    *       \ref DefaultMutateExpected.
    */
-  TVM_FFI_INLINE Expected<UnchangedOr<Any>> DefaultMaybeInplaceMutateExpected(
-      AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
-        DefaultMaybeInplaceMutateRaw(value));
+  TVM_FFI_INLINE Expected<Any> DefaultMaybeInplaceMutateExpected(AnyView value) noexcept {
+    return details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(DefaultMaybeInplaceMutateRaw(value));
   }
 
   /*!
@@ -681,17 +552,18 @@ class StructuralMutatorObj : public Object {
    * correctly registered type. Inlined, its three string literals and Error construction
    * land in the traversal's hot path for no reason.
    */
-  TVM_FFI_COLD_CODE static Expected<UnchangedOr<Any>> BadStructuralMutateHookError() noexcept {
+  TVM_FFI_COLD_CODE static Expected<Any> BadStructuralMutateHookError() noexcept {
     return Unexpected(
         Error("TypeError", "__s_mutate__ must be an opaque function pointer or ffi.Function", ""));
   }
 
   // Convention: the ABI boundary is a raw TVMFFIAny; mutation results inside a callback or hook
-  // body use Expected<UnchangedOr<Any>> and move out to TVMFFIAny at that boundary.
+  // body use Expected<Any> and move out to TVMFFIAny at that boundary. Unchanged converts to an
+  // Any carrying kTVMFFIUnchanged.
   //
   // The Raw forms below exist because that boundary is also the default path. A hook is a C-ABI
   // function pointer returning TVMFFIAny, a 16-byte POD that stays in registers; wrapping the
-  // result in Expected<UnchangedOr<Any>> would force it to memory because the C++ wrapper is not
+  // result in Expected<Any> would force it to memory because the C++ wrapper is not
   // trivially destructible and is therefore classified MEMORY. Descent through an unmatched node
   // calls a hook and returns its result unchanged, so keeping that path raw removes the round trip
   // entirely. Only a matched callback pays for the Expected wrapper.
@@ -744,7 +616,8 @@ class StructuralMutatorObj : public Object {
     }
     // No hook at all. A POD carries through unchanged; an object walks its reflected fields.
     if (value.type_index() < TypeIndex::kTVMFFIStaticObjectBegin) {
-      return details::UnchangedOrUnsafe::MoveToTVMFFIAny(UnchangedOr<Any>(Unchanged()));
+      Any unchanged = Unchanged();
+      return details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(unchanged));
     }
     // A FreeVar or DAG node maps once and every later occurrence reuses that result, so the
     // reflected walk runs under an identity remap.
@@ -756,7 +629,7 @@ class StructuralMutatorObj : public Object {
         return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(mapped));
       }
     }
-    Expected<UnchangedOr<Any>> result = details::MutateReflectedFieldsExpected(this, value);
+    Expected<Any> result = details::MutateReflectedFieldsExpected(this, value);
     if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
       return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
     }
@@ -768,7 +641,7 @@ class StructuralMutatorObj : public Object {
       Expected<void> set_result = VarRemapSetExpected(value, mapped_value);
       if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
         return details::ExpectedUnsafe::MoveToTVMFFIAny(
-            Expected<UnchangedOr<Any>>(Unexpected(std::move(set_result).error())));
+            Expected<Any>(Unexpected(std::move(set_result).error())));
       }
     }
     return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
@@ -856,8 +729,8 @@ namespace details {
  * \return The original value when no field changes, a mutated shallow copy otherwise, or an
  *         Error if copying or mutation failed.
  */
-TVM_FFI_INLINE static Expected<UnchangedOr<Any>> MutateReflectedFieldsExpected(
-    StructuralMutatorObj* mutator, AnyView value) noexcept {
+TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMutatorObj* mutator,
+                                                                  AnyView value) noexcept {
   const Object* obj = value.as<Object>();
   int32_t type_index = obj->type_index();
 
@@ -916,8 +789,9 @@ TVM_FFI_INLINE static Expected<UnchangedOr<Any>> MutateReflectedFieldsExpected(
             result = Unexpected(std::move(mutated_field).error());
             return true;
           }
-          UnchangedOr<Any> new_field = std::move(mutated_field).value();
-          if (new_field.UnchangedOrSameAs(field_value)) {
+          const Any& new_field = details::ExpectedUnsafe::GetData(mutated_field);
+          if (new_field.type_index() == TypeIndex::kTVMFFIUnchanged ||
+              new_field.same_as(field_value)) {
             return false;
           }
 
@@ -932,9 +806,8 @@ TVM_FFI_INLINE static Expected<UnchangedOr<Any>> MutateReflectedFieldsExpected(
             return true;
           }
 
-          Any new_field_value = std::move(new_field).ValueUnchecked();
-          ret_code = reflection::CallFieldSetter(
-              field_info, field_addr, reinterpret_cast<const TVMFFIAny*>(&new_field_value));
+          ret_code = reflection::CallFieldSetter(field_info, field_addr,
+                                                 reinterpret_cast<const TVMFFIAny*>(&new_field));
           if (TVM_FFI_PREDICT_FALSE(ret_code != 0)) {
             result = Unexpected(details::MoveFromSafeCallRaised());
             return true;
@@ -987,8 +860,9 @@ namespace details {
 /*!
  * \brief Return an unchanged result from a structural-mutation hook.
  *
- * Terminal statement of a hook whose traversed fields are all unchanged. Works
- * from a raw ``TVMFFIAny`` hook and a typed ``Expected`` helper alike.
+ * Terminal statement of a hook whose traversed fields are all unchanged. Works from a raw
+ * ``TVMFFIAny`` hook or an ``Expected<UnchangedOr<Any>>`` helper. A helper with another declared
+ * replacement type returns ``Unchanged()`` directly.
  *
  * \sa TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN
  */
@@ -1017,9 +891,9 @@ namespace details {
  * ``Type`` must be concrete; use a type alias when it contains a top-level comma. A type mismatch
  * returns ``TypeError`` through the surrounding raw or ``Expected`` function without throwing,
  * reported with a fixed string so a correct hook pays only one predicted-not-taken branch per
- * field. Its early returns work from either a raw ``TVMFFIAny`` hook or a same-T ``Expected<T>``
- * helper. This macro declares ``Name`` into the enclosing scope and must be used in a braced
- * block, never as an unbraced control-flow body.
+ * field. Its early returns work from either a raw ``TVMFFIAny`` hook or an
+ * ``Expected<UnchangedOr<Any>>`` helper. This macro declares ``Name`` into the enclosing scope and
+ * must be used in a braced block, never as an unbraced control-flow body.
  *
  * Example:
  * \code{.cpp}
@@ -1106,7 +980,7 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
   /// \cond Doxygen_Suppress
   // Out of line so its strings stay out of the per-node dispatch function, which TryLink inlines
   // into. Shared by the typed and dynamic engines below.
-  TVM_FFI_COLD_CODE static Expected<UnchangedOr<Any>> SMutateDescentTypeError() noexcept {
+  TVM_FFI_COLD_CODE static Expected<Any> SMutateDescentTypeError() noexcept {
     return Unexpected(Error("TypeError", "structural mutate: descent changed the node type", ""));
   }
   /// \endcond
@@ -1140,7 +1014,7 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
    * \param result The failed result whose Error is annotated.
    * \param node The borrowed node to name in the context.
    */
-  TVM_FFI_COLD_CODE static void UpdateVisitErrorContext(const Expected<UnchangedOr<Any>>& result,
+  TVM_FFI_COLD_CODE static void UpdateVisitErrorContext(const Expected<Any>& result,
                                                         AnyView node) noexcept {
     // The Error is refcounted, so annotating the local handle annotates the object the result
     // holds. A non-object node has no context to add.
@@ -1278,13 +1152,13 @@ class StructuralMapEngine : public Parent {
   }
 
   template <typename Callback, typename Value, size_t... Is>
-  TVM_FFI_INLINE Expected<UnchangedOr<Any>> InvokeTypedCallbackLink(
-      Callback& callback, Value&& value, std::index_sequence<Is...>) noexcept {
+  TVM_FFI_INLINE Expected<Any> InvokeTypedCallbackLink(Callback& callback, Value&& value,
+                                                       std::index_sequence<Is...>) noexcept {
     using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
-    static_assert(std::is_convertible_v<typename FuncInfo::RetType, Expected<UnchangedOr<Any>>>,
+    using RetType = typename FuncInfo::RetType;
+    static_assert(std::is_convertible_v<RetType, Expected<Any>>,
                   "StructuralMap callbacks must return a replacement value, Error, Unexpected, "
-                  "unchanged marker, or Expected<U> implicitly convertible to "
-                  "Expected<UnchangedOr<Any>>");
+                  "unchanged marker, or Expected<Any>");
     static_assert(
         FuncInfo::num_args == 1 + sizeof...(Is) || FuncInfo::num_args == 2 + sizeof...(Is),
         "StructuralMap callback takes (value, state...) with an optional trailing "
@@ -1293,12 +1167,16 @@ class StructuralMapEngine : public Parent {
       static_assert(std::is_same_v<decltype(this->StateTuple()), StateTupleType>,
                     "Parent::StateTuple() must return Parent::StateTupleType by value");
       StateTupleType states = this->StateTuple();
-      if constexpr (FuncInfo::num_args == 1 + sizeof...(Is)) {
-        return callback(std::forward<Value>(value), std::get<Is>(states)...);
-      } else {
-        return callback(std::forward<Value>(value), std::get<Is>(states)...,
-                        this->def_region_kind());
-      }
+      auto invoke_callback = [&]() -> RetType {
+        if constexpr (FuncInfo::num_args == 1 + sizeof...(Is)) {
+          return callback(std::forward<Value>(value), std::get<Is>(states)...);
+        } else {
+          return callback(std::forward<Value>(value), std::get<Is>(states)...,
+                          this->def_region_kind());
+        }
+      };
+
+      return invoke_callback();
     } catch (const Error& err) {
       return Unexpected(err);
     }
@@ -1315,8 +1193,7 @@ class StructuralMapEngine : public Parent {
    * \return Whether the link matched, in which case \p out was written.
    */
   template <bool kMaybeInplace, typename Callback>
-  TVM_FFI_INLINE bool TryLink(Callback& callback, AnyView value,
-                              Expected<UnchangedOr<Any>>* out) noexcept {
+  TVM_FFI_INLINE bool TryLink(Callback& callback, AnyView value, Expected<Any>* out) noexcept {
     using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
     static_assert(FuncInfo::num_args >= 1,
                   "StructuralMap callback must take at least a value argument");
@@ -1381,7 +1258,7 @@ class StructuralMapEngine : public Parent {
     if constexpr (order == WalkOrder::kPreOrder) {
       // Pre-order: the callback rewrites this node first, then descent runs over whatever it
       // produced, so a replacement subtree is itself mapped.
-      Expected<UnchangedOr<Any>> callback_result = [&]() -> Expected<UnchangedOr<Any>> {
+      Expected<Any> callback_result = [&]() -> Expected<Any> {
         if constexpr (std::is_same_v<TSub, AnyView>) {
           return InvokeTypedCallbackLink(callback, value, StateIndices{});
         } else if constexpr (std::is_same_v<TSub, Any>) {
@@ -1396,41 +1273,39 @@ class StructuralMapEngine : public Parent {
         *out = std::move(callback_result);
         return true;
       }
-      UnchangedOr<Any> callback_value = std::move(callback_result).value();
-      const bool callback_unchanged = callback_value.IsUnchanged();
-      // Own the callback's result: it is the only reference from here on, and moving it out
-      // beats holding a reference into an Expected that stays alive across the descent below.
-      Any mapped_value = std::move(callback_value).ValueOrUnchanged(value);
+      Any mapped_storage = std::move(ExpectedUnsafe::GetData(callback_result));
+      const bool callback_unchanged = mapped_storage.type_index() == TypeIndex::kTVMFFIUnchanged;
+      // Resolve the marker to a borrowed view; an owning value would cost a refcount here.
+      const AnyView mapped_value_view = callback_unchanged ? value : AnyView(mapped_storage);
       // Each descent names the node it actually ran on in the error context.
-      *out = [&]() -> Expected<UnchangedOr<Any>> {
+      *out = [&]() -> Expected<Any> {
         if constexpr (kMaybeInplace) {
           // A pre-order result can be mutated in place if unchanged or uniquely owned.
-          const TVMFFIAny* mapped_data = AnyUnsafe::TVMFFIAnyPtrFromAny(mapped_value);
+          const TVMFFIAny mapped_data = mapped_value_view.CopyToTVMFFIAny();
           const TVMFFIAny input_data = value.CopyToTVMFFIAny();
-          if (mapped_data->type_index == input_data.type_index &&
-              mapped_data->zero_padding == input_data.zero_padding &&
-              mapped_data->v_int64 == input_data.v_int64) {
+          if (mapped_data.type_index == input_data.type_index &&
+              mapped_data.zero_padding == input_data.zero_padding &&
+              mapped_data.v_int64 == input_data.v_int64) {
             return this->DefaultMaybeInplaceMutateExpected(value);
           }
-          const Object* mapped_obj = mapped_value.as<Object>();
+          const Object* mapped_obj = mapped_value_view.as<Object>();
           bool can_inplace = mapped_obj != nullptr && mapped_obj->unique();
-          return can_inplace ? this->DefaultMaybeInplaceMutateExpected(mapped_value)
-                             : this->DefaultMutateExpected(mapped_value);
+          return can_inplace ? this->DefaultMaybeInplaceMutateExpected(mapped_value_view)
+                             : this->DefaultMutateExpected(mapped_value_view);
         } else {
-          return this->DefaultMutateExpected(mapped_value);
+          return this->DefaultMutateExpected(mapped_value_view);
         }
       }();
       if (TVM_FFI_PREDICT_FALSE(out->is_err())) return true;
       if (!callback_unchanged &&
           ExpectedUnsafe::GetData(*out).type_index() == TypeIndex::kTVMFFIUnchanged) {
-        *out = std::move(mapped_value);
+        *out = std::move(mapped_storage);
       }
     } else {
       // Post-order: children are mapped first and the callback sees the rebuilt node, so it
       // observes its operands already substituted.
-      Expected<UnchangedOr<Any>> descended = kMaybeInplace
-                                                 ? this->DefaultMaybeInplaceMutateExpected(value)
-                                                 : this->DefaultMutateExpected(value);
+      Expected<Any> descended = kMaybeInplace ? this->DefaultMaybeInplaceMutateExpected(value)
+                                              : this->DefaultMutateExpected(value);
       if (TVM_FFI_PREDICT_FALSE(descended.is_err())) {
         *out = std::move(descended);
         return true;
@@ -1443,7 +1318,7 @@ class StructuralMapEngine : public Parent {
       const AnyView mapped_value = descended_value.type_index() == TypeIndex::kTVMFFIUnchanged
                                        ? value
                                        : AnyView(descended_value);
-      *out = [&]() -> Expected<UnchangedOr<Any>> {
+      *out = [&]() -> Expected<Any> {
         if constexpr (std::is_same_v<TSub, AnyView>) {
           return InvokeTypedCallbackLink(callback, mapped_value, StateIndices{});
         } else if constexpr (std::is_same_v<TSub, Any>) {
@@ -1487,7 +1362,7 @@ class StructuralMapEngine : public Parent {
    * \return Whether some link matched, in which case \p out was written.
    */
   template <bool kMaybeInplace, size_t... Is>
-  TVM_FFI_INLINE bool TryLinks(AnyView value, Expected<UnchangedOr<Any>>* out,
+  TVM_FFI_INLINE bool TryLinks(AnyView value, Expected<Any>* out,
                                std::index_sequence<Is...>) noexcept {
     return (TryLink<kMaybeInplace>(std::get<Is>(callbacks_), value, out) || ...);
   }
@@ -1498,7 +1373,7 @@ class StructuralMapEngine : public Parent {
    * \return Raw ``TVMFFIAny`` containing the mutated value or Error.
    */
   TVM_FFI_INLINE TVMFFIAny MutateImplRaw(AnyView value) noexcept {
-    Expected<UnchangedOr<Any>> out = Unchanged();
+    Expected<Any> out{Any()};
     if (TryLinks<false>(value, &out, std::index_sequence_for<Callbacks...>{})) {
       return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
     }
@@ -1511,7 +1386,7 @@ class StructuralMapEngine : public Parent {
    * \return Raw ``TVMFFIAny`` containing the mutated value or Error.
    */
   TVM_FFI_INLINE TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
-    Expected<UnchangedOr<Any>> out = Unchanged();
+    Expected<Any> out{Any()};
     if (TryLinks<true>(value, &out, std::index_sequence_for<Callbacks...>{})) {
       return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
     }
@@ -1612,9 +1487,8 @@ class StructuralMapDynEngine : public Parent {
    * The caller reads the live def-region kind at invocation time. ``CallExpected`` uses the
    * exception-free safe-call path and represents raised errors as ``Unexpected``.
    */
-  TVM_FFI_INLINE static Expected<UnchangedOr<Any>> InvokeLink(const Function& fn, bool with_kind,
-                                                              AnyView target,
-                                                              TVMFFIDefRegionKind kind) noexcept {
+  TVM_FFI_INLINE static Expected<Any> InvokeLink(const Function& fn, bool with_kind, AnyView target,
+                                                 TVMFFIDefRegionKind kind) noexcept {
     return with_kind ? fn.CallExpected<Any>(target, kind) : fn.CallExpected<Any>(target);
   }
 
@@ -1626,7 +1500,7 @@ class StructuralMapDynEngine : public Parent {
    * \return Whether a link matched, in which case \p out was written.
    */
   template <bool kMaybeInplace>
-  TVM_FFI_INLINE bool TryLink(AnyView value, Expected<UnchangedOr<Any>>* out) noexcept {
+  TVM_FFI_INLINE bool TryLink(AnyView value, Expected<Any>* out) noexcept {
     // Step for step the same walk as StructuralMapEngine::TryLink, and deliberately so: only
     // link detection and invocation differ. Everything below except finding and calling the
     // link is shared semantics, so a change to either copy belongs in both.
@@ -1654,43 +1528,43 @@ class StructuralMapDynEngine : public Parent {
     // --- callback and descent, in walk order --------------------------------
     if constexpr (order == WalkOrder::kPreOrder) {
       // Pre-order: the callback rewrites this node first, then descent runs over what it made.
-      Expected<UnchangedOr<Any>> callback_result =
+      Expected<Any> callback_result =
           InvokeLink(*matched, with_kind, value, this->def_region_kind());
       if (TVM_FFI_PREDICT_FALSE(callback_result.is_err())) {
         this->UpdateVisitErrorContext(callback_result, value);
         *out = std::move(callback_result);
         return true;
       }
-      UnchangedOr<Any> callback_value = std::move(callback_result).value();
-      const bool callback_unchanged = callback_value.IsUnchanged();
-      Any mapped_value = std::move(callback_value).ValueOrUnchanged(value);
-      *out = [&]() -> Expected<UnchangedOr<Any>> {
+      Any mapped_storage = std::move(ExpectedUnsafe::GetData(callback_result));
+      const bool callback_unchanged = mapped_storage.type_index() == TypeIndex::kTVMFFIUnchanged;
+      // Resolve the marker to a borrowed view; an owning value would cost a refcount here.
+      const AnyView mapped_value_view = callback_unchanged ? value : AnyView(mapped_storage);
+      *out = [&]() -> Expected<Any> {
         if constexpr (kMaybeInplace) {
-          const TVMFFIAny* mapped_data = AnyUnsafe::TVMFFIAnyPtrFromAny(mapped_value);
+          const TVMFFIAny mapped_data = mapped_value_view.CopyToTVMFFIAny();
           const TVMFFIAny input_data = value.CopyToTVMFFIAny();
-          if (mapped_data->type_index == input_data.type_index &&
-              mapped_data->zero_padding == input_data.zero_padding &&
-              mapped_data->v_int64 == input_data.v_int64) {
+          if (mapped_data.type_index == input_data.type_index &&
+              mapped_data.zero_padding == input_data.zero_padding &&
+              mapped_data.v_int64 == input_data.v_int64) {
             return this->DefaultMaybeInplaceMutateExpected(value);
           }
-          const Object* mapped_obj = mapped_value.as<Object>();
+          const Object* mapped_obj = mapped_value_view.as<Object>();
           bool can_inplace = mapped_obj != nullptr && mapped_obj->unique();
-          return can_inplace ? this->DefaultMaybeInplaceMutateExpected(mapped_value)
-                             : this->DefaultMutateExpected(mapped_value);
+          return can_inplace ? this->DefaultMaybeInplaceMutateExpected(mapped_value_view)
+                             : this->DefaultMutateExpected(mapped_value_view);
         } else {
-          return this->DefaultMutateExpected(mapped_value);
+          return this->DefaultMutateExpected(mapped_value_view);
         }
       }();
       if (TVM_FFI_PREDICT_FALSE(out->is_err())) return true;
       if (!callback_unchanged &&
           ExpectedUnsafe::GetData(*out).type_index() == TypeIndex::kTVMFFIUnchanged) {
-        *out = std::move(mapped_value);
+        *out = std::move(mapped_storage);
       }
     } else {
       // Post-order: children are mapped first, so the callback sees the rebuilt node.
-      Expected<UnchangedOr<Any>> descended = kMaybeInplace
-                                                 ? this->DefaultMaybeInplaceMutateExpected(value)
-                                                 : this->DefaultMutateExpected(value);
+      Expected<Any> descended = kMaybeInplace ? this->DefaultMaybeInplaceMutateExpected(value)
+                                              : this->DefaultMutateExpected(value);
       if (TVM_FFI_PREDICT_FALSE(descended.is_err())) {
         *out = std::move(descended);
         return true;
@@ -1737,7 +1611,7 @@ class StructuralMapDynEngine : public Parent {
 
   /*! \brief Mutate a value, invoking the first matching runtime link. */
   TVM_FFI_INLINE TVMFFIAny MutateImplRaw(AnyView value) noexcept {
-    Expected<UnchangedOr<Any>> out = Unchanged();
+    Expected<Any> out{Any()};
     if (TryLink<false>(value, &out)) {
       return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
     }
@@ -1746,7 +1620,7 @@ class StructuralMapDynEngine : public Parent {
 
   /*! \brief Optionally mutate a value in place through the first matching runtime link. */
   TVM_FFI_INLINE TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
-    Expected<UnchangedOr<Any>> out = Unchanged();
+    Expected<Any> out{Any()};
     if (TryLink<true>(value, &out)) {
       return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
     }
@@ -1805,8 +1679,8 @@ class StructuralMutateEngine : public Parent {
 
   /*! \brief Mutate one value, handing a matched callback ownership of descent. */
   TVMFFIAny MutateImplRaw(AnyView value) noexcept {
-    if (std::optional<Expected<UnchangedOr<Any>>> matched = DispatchCallbacks(value, false)) {
-      Expected<UnchangedOr<Any>> result = *std::move(matched);
+    if (std::optional<Expected<Any>> matched = DispatchCallbacks(value, false)) {
+      Expected<Any> result = *std::move(matched);
       if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
         // Keep callback-boundary context in addition to the default-descent
         // context: a callback may return a rebuilt value, so the two nodes can differ.
@@ -1819,8 +1693,8 @@ class StructuralMutateEngine : public Parent {
 
   /*! \brief Maybe mutate one value in place, with callback-owned descent. */
   TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
-    if (std::optional<Expected<UnchangedOr<Any>>> matched = DispatchCallbacks(value, true)) {
-      Expected<UnchangedOr<Any>> result = *std::move(matched);
+    if (std::optional<Expected<Any>> matched = DispatchCallbacks(value, true)) {
+      Expected<Any> result = *std::move(matched);
       if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
         // Keep callback-boundary context in addition to the default-descent
         // context: a callback may return a rebuilt value, so the two nodes can differ.
@@ -1833,9 +1707,8 @@ class StructuralMutateEngine : public Parent {
 
   /*! \brief Try one typed callback and preserve Error as an expected result. */
   template <typename Callback>
-  TVM_FFI_INLINE std::optional<Expected<UnchangedOr<Any>>> TryLink(Callback& callback,
-                                                                   AnyView value,
-                                                                   bool allow_inplace) noexcept {
+  TVM_FFI_INLINE std::optional<Expected<Any>> TryLink(Callback& callback, AnyView value,
+                                                      bool allow_inplace) noexcept {
     using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
     static_assert(FuncInfo::num_args == 2 || FuncInfo::num_args == 3,
                   "StructuralMutate callback must take (value, mutator) or "
@@ -1853,7 +1726,7 @@ class StructuralMutateEngine : public Parent {
                     "third StructuralMutate callback argument must be bool");
     }
     auto* mutator = static_cast<typename Parent::MutatorObjType*>(this);
-    auto invoke = [&](auto&& matched) -> Expected<UnchangedOr<Any>> {
+    auto invoke = [&](auto&& matched) -> Expected<Any> {
       try {
         if constexpr (FuncInfo::num_args == 3) {
           return callback(std::forward<decltype(matched)>(matched), mutator, allow_inplace);
@@ -1876,16 +1749,15 @@ class StructuralMutateEngine : public Parent {
 
   /*! \brief Fold callbacks in declaration order, stopping at the first match. */
   template <size_t... Is>
-  TVM_FFI_INLINE std::optional<Expected<UnchangedOr<Any>>> TryLinks(
-      AnyView value, bool allow_inplace, std::index_sequence<Is...>) noexcept {
-    std::optional<Expected<UnchangedOr<Any>>> result;
+  TVM_FFI_INLINE std::optional<Expected<Any>> TryLinks(AnyView value, bool allow_inplace,
+                                                       std::index_sequence<Is...>) noexcept {
+    std::optional<Expected<Any>> result;
     (... || (result = TryLink(std::get<Is>(callbacks_), value, allow_inplace)).has_value());
     return result;
   }
 
   /*! \brief Run the callback chain, or return empty when no callback matched. */
-  std::optional<Expected<UnchangedOr<Any>>> DispatchCallbacks(AnyView value,
-                                                              bool allow_inplace) noexcept {
+  std::optional<Expected<Any>> DispatchCallbacks(AnyView value, bool allow_inplace) noexcept {
     return TryLinks(value, allow_inplace, std::index_sequence_for<Callbacks...>{});
   }
 
@@ -1938,11 +1810,11 @@ class StructuralMutateEngine : public Parent {
  * \tparam Callbacks Callback types whose first parameters select matching values.
  * \param root The owning root value to map.
  * \param callbacks Callbacks tested in declaration order. Each accepts ``(value)`` or
- *        ``(value, def_region_kind)`` and returns a replacement, ``Unchanged``,
- *        ``UnchangedOr<U>``, the corresponding ``Expected`` form, or an error value.
+ *        ``(value, def_region_kind)`` and returns a replacement, ``Unchanged``, or
+ *        ``Expected<Any>``.
  * \return The mapped owning value, or an Error if mapping or a callback fails.
  *
- * \note Returning ``Expected<U>`` expresses errors as values; throwing ``Error`` is also
+ * \note Returning ``Expected<Any>`` expresses errors as values; throwing ``Error`` is also
  *       supported and is converted to the error state.
  * \note Pass an owned root with ``std::move(root)`` to permit root reuse. In a
  *       ``__s_maybe_inplace_mutate__`` hook, a nested owned field follows the idiom
@@ -1957,7 +1829,9 @@ Expected<Any> StructuralMapExpected(
   StructuralMutator mutator(make_object<Mutator>(std::forward<Callbacks>(callbacks)...));
   auto result = mutator->MaybeInplaceMutateIfUniqueExpected(root);
   if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
-  return std::move(result).value().ValueOrUnchanged(root);
+  UnchangedOr<Any> mapped = details::AnyUnsafe::MoveFromAnyAfterCheck<UnchangedOr<Any>>(
+      std::move(details::ExpectedUnsafe::GetData(result)));
+  return std::move(mapped).ValueOrUnchanged(std::move(root));
 }
 
 /*!
@@ -1970,12 +1844,12 @@ Expected<Any> StructuralMapExpected(
  * \tparam Callbacks Callback types whose first parameters select matching values.
  * \param root The owning root value to map.
  * \param callbacks Callbacks tested in declaration order. Each accepts ``(value)`` or
- *        ``(value, def_region_kind)`` and returns a replacement, ``Unchanged``,
- *        ``UnchangedOr<U>``, the corresponding ``Expected`` form, or an error value.
+ *        ``(value, def_region_kind)`` and returns a replacement, ``Unchanged``, or
+ *        ``Expected<Any>``.
  * \return The mapped owning value.
  * \throws Error if mapping or a callback fails.
  *
- * \note Returning ``Expected<U>`` expresses errors as values; throwing ``Error`` is also
+ * \note Returning ``Expected<Any>`` expresses errors as values; throwing ``Error`` is also
  *       supported and is rethrown by this interface.
  * \note Pass an owned root with ``std::move(root)`` to permit root reuse.
  */
@@ -1990,16 +1864,15 @@ Any StructuralMap(Any root,
 /*!
  * \brief Mutate a structured value with callbacks that own recursion.
  *
- * A callback takes one of two signatures:
+ * A callback takes one of two forms, where ``R`` is a supported return type:
  *
- * - ``Expected<Any>(const T& value, StructuralMutatorObj* mutator)``
- * - ``Expected<Any>(const T& value, StructuralMutatorObj* mutator, bool allow_inplace)``
+ * - ``R(const T& value, StructuralMutatorObj* mutator)``
+ * - ``R(const T& value, StructuralMutatorObj* mutator, bool allow_inplace)``
  *
- * A callback returns a replacement, ``Unchanged``, ``UnchangedOr<U>``, the corresponding
- * ``Expected`` form, or an error value. The first argument selects by FFI type; callbacks are
- * tried in declaration order and the first match owns mutation -- it drives its own recursion
- * through the mutator and sets any variable remapping. An unmatched value takes registered or
- * reflected default mutation.
+ * A callback returns a replacement, ``Unchanged``, or ``Expected<Any>``. The first argument
+ * selects by FFI type; callbacks are tried in declaration order and the first match owns mutation
+ * -- it drives its own recursion through the mutator and sets any variable remapping. An unmatched
+ * value takes registered or reflected default mutation.
  *
  * \param root The owning root value to mutate.
  * \param callbacks Callbacks tested in declaration order.
@@ -2022,7 +1895,9 @@ Expected<Any> StructuralMutateExpected(
   StructuralMutator mutator(make_object<Mutator>(std::forward<Callbacks>(callbacks)...));
   auto result = mutator->MaybeInplaceMutateIfUniqueExpected(root);
   if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
-  return std::move(result).value().ValueOrUnchanged(root);
+  UnchangedOr<Any> mapped = details::AnyUnsafe::MoveFromAnyAfterCheck<UnchangedOr<Any>>(
+      std::move(details::ExpectedUnsafe::GetData(result)));
+  return std::move(mapped).ValueOrUnchanged(std::move(root));
 }
 
 /*!

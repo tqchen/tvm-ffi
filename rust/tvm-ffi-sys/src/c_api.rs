@@ -56,7 +56,7 @@ pub enum TVMFFITypeIndex {
     kTVMFFISmallStr = 11,
     /// Small bytes on stack
     kTVMFFISmallBytes = 12,
-    /// Unchanged state of UnchangedOr
+    /// Structural-mutation marker indicating that no new value was produced
     kTVMFFIUnchanged = 13,
     /// Start of statically defined objects.
     kTVMFFIStaticObjectBegin = 64,

@@ -136,7 +136,7 @@ typedef enum {
   kTVMFFISmallStr = 11,
   /*! \brief Small bytes on stack */
   kTVMFFISmallBytes = 12,
-  /*! \brief Unchanged state of UnchangedOr */
+  /*! \brief Structural-mutation marker indicating that no new value was produced */
   kTVMFFIUnchanged = 13,
   /*! \brief Start of statically defined objects. */
   kTVMFFIStaticObjectBegin = 64,
