@@ -60,11 +60,7 @@ class Variant {
   template <typename T>
   using enable_if_variant_contains_t = std::enable_if_t<variant_contains_v<T>>;
   /// \endcond
-  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
-  // and an implicitly-declared destructor is declined by the inliner inside large
-  // functions even when it folds to nothing -- a moved-from instance then costs a real
-  // call. All five are declared together because a destructor alone suppresses the
-  // implicit moves.
+  // Special members are explicitly inlined to enable move cleanup optimizations
   TVM_FFI_INLINE ~Variant() = default;
   /*!
    * \brief Constructor from another variant

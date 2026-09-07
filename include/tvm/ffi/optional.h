@@ -83,11 +83,7 @@ class Optional<T,
  public:
   // default constructors.
   Optional() = default;
-  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
-  // and an implicitly-declared destructor is declined by the inliner inside large
-  // functions even when it folds to nothing -- a moved-from instance then costs a real
-  // call. All five are declared together because a destructor alone suppresses the
-  // implicit moves.
+  // Special members are explicitly inlined to enable move cleanup optimizations
   TVM_FFI_INLINE ~Optional() = default;
   // NOLINTBEGIN(google-explicit-constructor)
   TVM_FFI_INLINE Optional(const Optional& other) = default;
@@ -186,11 +182,7 @@ class Optional<T,
  public:
   /*! \brief default constructor, represents nullopt (Any() is kTVMFFINone). */
   Optional() = default;
-  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
-  // and an implicitly-declared destructor is declined by the inliner inside large
-  // functions even when it folds to nothing -- a moved-from instance then costs a real
-  // call. All five are declared together because a destructor alone suppresses the
-  // implicit moves.
+  // Special members are explicitly inlined to enable move cleanup optimizations
   TVM_FFI_INLINE ~Optional() = default;
   // NOLINTBEGIN(google-explicit-constructor)
   /*! \brief construct nullopt from std::nullopt. */
@@ -387,11 +379,7 @@ class Optional<T, std::enable_if_t<use_object_ref_optional_v<T>>> : public Objec
   static constexpr bool _type_container_is_exact = T::_type_container_is_exact;
 
   Optional() = default;
-  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
-  // and an implicitly-declared destructor is declined by the inliner inside large
-  // functions even when it folds to nothing -- a moved-from instance then costs a real
-  // call. All five are declared together because a destructor alone suppresses the
-  // implicit moves.
+  // Special members are explicitly inlined to enable move cleanup optimizations
   TVM_FFI_INLINE ~Optional() = default;
   // NOLINTBEGIN(google-explicit-constructor)
   TVM_FFI_INLINE Optional(const Optional&) = default;
@@ -570,11 +558,7 @@ class Optional<T, std::enable_if_t<is_object_ptr_type_v<T> || is_arc_type_v<T>>>
   using ContainerType = typename Traits::ContainerType;
 
   Optional() = default;
-  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
-  // and an implicitly-declared destructor is declined by the inliner inside large
-  // functions even when it folds to nothing -- a moved-from instance then costs a real
-  // call. All five are declared together because a destructor alone suppresses the
-  // implicit moves.
+  // Special members are explicitly inlined to enable move cleanup optimizations
   TVM_FFI_INLINE ~Optional() = default;
   // NOLINTBEGIN(google-explicit-constructor)
   TVM_FFI_INLINE Optional(const Optional&) = default;

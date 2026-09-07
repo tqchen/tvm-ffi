@@ -416,11 +416,7 @@ class Object {
 template <typename T>
 class ObjectPtr {
  public:
-  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
-  // and an implicitly-declared destructor is declined by the inliner inside large
-  // functions even when it folds to nothing -- a moved-from instance then costs a real
-  // call. All five are declared together because a destructor alone suppresses the
-  // implicit moves.
+  // Special members are explicitly inlined to enable move cleanup optimizations
   /*! \brief default constructor */
   ObjectPtr() = default;
   /*! \brief default constructor */
@@ -567,11 +563,7 @@ class Arc : public ObjectPtr<T> {
   Arc() = delete;
   Arc(std::nullptr_t) = delete;
 
-  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
-  // and an implicitly-declared destructor is declined by the inliner inside large
-  // functions even when it folds to nothing -- a moved-from instance then costs a real
-  // call. All five are declared together because a destructor alone suppresses the
-  // implicit moves.
+  // Special members are explicitly inlined to enable move cleanup optimizations
   TVM_FFI_INLINE ~Arc() = default;
 
   /*! \brief Copy constructor. */
@@ -820,11 +812,7 @@ class ObjectRef {
  public:
   /*! \brief default constructor */
   ObjectRef() = default;
-  // Special members are explicitly inlined: this type transitively holds an ObjectPtr,
-  // and an implicitly-declared destructor is declined by the inliner inside large
-  // functions even when it folds to nothing -- a moved-from instance then costs a real
-  // call. All five are declared together because a destructor alone suppresses the
-  // implicit moves.
+  // Special members are explicitly inlined to enable move cleanup optimizations
   TVM_FFI_INLINE ~ObjectRef() = default;
   /*! \brief copy constructor */
   TVM_FFI_INLINE ObjectRef(const ObjectRef& other) = default;
