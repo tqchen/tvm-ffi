@@ -119,6 +119,12 @@ class Expected {
       "Expected with a cv-qualified void success type is not allowed. Use Expected<void>.");
   static_assert(!std::is_same_v<T, Error>, "Expected<Error> is not allowed. Use Error directly.");
 
+  TVM_FFI_INLINE ~Expected() = default;
+  TVM_FFI_INLINE Expected(const Expected&) = default;
+  TVM_FFI_INLINE Expected(Expected&&) noexcept = default;
+  TVM_FFI_INLINE Expected& operator=(const Expected&) = default;
+  TVM_FFI_INLINE Expected& operator=(Expected&&) noexcept = default;
+
   /*!
    * \brief Implicit constructor from a success value.
    * \param value The success value.
@@ -281,6 +287,12 @@ class Expected<void> {
  public:
   /*! \brief Construct a successful Expected<void>. */
   Expected() = default;
+
+  TVM_FFI_INLINE ~Expected() = default;
+  TVM_FFI_INLINE Expected(const Expected&) = default;
+  TVM_FFI_INLINE Expected(Expected&&) noexcept = default;
+  TVM_FFI_INLINE Expected& operator=(const Expected&) = default;
+  TVM_FFI_INLINE Expected& operator=(Expected&&) noexcept = default;
 
   /*!
    * \brief Implicit constructor from an error.

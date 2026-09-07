@@ -181,6 +181,12 @@ class UnchangedOr {
   static_assert(!std::is_base_of_v<Error, std::remove_cv_t<T>>,
                 "UnchangedOr<Error> is not supported");
 
+  TVM_FFI_INLINE ~UnchangedOr() = default;
+  TVM_FFI_INLINE UnchangedOr(const UnchangedOr&) = default;
+  TVM_FFI_INLINE UnchangedOr(UnchangedOr&&) noexcept = default;
+  TVM_FFI_INLINE UnchangedOr& operator=(const UnchangedOr&) = default;
+  TVM_FFI_INLINE UnchangedOr& operator=(UnchangedOr&&) noexcept = default;
+
   /*!
    * \brief Construct an unchanged result from its tag.
    * \param unchanged The unchanged tag.
@@ -865,6 +871,31 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
 
 namespace details {
 
+/*!
+ * \brief The unchanged marker as a return value, with no carrier to construct or destroy.
+ *
+ * ``TVM_FFI_S_MUTATE_RETURN_UNCHANGED()`` returns this proxy. A raw ``TVMFFIAny`` hook receives
+ * the marker directly, while a typed helper receives an ``Expected<UnchangedOr<T>>`` through the
+ * carrier's tag constructor.
+ */
+struct UnchangedReturnProxy {
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE operator TVMFFIAny() const noexcept {
+    TVMFFIAny raw;
+    raw.type_index = TypeIndex::kTVMFFIUnchanged;
+    // invariance: always set the union padding part to 0
+    raw.zero_padding = 0;
+    raw.v_int64 = 0;
+    return raw;
+  }
+
+  template <typename T>
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE operator Expected<UnchangedOr<T>>() const noexcept {
+    return Expected<UnchangedOr<T>>(UnchangedOr<T>(Unchanged()));
+  }
+};
+
 /// \cond Doxygen_Suppress
 // Return from the current raw or same-T Expected mutation function if Result is an Error.
 // The rvalue-only proxy lets the enclosing return type select the representation.
@@ -882,15 +913,12 @@ namespace details {
  * \brief Return an unchanged result from a structural-mutation hook.
  *
  * Terminal statement of a hook whose traversed fields are all unchanged. Works from a raw
- * ``TVMFFIAny`` hook or an ``Expected<UnchangedOr<Any>>`` helper. A helper with another declared
- * replacement type returns ``Unchanged()`` directly.
+ * ``TVMFFIAny`` hook or an ``Expected<UnchangedOr<T>>`` helper.
  *
  * \sa TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN
  */
-#define TVM_FFI_S_MUTATE_RETURN_UNCHANGED()                           \
-  return ::tvm::ffi::details::MaybeReturnHelper(                      \
-      ::tvm::ffi::Expected<::tvm::ffi::UnchangedOr<::tvm::ffi::Any>>( \
-          ::tvm::ffi::UnchangedOr<::tvm::ffi::Any>(::tvm::ffi::Unchanged())))
+#define TVM_FFI_S_MUTATE_RETURN_UNCHANGED() \
+  return ::tvm::ffi::details::UnchangedReturnProxy {}
 
 /// \cond Doxygen_Suppress
 #define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Type, Name, ResultExpr)    \

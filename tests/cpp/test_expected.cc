@@ -165,8 +165,26 @@ TEST(Expected, TypeTraitsErrorRoundtrip) {
 
 // Test move semantics
 TEST(Expected, MoveSemantics) {
+  static_assert(std::is_copy_constructible_v<Expected<String>>);
+  static_assert(std::is_copy_assignable_v<Expected<String>>);
+  static_assert(std::is_nothrow_move_constructible_v<Expected<String>>);
+  static_assert(std::is_nothrow_move_assignable_v<Expected<String>>);
+  static_assert(!std::is_trivially_destructible_v<Expected<String>>);
+
   Expected<String> result = String("test");
   EXPECT_TRUE(result.is_ok());
+
+  Expected<String> copied(result);
+  Expected<String> copy_assigned = String("old copy-assignment value");
+  copy_assigned = result;
+  EXPECT_EQ(copied.value(), "test");
+  EXPECT_EQ(copy_assigned.value(), "test");
+
+  Expected<String> moved(std::move(copied));
+  Expected<String> move_assigned = String("old move-assignment value");
+  move_assigned = std::move(copy_assigned);
+  EXPECT_EQ(std::move(moved).value(), "test");
+  EXPECT_EQ(std::move(move_assigned).value(), "test");
 
   String value = std::move(result).value();
   EXPECT_EQ(value, "test");
@@ -432,6 +450,12 @@ TEST(ExpectedRvalueMove, PodTypesCompile) {
 
 // Test the default successful state of Expected<void>.
 TEST(ExpectedVoid, BasicOk) {
+  static_assert(std::is_copy_constructible_v<Expected<void>>);
+  static_assert(std::is_copy_assignable_v<Expected<void>>);
+  static_assert(std::is_nothrow_move_constructible_v<Expected<void>>);
+  static_assert(std::is_nothrow_move_assignable_v<Expected<void>>);
+  static_assert(!std::is_trivially_destructible_v<Expected<void>>);
+
   Expected<void> result;
 
   EXPECT_TRUE(result.is_ok());

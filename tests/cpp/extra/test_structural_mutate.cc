@@ -44,11 +44,37 @@ using StringMap = Map<String, Any>;
 // Unchanged result protocol.
 // ---------------------------------------------------------------------------
 
-Expected<UnchangedOr<String>> ReturnTypedUnchangedExpected() { return Unchanged(); }
+TVMFFIAny ReturnRawUnchanged() noexcept { TVM_FFI_S_MUTATE_RETURN_UNCHANGED(); }
+
+Expected<UnchangedOr<String>> ReturnTypedUnchangedExpected() noexcept {
+  TVM_FFI_S_MUTATE_RETURN_UNCHANGED();
+}
 
 TEST(UnchangedOr, ErrorRoundTrip) {
+  static_assert(std::is_empty_v<details::UnchangedReturnProxy>);
+  static_assert(std::is_trivially_destructible_v<details::UnchangedReturnProxy>);
+  static_assert(std::is_copy_constructible_v<UnchangedOr<String>>);
+  static_assert(std::is_copy_assignable_v<UnchangedOr<String>>);
+  static_assert(std::is_nothrow_move_constructible_v<UnchangedOr<String>>);
+  static_assert(std::is_nothrow_move_assignable_v<UnchangedOr<String>>);
+  static_assert(!std::is_trivially_destructible_v<UnchangedOr<String>>);
   static_assert(!std::is_constructible_v<UnchangedOr<Any>, Error>);
   static_assert(!std::is_constructible_v<UnchangedOr<Any>, Unexpected<Error>>);
+
+  UnchangedOr<String> original = String("unchanged-or special-member value");
+  UnchangedOr<String> copied_value(original);
+  UnchangedOr<String> copy_assigned = Unchanged();
+  copy_assigned = original;
+  EXPECT_EQ(std::move(copied_value).ValueUnchecked(), "unchanged-or special-member value");
+  EXPECT_EQ(std::move(copy_assigned).ValueUnchecked(), "unchanged-or special-member value");
+
+  UnchangedOr<String> moved_value(std::move(original));
+  UnchangedOr<String> move_source = String("unchanged-or move-assignment value");
+  UnchangedOr<String> move_assigned = Unchanged();
+  move_assigned = std::move(move_source);
+  EXPECT_EQ(std::move(moved_value).ValueUnchecked(), "unchanged-or special-member value");
+  EXPECT_EQ(std::move(move_assigned).ValueUnchecked(), "unchanged-or move-assignment value");
+
   Expected<UnchangedOr<Any>> failure = Error("ValueError", "expected failure", "");
   const Any copied_storage(failure);
   Expected<UnchangedOr<Any>> copied =
@@ -86,6 +112,10 @@ TEST(UnchangedOr, ErrorRoundTrip) {
 }
 
 TEST(StructuralMutate, UnchangedProtocolResolvesAtThrowingEntryPoints) {
+  TVMFFIAny raw_proxy = ReturnRawUnchanged();
+  EXPECT_EQ(raw_proxy.type_index, TypeIndex::kTVMFFIUnchanged);
+  EXPECT_EQ(raw_proxy.zero_padding, 0);
+  EXPECT_EQ(raw_proxy.v_int64, 0);
   Expected<Any> raw_tag = Unchanged();
   ASSERT_TRUE(raw_tag.is_ok());
   EXPECT_EQ(details::ExpectedUnsafe::GetData(raw_tag).type_index(), TypeIndex::kTVMFFIUnchanged);
