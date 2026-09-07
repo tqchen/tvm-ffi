@@ -225,7 +225,7 @@ class StructuralMutatorObj : public Object {
    */
 
   TVM_FFI_INLINE Expected<Any> DefaultMutateExpected(AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(DefaultMutateRaw(value));
+    return DefaultMutateRaw(value);
   }
 
   /*!
@@ -339,7 +339,9 @@ class StructuralMutatorObj : public Object {
   //
   // Engine-internal: subclasses call the Expected forms above.
   /*! \brief Raw default mutation: attr lookup then hook, favouring the fn-ptr case. */
-  TVM_FFI_INLINE TVMFFIAny DefaultMutateRaw(AnyView value) noexcept {
+  // EXPERIMENT (task #387): returns Expected<Any> instead of the raw TVMFFIAny; its raw callers
+  // convert at the vtable boundary with ExpectedUnsafe::MoveToTVMFFIAny. Nothing else changes.
+  TVM_FFI_INLINE Expected<Any> DefaultMutateRaw(AnyView value) noexcept {
     static reflection::TypeAttrColumn column(reflection::type_attr::kStructuralMutate);
     AnyView attr = column[value.type_index()];
     // Exactly one frame per node: hooks propagate errors untouched, and this is the engine
@@ -353,7 +355,7 @@ class StructuralMutatorObj : public Object {
     if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
       details::UpdateVisitErrorContext(result, value);
     }
-    return result;
+    return details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(result);
   }
 
   // The cold remainder of DefaultMutateRaw, out of line so that always-inlined caller stays
@@ -446,7 +448,7 @@ class StructuralMutatorObj : public Object {
       }
       return result;
     }
-    return DefaultMutateRaw(value);
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(DefaultMutateRaw(value));
   }
 
   /*!
@@ -1096,7 +1098,7 @@ class StructuralMapEngine : public Parent {
     if (TryLinks<false>(value, &out, std::index_sequence_for<Callbacks...>{})) {
       return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
     }
-    return this->DefaultMutateRaw(value);
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(this->DefaultMutateRaw(value));
   }
 
   /*!
@@ -1316,7 +1318,7 @@ class StructuralMapDynEngine : public Parent {
     if (TryLink<false>(value, &out)) {
       return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
     }
-    return this->DefaultMutateRaw(value);
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(this->DefaultMutateRaw(value));
   }
 
   /*! \brief Optionally mutate a value in place through the first matching runtime link. */
