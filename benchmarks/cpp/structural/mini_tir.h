@@ -1281,10 +1281,14 @@ inline void HVisitArray(const Array<T>& arr, F fvisit) {
 // not in its algorithm, and it is the same arrangement `ShippingPostOrderVisit` and
 // `ShippingSubstitute` below already use for the two entry points.
 //
-// It is worth what it costs: with the bodies inlined, mini's `map_functor` and `map_old` ran
-// 25-32% under real-TVM's on every Expr fixture, which is enough to reverse the report's
-// headline -- real reads `subst` against `old` at -26% to -51% on those rows and inlined mini
-// read +4% to -24%.
+// Measured, on an idle machine, against `mini_tir_bench_inline`: this is worth about four
+// points of a twenty-nine point gap.  Inlined, mini's `map_functor` averaged -29.6% against
+// real-TVM's and `map_old` -28.7%; with the bodies out of line the two average -25.5%.  So the
+// compiled shape is a real term and not the dominant one, and marking these bodies is a
+// fidelity correction rather than a fix for the functor-baseline gap, which is still open.
+// It does close the walk side outright: `walk_old`, whose counterpart `PostOrderVisit` is in
+// the library, agrees to -0.6%/+5.0%, while `walk_functor`, whose counterpart is written in
+// `real_tvm_bench.cc` and inlinable on both sides, sits at -3.6% to -10.4%.
 //
 // Not applied to `HIRSubstitute` / `HIRApplyVisit`, whose apache/tvm counterparts
 // (`FunctorSubstitute`, `FunctorApplyVisit`) are written in `real_tvm_bench.cc` itself and so

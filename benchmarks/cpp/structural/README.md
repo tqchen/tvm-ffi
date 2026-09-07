@@ -331,11 +331,30 @@ it. mini-TIR is one translation unit, so at `-O3` every one of them inlines unle
 otherwise. `mini_tir.h` marks them `H_LIBRARY_BODY`, the same device
 `ShippingPostOrderVisit` and `ShippingSubstitute` already use for the two entry points.
 
-This is a real term, not a rounding error: built with the bodies inlinable, mini-TIR's
-`map_functor` and `map_old` ran 25–32% under real TVM's on every Expr fixture — enough to
-reverse the headline, since real reads `subst` against `old` at −26% to −51% on those rows and
-inlined mini read +4% to −24%. `build.sh --inline-control` emits that binary as
-`mini_tir_bench_inline` so the size of the term stays measurable rather than remembered.
+It is a real term and it is not the dominant one, which is worth stating in that order.
+`build.sh --inline-control` emits the inlinable binary as `mini_tir_bench_inline` so the size
+of the term is measured rather than remembered, and measured on an idle machine it is about
+four points of a twenty-nine point gap: inlined, mini-TIR's `map_functor` averages −29.6%
+against real TVM's and `map_old` −28.7%; with the bodies out of line both average −25.5%.
+Marking them is therefore a fidelity correction — the compiled shape now matches — and not a
+fix for the functor-baseline gap, which stays open and is stated as a band below.
+
+On the walk side it does close things outright, which is the cleanest evidence that the
+mechanism is the one named. `walk_old`, whose counterpart `PostOrderVisit` is inside the
+library, agrees to −0.6%/+5.0%. `walk_functor`, whose counterpart `FunctorApplyVisit` is
+written in `real_tvm_bench.cc` and so is inlinable on *both* sides, sits at −3.6% to −10.4% —
+mini still faster, exactly where the model says the two harnesses are still allowed to differ.
+
+**Until that gap closes, `*_functor` and `*_old` on the Expr fixtures are the one arm family
+the fidelity run does not hold to a band.** Measured idle at `1c31003`, mini-TIR runs them
+about 25% under real TVM's on every Expr fixture while `floor` agrees to ±1.5%, `never` to
+±2.5% and `subst` to ±7%. The consequence is specific and is the reason this is written down
+rather than filed: **do not read an engine-versus-baseline ratio off mini-TIR.** On the
+`retained` split/fuse rows real TVM reads `subst` against `old` at −20.9% and −21.2% where
+mini-TIR reads +10.1% and +8.0% — mini says the engine is *slower* than the shipping API on
+the rows where real says it is a fifth faster. mini-TIR remains sound for what the engine arms
+measure, since those run the same `libtvm_ffi.so` in both binaries and agree; it is not sound
+for anything measured against the functor-era baselines.
 
 Table *size* is not part of it. The earlier reading — that the gap came from real TVM's
 thirty-four-type `NodeFunctor` table against mini-TIR's seven, or from the PLT hop — is
