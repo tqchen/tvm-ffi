@@ -372,17 +372,17 @@ class StructuralMutatorObj : public Object {
    */
   template <typename T = Any>
   TVM_FFI_INLINE Expected<UnchangedOr<T>> MutateExpected(AnyView value) noexcept {
-    TVMFFIAny result = (*vtable_->mutate)(this, value);
-    if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
-      return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(result);
-    }
-    if constexpr (!std::is_same_v<T, Any>) {
-      if (TVM_FFI_PREDICT_FALSE(!TypeTraits<UnchangedOr<T>>::CheckAnyStrict(&result))) {
+    if constexpr (std::is_same_v<T, Any>) {
+      return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(
+          (*vtable_->mutate)(this, value));
+    } else {
+      TVMFFIAny result = (*vtable_->mutate)(this, value);
+      if (TVM_FFI_PREDICT_FALSE(!TypeTraits<Expected<UnchangedOr<T>>>::CheckAnyStrict(&result))) {
         (void)details::AnyUnsafe::MoveTVMFFIAnyToAny(&result);
         return details::SMutateDeclaredTypeError();
       }
+      return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(result);
     }
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(result);
   }
 
   /*!
@@ -413,17 +413,17 @@ class StructuralMutatorObj : public Object {
    */
   template <typename T = Any>
   TVM_FFI_INLINE Expected<UnchangedOr<T>> MaybeInplaceMutateExpected(AnyView value) noexcept {
-    TVMFFIAny result = (*vtable_->maybe_inplace_mutate)(this, value);
-    if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
-      return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(result);
-    }
-    if constexpr (!std::is_same_v<T, Any>) {
-      if (TVM_FFI_PREDICT_FALSE(!TypeTraits<UnchangedOr<T>>::CheckAnyStrict(&result))) {
+    if constexpr (std::is_same_v<T, Any>) {
+      return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(
+          (*vtable_->maybe_inplace_mutate)(this, value));
+    } else {
+      TVMFFIAny result = (*vtable_->maybe_inplace_mutate)(this, value);
+      if (TVM_FFI_PREDICT_FALSE(!TypeTraits<Expected<UnchangedOr<T>>>::CheckAnyStrict(&result))) {
         (void)details::AnyUnsafe::MoveTVMFFIAnyToAny(&result);
         return details::SMutateDeclaredTypeError();
       }
+      return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(result);
     }
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<T>>(result);
   }
 
   /*!

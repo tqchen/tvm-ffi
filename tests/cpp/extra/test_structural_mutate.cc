@@ -124,13 +124,27 @@ TEST(StructuralMutate, UnchangedProtocolResolvesAtThrowingEntryPoints) {
                   .value()
                   .same_as(value));
 
-  auto replace_int_with_string = [](int64_t, StructuralMutatorObj*) -> Expected<Any> {
+  auto replace_int_with_string = [](int64_t value, StructuralMutatorObj*) -> Expected<Any> {
+    if (value == -1) return Unexpected(Error("ValueError", "direct-forward failure", ""));
     return String("wrong replacement uses heap storage");
   };
   using WrongTypeMutator =
       StructuralMutateEngine<StructuralMapEngineBase, decltype(replace_int_with_string)>;
   StructuralMutator wrong_type_mutator(
       make_object<WrongTypeMutator>(std::move(replace_int_with_string)));
+
+  auto any_error = wrong_type_mutator->MutateExpected(int64_t{-1});
+  ASSERT_TRUE(any_error.is_err());
+  EXPECT_EQ(any_error.error().message(), "direct-forward failure");
+  auto any_inplace_error = wrong_type_mutator->MaybeInplaceMutateExpected(int64_t{-1});
+  ASSERT_TRUE(any_inplace_error.is_err());
+  EXPECT_EQ(any_inplace_error.error().message(), "direct-forward failure");
+  auto typed_error = wrong_type_mutator->MutateExpected<int64_t>(int64_t{-1});
+  ASSERT_TRUE(typed_error.is_err());
+  EXPECT_EQ(typed_error.error().message(), "direct-forward failure");
+  auto typed_inplace_error = wrong_type_mutator->MaybeInplaceMutateExpected<int64_t>(int64_t{-1});
+  ASSERT_TRUE(typed_inplace_error.is_err());
+  EXPECT_EQ(typed_inplace_error.error().message(), "direct-forward failure");
 
   Expected<UnchangedOr<int64_t>> result = wrong_type_mutator->MutateExpected<int64_t>(int64_t{1});
   ASSERT_TRUE(result.is_err());
