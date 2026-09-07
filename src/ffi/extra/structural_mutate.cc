@@ -52,19 +52,18 @@ Expected<Any> StructuralMapExpected(
     Any root,  // NOLINT(performance-unnecessary-value-param)
     const Array<Tuple<int32_t, Function>>& callbacks,
     const Array<Tuple<int32_t, Function>>& callbacks_with_def_region_kind, int order) noexcept {
-  if (order == static_cast<int>(WalkOrder::kPreOrder)) {
-    using Mutator = StructuralMapDynEngine<StructuralMapEngineBase, WalkOrder::kPreOrder>;
-    StructuralMutator mutator(make_object<Mutator>(callbacks, callbacks_with_def_region_kind));
-    auto result = mutator->MaybeInplaceMutateIfUniqueExpected(root);
-    if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
-    return std::move(result).value().ValueOrUnchanged(root);
-  } else {
+  Expected<UnchangedOr<Any>> result = [&]() {
+    if (order == static_cast<int>(WalkOrder::kPreOrder)) {
+      using Mutator = StructuralMapDynEngine<StructuralMapEngineBase, WalkOrder::kPreOrder>;
+      StructuralMutator mutator(make_object<Mutator>(callbacks, callbacks_with_def_region_kind));
+      return mutator->MaybeInplaceMutateIfUniqueExpected(root);
+    }
     using Mutator = StructuralMapDynEngine<StructuralMapEngineBase, WalkOrder::kPostOrder>;
     StructuralMutator mutator(make_object<Mutator>(callbacks, callbacks_with_def_region_kind));
-    auto result = mutator->MaybeInplaceMutateIfUniqueExpected(root);
-    if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
-    return std::move(result).value().ValueOrUnchanged(root);
-  }
+    return mutator->MaybeInplaceMutateIfUniqueExpected(root);
+  }();
+  if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
+  return std::move(result).value().ValueOrUnchanged(root);
 }
 
 /*! \brief Runtime counterpart of the typed callback-owned mutate engine. */
@@ -94,7 +93,8 @@ class StructuralMutateDynEngine : public Parent {
     return static_cast<StructuralMutateDynEngine*>(mutator)->MaybeInplaceMutateImplRaw(value);
   }
 
-  std::optional<Expected<Any>> DispatchCallback(AnyView value, bool allow_inplace) noexcept {
+  std::optional<Expected<UnchangedOr<Any>>> DispatchCallback(AnyView value,
+                                                             bool allow_inplace) noexcept {
     for (const auto& entry : callbacks_) {
       if (!RuntimeTypeIndexMatch(value.type_index(), entry.template get<0>())) continue;
       if (entry.template get<2>()) {
@@ -108,8 +108,8 @@ class StructuralMutateDynEngine : public Parent {
   }
 
   TVMFFIAny MutateImplRaw(AnyView value) noexcept {
-    if (std::optional<Expected<Any>> matched = DispatchCallback(value, false)) {
-      Expected<Any> result = *std::move(matched);
+    if (std::optional<Expected<UnchangedOr<Any>>> matched = DispatchCallback(value, false)) {
+      Expected<UnchangedOr<Any>> result = *std::move(matched);
       if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
         Parent::UpdateVisitErrorContext(result, value);
       }
@@ -119,8 +119,8 @@ class StructuralMutateDynEngine : public Parent {
   }
 
   TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
-    if (std::optional<Expected<Any>> matched = DispatchCallback(value, true)) {
-      Expected<Any> result = *std::move(matched);
+    if (std::optional<Expected<UnchangedOr<Any>>> matched = DispatchCallback(value, true)) {
+      Expected<UnchangedOr<Any>> result = *std::move(matched);
       if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
         Parent::UpdateVisitErrorContext(result, value);
       }
@@ -172,13 +172,16 @@ TVM_FFI_INLINE TVMFFIAny MutateSeqContainerChanged(StructuralMutatorObj* mutator
   int64_t size = static_cast<int64_t>(self->size());
   const Any* items = self->begin();
   ObjectPtr<SeqObj> output = SeqObj::CreateRepeated(size, Any());
-  output->InitRange(0, items, items + index);
+  output->InitRange(0, items, items + size);
   output->SetItemAfterCheck(index, std::move(first));
 
   for (int64_t i = index + 1; i < size; ++i) {
     const Any& item = items[i];
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value, mutator->MutateExpected(item));
-    output->SetItemAfterCheck(i, std::move(mapped_value).ValueOrUnchanged(item));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, mapped_value,
+                                      mutator->MutateExpected(item));
+    if (!mapped_value.UnchangedOrSameAs(item)) {
+      output->SetItemAfterCheck(i, std::move(mapped_value).ValueUnchecked());
+    }
   }
   return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
 }
@@ -200,13 +203,13 @@ TVMFFIAny MutateSeqContainerRaw(StructuralMutatorObj* mutator, AnyView value,
 
   for (int64_t i = 0; i < size; ++i) {
     const Any& item = items[i];
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value, mutator->MutateExpected(item));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, mapped_value,
+                                      mutator->MutateExpected(item));
     if (!mapped_value.UnchangedOrSameAs(item)) {
-      return MutateSeqContainerChanged(mutator, self, i,
-                                       std::move(mapped_value).ValueOrUnchanged(item));
+      return MutateSeqContainerChanged(mutator, self, i, std::move(mapped_value).ValueUnchecked());
     }
   }
-  return UnchangedOrUnsafe::MoveToTVMFFIAny(UnchangedOr<Any>::Unchanged());
+  TVM_FFI_S_MUTATE_RETURN_UNCHANGED();
 }
 
 /*!
@@ -223,13 +226,13 @@ TVMFFIAny MaybeInplaceMutateSeqContainerRaw(StructuralMutatorObj* mutator, AnyVi
                                             SeqObj* self) noexcept {
   for (int64_t i = 0; i < static_cast<int64_t>(self->size()); ++i) {
     const Any& item = self->begin()[i];
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped_value,
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, mapped_value,
                                       mutator->MaybeInplaceMutateIfUniqueExpected(item));
     if (!mapped_value.UnchangedOrSameAs(item)) {
-      self->SetItemAfterCheck(i, std::move(mapped_value).ValueOrUnchanged(item));
+      self->SetItemAfterCheck(i, std::move(mapped_value).ValueUnchecked());
     }
   }
-  return UnchangedOrUnsafe::MoveToTVMFFIAny(UnchangedOr<Any>::Unchanged());
+  TVM_FFI_S_MUTATE_RETURN_UNCHANGED();
 }
 
 /*!
@@ -259,9 +262,10 @@ TVM_FFI_INLINE TVMFFIAny MutateMapValuesChanged(StructuralMutatorObj* mutator,
 
   for (; source_it != self->end(); ++source_it, ++output_it) {
     const Any& old_value = source_it->second;
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value, mutator->MutateExpected(old_value));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, new_value,
+                                      mutator->MutateExpected(old_value));
     if (!new_value.UnchangedOrSameAs(old_value)) {
-      output_it->second = std::move(new_value).ValueOrUnchanged(old_value);
+      output_it->second = std::move(new_value).ValueUnchecked();
     }
   }
   return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
@@ -282,13 +286,14 @@ TVMFFIAny MutateMapValuesRaw(StructuralMutatorObj* mutator, AnyView value,
   size_t index = 0;
   for (auto source_it = self->begin(); source_it != self->end(); ++source_it, ++index) {
     const Any& old_value = source_it->second;
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value, mutator->MutateExpected(old_value));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, new_value,
+                                      mutator->MutateExpected(old_value));
     if (!new_value.UnchangedOrSameAs(old_value)) {
       return MutateMapValuesChanged(mutator, self, source_it, index,
-                                    std::move(new_value).ValueOrUnchanged(old_value));
+                                    std::move(new_value).ValueUnchecked());
     }
   }
-  return UnchangedOrUnsafe::MoveToTVMFFIAny(UnchangedOr<Any>::Unchanged());
+  TVM_FFI_S_MUTATE_RETURN_UNCHANGED();
 }
 
 /*!
@@ -305,18 +310,18 @@ TVMFFIAny MaybeInplaceMutateMapValuesRaw(StructuralMutatorObj* mutator, AnyView 
                                          MapObjType* self) noexcept {
   for (auto it = self->begin(); it != self->end(); ++it) {
     Any& old_value = it->second;
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, new_value,
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, new_value,
                                       mutator->MaybeInplaceMutateIfUniqueExpected(old_value));
     if (!new_value.UnchangedOrSameAs(old_value)) {
-      it->second = std::move(new_value).ValueOrUnchanged(old_value);
+      it->second = std::move(new_value).ValueUnchecked();
     }
   }
-  return UnchangedOrUnsafe::MoveToTVMFFIAny(UnchangedOr<Any>::Unchanged());
+  TVM_FFI_S_MUTATE_RETURN_UNCHANGED();
 }
 
 /*! \brief Identity structural mutation hook for immutable String and Bytes leaves. */
 TVMFFIAny MutateImmutableLeaf(StructuralMutatorObj*, AnyView value) noexcept {
-  return UnchangedOrUnsafe::MoveToTVMFFIAny(UnchangedOr<Any>::Unchanged());
+  TVM_FFI_S_MUTATE_RETURN_UNCHANGED();
 }
 
 /*! \brief Structural mutation hook for ArrayObj. */
@@ -376,15 +381,15 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::ObjectDef<StructuralMutatorObj>();  // NOLINT(bugprone-unused-raii)
   refl::GlobalDef()
-      .def_method(
-          "ffi.StructuralMutatorMutate",
-          [](const StructuralMutator& mutator, AnyView value) { return mutator->Mutate(value); })
-      .def_method("ffi.StructuralMutatorDefaultMutate",
-                  [](const StructuralMutator& mutator, AnyView value) -> Any {
-                    Any result = std::move(mutator->DefaultMutateExpected(value)).value();
-                    return result.type_index() == TypeIndex::kTVMFFIUnchanged ? Any(value)
-                                                                              : std::move(result);
+      .def_method("ffi.StructuralMutatorMutate",
+                  [](const StructuralMutator& mutator, AnyView value) {
+                    return std::move(mutator->Mutate(value)).ValueOrUnchanged(value);
                   })
+      .def_method(
+          "ffi.StructuralMutatorDefaultMutate",
+          [](const StructuralMutator& mutator, AnyView value) -> Any {
+            return std::move(mutator->DefaultMutateExpected(value)).value().ValueOrUnchanged(value);
+          })
       .def_method("ffi.StructuralMutatorVarRemapGet",
                   [](const StructuralMutator& mutator, AnyView var) {
                     return mutator->VarRemapGetExpected(var).value();
