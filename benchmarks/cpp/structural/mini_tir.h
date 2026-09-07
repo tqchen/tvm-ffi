@@ -19,12 +19,8 @@
 #ifndef TVM_FFI_BENCHMARKS_CPP_STRUCTURAL_MINI_TIR_H_
 #define TVM_FFI_BENCHMARKS_CPP_STRUCTURAL_MINI_TIR_H_
 
-// mini-TIR: a mirror of TVM's TIR node shape built from tvm-ffi types alone, with its own
-// structural hooks, plus the traversal machinery the baseline arms measure.
-//
-// Deliberately not factored against `tvm_hook_override.h`.  The two node sets' hooks read
-// almost identically and are written out twice on purpose: a reader can follow either without
-// mentally instantiating a template, and a change to one cannot silently reshape the other.
+// mini-TIR: apache/tvm's TIR node layouts rebuilt from tvm-ffi types alone, with ports of
+// their structural hooks, plus the traversal machinery the baseline arms measure.
 //
 // THE FIDELITY REQUIREMENT.  mini-TIR is not a sketch of TVM's node shape; every node it does
 // have is its apache/tvm counterpart's layout -- same fields, same order, same types -- and

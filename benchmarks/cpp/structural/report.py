@@ -436,13 +436,15 @@ def main():
         if len(args.binary) != 2:
             raise SystemExit("--fidelity needs exactly two --binary arguments")
         paths = [os.path.abspath(p) for p in args.binary]
-        labels = [parse(subprocess.run([p], capture_output=True, text=True).stdout)
-                  ["provenance"]["harness"] for p in paths]
+        # Labelled by path, then renamed from the provenance the run itself carries: naming
+        # them up front would mean running each binary an extra time to read its name.
+        states = [(paths[i], "", paths[i]) for i in (0, 1)]
+        by_path = interleave(states, args.cpu, args.runs)
+        labels = [by_path[p]["provenance"]["harness"] for p in paths]
         if labels[0] == labels[1]:
             raise SystemExit("--fidelity compares two different harnesses; both are %s"
                              % labels[0])
-        states = [(labels[i], "", paths[i]) for i in (0, 1)]
-        merged = interleave(states, args.cpu, args.runs)
+        merged = {labels[i]: by_path[paths[i]] for i in (0, 1)}
         render_fidelity(merged, labels, args.runs, out)
     else:
         for binary in args.binary:

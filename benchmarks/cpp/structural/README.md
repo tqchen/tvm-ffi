@@ -217,7 +217,7 @@ comparable.
 | `walk_var` | `StructuralWalk<kPostOrder>` with a `Var` link and an `Expr` catch-all | the arm under study: what a real walk costs |
 | `walk_never` | the same shape whose first link can never match | prices **link testing alone** — the gap to `floor` is the callback machinery with no callback firing |
 | `walk_functor` | `IRApplyVisit` over `StmtExprVisitor`; does not go through structural hooks at all | baseline: **the pre-structural functor machinery** `main` still ships |
-| `walk_old` | `PostOrderVisit`, called directly | baseline: **what the pinned TVM ships today** |
+| `walk_old` | `PostOrderVisit`, called directly | baseline: **what the pinned TVM ships today** — whichever implementation that is at the pin |
 
 ### Map arms
 
@@ -233,10 +233,10 @@ three different engines:
 | arm | mechanism |
 | --- | --- |
 | `subst` | `StructuralMap` with a `Var` callback |
-| `old` | `Substitute` — the same engine at this pin, reached through a different API |
+| `old` | `Substitute`, called directly — `IRSubstitute` at this pin, so a functor mutator with a per-substitution result-type check |
 | `functor` | `FunctorSubstitute : StmtExprMutator` — pre-migration vtable path, no hooks |
 
-So `subst vs old` prices the API and `subst vs functor` prices the migration.
+So `subst vs old` prices the shipping API and `subst vs functor` prices the migration.
 
 **split/fuse — Expr-level `Var` substitution.** `Substitute` and `FunctorSubstitute` both hook
 `VisitExpr_(const VarNode*)`, so these are the arms they are baselines for.
@@ -281,8 +281,20 @@ harness's `FunctorSubstitute` omits, which is why `map_functor` and `map_old` di
 20% while `walk_functor` and `walk_old` agree within 3%.
 
 `*_functor` and `*_old` are **different baselines**, and a reader should not average them.
-`*_old` is the pinned TVM's current implementation, which is already engine-based; `*_functor`
-is the pre-structural functor machinery. Reading `*_old` as "before the engine" would be wrong.
+`*_old` is whatever `PostOrderVisit` and `Substitute` *are* at the pinned revision, called
+through the public API — at `a1031a2177` that is `IRApplyVisit` and `IRSubstitute`, the
+functor machinery, so the difference from `*_functor` is `IRSubstitute`'s extra work and not a
+different era of traversal. An earlier pin had both built on the structural engine, and the
+port has to follow whichever it is rather than assume: mini-TIR kept the engine-based reading
+for one revision too long and its `old` arms became a different algorithm from real TVM's.
+
+**One residual gap the port cannot close.** On the real side `*_functor` and `*_old` run inside
+`libtvm_compiler.so`, through a `NodeFunctor` table covering thirty-four `Expr` types, with
+every `VisitExpr_` body across a shared-library boundary. mini-TIR has no shared library and,
+by the reduced-node-set licence, a seven-type table. `walk_old` and `map_old` model the
+boundary with non-inlined entry points; the functor layer's whole class hierarchy would have to
+become a library to model it properly, which the harness does not do today. Read a
+`*_functor` fidelity delta with that in mind.
 
 ### The ownership axis
 
