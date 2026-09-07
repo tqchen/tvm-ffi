@@ -505,12 +505,11 @@ namespace details {
  *       details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const FooNode>(value);
  *   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->a));
  *   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->b));
- *   TVM_FFI_S_VISIT_RETURN_NONE();
+ *   return AnyView(nullptr).CopyToTVMFFIAny();
  * }
  * \endcode
  *
  * \param Result An expression yielding the descent result to inspect.
- * \sa TVM_FFI_S_VISIT_RETURN_NONE
  */
 #define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result)                                \
   do {                                                                            \
@@ -520,18 +519,6 @@ namespace details {
       return ::tvm::ffi::details::MaybeReturnHelper(::std::move(tvm_ffi_res_));   \
     }                                                                             \
   } while (0)
-
-/*!
- * \brief Return the completed result -- no interrupt -- from a visit hook.
- *
- * Terminal statement of a hook that traversed every field it intends to. Works
- * from a raw ``TVMFFIAny`` hook and a typed ``Expected`` helper alike.
- *
- * \sa TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN
- */
-#define TVM_FFI_S_VISIT_RETURN_NONE()            \
-  return ::tvm::ffi::details::MaybeReturnHelper( \
-      ::tvm::ffi::Expected<::tvm::ffi::Optional<::tvm::ffi::VisitInterrupt>>(::std::nullopt))
 
 }  // namespace details
 
