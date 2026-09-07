@@ -24,6 +24,9 @@ option(TVM_FFI_USE_EXTRA_CXX_API "Enable extra CXX API in shared lib" ON)
 option(TVM_FFI_USE_THREADS "Link against threads in shared lib" ON)
 option(TVM_FFI_USE_DL_LIBS "Link against dl libs in shared lib" ON)
 option(TVM_FFI_BACKTRACE_ON_SEGFAULT "Set signal handler to print backtrace on segfault" ON)
+# BRANCH-LOCAL: benchmark-only escape hatch, see benchmarks/cpp/README.md. Never ON for a
+# shipping build; the structural benchmark needs to override hooks TVM already registered.
+option(TVM_FFI_BENCH_ALLOW_TYPE_ATTR_OVERRIDE "Allow re-registering a type attr (benchmark builds only)" OFF)
 
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/Utils/DetectTargetTriple.cmake)
 
@@ -125,6 +128,11 @@ if (TVM_FFI_BACKTRACE_ON_SEGFAULT)
 else ()
   message(STATUS "Setting C++ macro TVM_FFI_BACKTRACE_ON_SEGFAULT - 0")
   target_compile_definitions(tvm_ffi_objs PRIVATE TVM_FFI_BACKTRACE_ON_SEGFAULT=0)
+endif ()
+
+if (TVM_FFI_BENCH_ALLOW_TYPE_ATTR_OVERRIDE)
+  message(WARNING "TVM_FFI_BENCH_ALLOW_TYPE_ATTR_OVERRIDE is ON: the write-once type-attr guard is DISABLED. Benchmark builds only.")
+  target_compile_definitions(tvm_ffi_objs PRIVATE TVM_FFI_BENCH_ALLOW_TYPE_ATTR_OVERRIDE=1)
 endif ()
 
 tvm_ffi_add_msvc_flags(tvm_ffi_objs)
