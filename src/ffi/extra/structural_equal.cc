@@ -31,6 +31,7 @@
 #include <tvm/ffi/reflection/accessor.h>
 #include <tvm/ffi/string.h>
 
+#include <algorithm>
 #include <cmath>
 #include <unordered_map>
 #include <utility>
@@ -180,13 +181,13 @@ class StructEqualHandler {
       }
       return success;
     }
-    // FreeVar path. In a non-recursive def region the FreeVar's own
+    // FreeVar path. In a simple def region the FreeVar's own
     // sub-fields are walked outside the def region (nested free vars
     // there must resolve against an outer binding, not rebind), so we
     // clamp ``def_region_kind_`` to ``kNone`` around the CompareFields
     // call and restore before the binding decision below.
     TVMFFIDefRegionKind saved_def_region_kind = def_region_kind_;
-    if (def_region_kind_ == kTVMFFIDefRegionKindNonRecursive) {
+    if (def_region_kind_ == kTVMFFIDefRegionKindSimple) {
       def_region_kind_ = kTVMFFIDefRegionKindNone;
     }
     bool success = CompareFields(lhs, rhs, type_info);
@@ -220,13 +221,17 @@ class StructEqualHandler {
         Any lhs_value = getter(lhs);
         Any rhs_value = getter(rhs);
         // Dispatch on the def-region flags.
-        constexpr int64_t kSEqHashDefAny = kTVMFFIFieldFlagBitMaskSEqHashDefRecursive |
-                                           kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive;
+        constexpr int64_t kSEqHashDefAny =
+            kTVMFFIFieldFlagBitMaskSEqHashDefPattern | kTVMFFIFieldFlagBitMaskSEqHashDefSimple;
         if (field_info->flags & kSEqHashDefAny) {
           TVMFFIDefRegionKind new_kind =
-              (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive)
-                  ? kTVMFFIDefRegionKindNonRecursive
-                  : kTVMFFIDefRegionKindRecursive;
+              (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefSimple)
+                  ? kTVMFFIDefRegionKindSimple
+                  : kTVMFFIDefRegionKindPattern;
+          // Precedence: a pattern region propagates; entering any kind inside it has no effect.
+          if (def_region_kind_ == kTVMFFIDefRegionKindPattern) {
+            new_kind = kTVMFFIDefRegionKindPattern;
+          }
           std::swap(new_kind, def_region_kind_);
           success = CompareAny(lhs_value, rhs_value);
           std::swap(new_kind, def_region_kind_);
@@ -262,6 +267,10 @@ class StructEqualHandler {
                   (def_region_kind == kTVMFFIDefRegionKindNone)
                       ? def_region_kind_
                       : static_cast<TVMFFIDefRegionKind>(def_region_kind);
+              // Precedence: a pattern region propagates; entering any kind inside it has no effect.
+              if (def_region_kind_ == kTVMFFIDefRegionKindPattern) {
+                new_kind = kTVMFFIDefRegionKindPattern;
+              }
               std::swap(new_kind, def_region_kind_);
               bool sub_success = CompareAny(inner_lhs, inner_rhs);
               std::swap(new_kind, def_region_kind_);
@@ -432,8 +441,8 @@ class StructEqualHandler {
   }
   // Current def-region kind. ``kNone`` means we are not in a def region;
   // free vars discovered here do not bind (they must already be bound by an
-  // outer scope or comparison falls back to pointer identity). ``kRecursive``
-  // and ``kNonRecursive`` enable binding for the field-flag-driven walk and
+  // outer scope or comparison falls back to pointer identity). ``kPattern``
+  // and ``kSimple`` enable binding for the field-flag-driven walk and
   // for the custom-callback path respectively (see CompareObject).
   TVMFFIDefRegionKind def_region_kind_{kTVMFFIDefRegionKindNone};
   // whether we compare tensor data
@@ -452,8 +461,7 @@ class StructEqualHandler {
 bool StructuralEqual::Equal(const Any& lhs, const Any& rhs, bool map_free_vars,
                             bool skip_tensor_content) {
   StructEqualHandler handler;
-  handler.def_region_kind_ =
-      map_free_vars ? kTVMFFIDefRegionKindRecursive : kTVMFFIDefRegionKindNone;
+  handler.def_region_kind_ = map_free_vars ? kTVMFFIDefRegionKindPattern : kTVMFFIDefRegionKindNone;
   handler.skip_tensor_content_ = skip_tensor_content;
   return handler.CompareAny(lhs, rhs);
 }
@@ -463,8 +471,7 @@ Optional<reflection::AccessPathPair> StructuralEqual::GetFirstMismatch(const Any
                                                                        bool map_free_vars,
                                                                        bool skip_tensor_content) {
   StructEqualHandler handler;
-  handler.def_region_kind_ =
-      map_free_vars ? kTVMFFIDefRegionKindRecursive : kTVMFFIDefRegionKindNone;
+  handler.def_region_kind_ = map_free_vars ? kTVMFFIDefRegionKindPattern : kTVMFFIDefRegionKindNone;
   handler.skip_tensor_content_ = skip_tensor_content;
   std::vector<reflection::AccessStep> lhs_reverse_path;
   std::vector<reflection::AccessStep> rhs_reverse_path;

@@ -104,7 +104,7 @@ class NamedTypeSchema(TypeSchema):
       none). ``default_is_factory`` marks a ``default_factory`` registration,
       whose value only exists by calling the factory through the FFI.
     - ``structural_eq``: the decoded structural-equality flag
-      (``"ignore"``, ``"def-recursive"``, ``"def-non-recursive"`` or ``None``).
+      (``"ignore"``, ``"def-pattern"``, ``"def-simple"`` or ``None``).
     - ``frozen``: ``True`` for read-only (``def_ro``) fields.
     """
 

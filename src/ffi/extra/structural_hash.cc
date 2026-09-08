@@ -131,7 +131,7 @@ class StructuralHashHandler {
     if (structural_eq_hash_kind != kTVMFFISEqHashKindFreeVar) {
       hash_value = HashFields(obj, type_info, obj->GetTypeKeyHash());
     } else {
-      // FreeVar path. In a non-recursive def region the FreeVar's own
+      // FreeVar path. In a simple def region the FreeVar's own
       // sub-fields are walked outside the def region (nested free vars
       // there hash by pointer, matching use semantics), so we clamp
       // ``def_region_kind_`` to ``kNone`` around the HashFields call and
@@ -144,7 +144,7 @@ class StructuralHashHandler {
       // is observable to FreeVars hashed later in the same traversal;
       // skipping the walk would silently change those subsequent hashes.
       TVMFFIDefRegionKind saved_def_region_kind = def_region_kind_;
-      if (def_region_kind_ == kTVMFFIDefRegionKindNonRecursive) {
+      if (def_region_kind_ == kTVMFFIDefRegionKindSimple) {
         def_region_kind_ = kTVMFFIDefRegionKindNone;
       }
       hash_value = HashFields(obj, type_info, obj->GetTypeKeyHash());
@@ -183,13 +183,17 @@ class StructuralHashHandler {
           reflection::FieldGetter getter(field_info);
           Any field_value = getter(obj);
           // Dispatch on the def-region flags (mirror of the equality side).
-          constexpr int64_t kSEqHashDefAny = kTVMFFIFieldFlagBitMaskSEqHashDefRecursive |
-                                             kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive;
+          constexpr int64_t kSEqHashDefAny =
+              kTVMFFIFieldFlagBitMaskSEqHashDefPattern | kTVMFFIFieldFlagBitMaskSEqHashDefSimple;
           if (field_info->flags & kSEqHashDefAny) {
             TVMFFIDefRegionKind new_kind =
-                (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive)
-                    ? kTVMFFIDefRegionKindNonRecursive
-                    : kTVMFFIDefRegionKindRecursive;
+                (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefSimple)
+                    ? kTVMFFIDefRegionKindSimple
+                    : kTVMFFIDefRegionKindPattern;
+            // Precedence: a pattern region propagates; entering any kind inside it has no effect.
+            if (def_region_kind_ == kTVMFFIDefRegionKindPattern) {
+              new_kind = kTVMFFIDefRegionKindPattern;
+            }
             std::swap(new_kind, def_region_kind_);
             init_hash = details::StableHashCombine(init_hash, HashAny(field_value));
             std::swap(new_kind, def_region_kind_);
@@ -209,6 +213,10 @@ class StructuralHashHandler {
                   (def_region_kind == kTVMFFIDefRegionKindNone)
                       ? def_region_kind_
                       : static_cast<TVMFFIDefRegionKind>(def_region_kind);
+              // Precedence: a pattern region propagates; entering any kind inside it has no effect.
+              if (def_region_kind_ == kTVMFFIDefRegionKindPattern) {
+                new_kind = kTVMFFIDefRegionKindPattern;
+              }
               std::swap(new_kind, def_region_kind_);
               uint64_t hv = HashAny(val);
               std::swap(new_kind, def_region_kind_);
@@ -349,7 +357,7 @@ class StructuralHashHandler {
   }
 
   // Current def-region kind. ``kNone`` means we are not in a def region; free
-  // vars hash by pointer. ``kRecursive`` and ``kNonRecursive`` enable
+  // vars hash by pointer. ``kPattern`` and ``kSimple`` enable
   // ``free_var_counter_``-based hashing for the field-flag-driven walk and
   // for the custom-callback path respectively (see HashObject).
   TVMFFIDefRegionKind def_region_kind_{kTVMFFIDefRegionKindNone};
@@ -366,8 +374,7 @@ class StructuralHashHandler {
 
 uint64_t StructuralHash::Hash(const Any& value, bool map_free_vars, bool skip_tensor_content) {
   StructuralHashHandler handler;
-  handler.def_region_kind_ =
-      map_free_vars ? kTVMFFIDefRegionKindRecursive : kTVMFFIDefRegionKindNone;
+  handler.def_region_kind_ = map_free_vars ? kTVMFFIDefRegionKindPattern : kTVMFFIDefRegionKindNone;
   handler.skip_tensor_content_ = skip_tensor_content;
   return handler.HashAny(value);
 }

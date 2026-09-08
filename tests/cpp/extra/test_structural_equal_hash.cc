@@ -248,10 +248,10 @@ TEST(StructuralEqualHash, CustomTreeNode) {
   EXPECT_TRUE(StructuralEqual()(diff_fa_fc, expected_diff_fa_fc));
 }
 
-// Regression tests for the SEqHashDefRecursive vs SEqHashDefNonRecursive
+// Regression tests for the SEqHashDefPattern vs SEqHashDefSimple
 // distinction. ``TDefHolder`` has two sibling fields:
-//   - ``def_recursive``     tagged AttachFieldFlag::SEqHashDefRecursive()
-//   - ``def_non_recursive`` tagged AttachFieldFlag::SEqHashDefNonRecursive()
+//   - ``def_recursive``     tagged AttachFieldFlag::SEqHashDefPattern()
+//   - ``def_non_recursive`` tagged AttachFieldFlag::SEqHashDefSimple()
 // each holding a ``TVarWithDep`` (a FreeVar with a sub-field ``dep`` that
 // can itself reference another FreeVar). The four sub-cases below cover
 // the observable behaviors of the two flags.
@@ -307,6 +307,16 @@ TEST(StructuralEqualHash, NonRecursiveDef) {
     TDefHolder lhs(/*def_recursive=*/shared, /*def_non_recursive=*/c_no_dep);
     TDefHolder rhs(/*def_recursive=*/shared, /*def_non_recursive=*/d_no_dep);
     EXPECT_TRUE(StructuralEqual()(lhs, rhs));
+    EXPECT_EQ(StructuralHash::Hash(lhs, /*map_free_vars=*/true),
+              StructuralHash::Hash(rhs, /*map_free_vars=*/true));
+  }
+  {
+    // (e) A simple def inside a pattern region stays a pattern: the same
+    // objects as (b) are equal once map_free_vars makes the outer region a pattern.
+    TVarWithDep shared("shared", std::nullopt);
+    TDefHolder lhs(shared, TVarWithDep("c", TVar("p")));
+    TDefHolder rhs(shared, TVarWithDep("d", TVar("q")));
+    EXPECT_TRUE(StructuralEqual::Equal(lhs, rhs, /*map_free_vars=*/true));
     EXPECT_EQ(StructuralHash::Hash(lhs, /*map_free_vars=*/true),
               StructuralHash::Hash(rhs, /*map_free_vars=*/true));
   }

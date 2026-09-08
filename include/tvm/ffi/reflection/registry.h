@@ -223,25 +223,27 @@ class AttachFieldFlag : public InfoTrait {
   explicit AttachFieldFlag(int32_t flag) : flag_(flag) {}
 
   /*!
-   * \brief Attach kTVMFFIFieldFlagBitMaskSEqHashDefRecursive
+   * \brief Attach kTVMFFIFieldFlagBitMaskSEqHashDefPattern
    *
-   * The field enters a recursive def region: free vars discovered both at
-   * the field's value and inside that value's sub-fields bind as fresh
-   * defs at the same site. Use for "function-style" bindings.
+   * The field enters a pattern def region: the value's type is matched as a
+   * pattern. The value variable and every free variable found in its type bind
+   * on first occurrence and must match on later ones. Use for function-style
+   * bindings such as parameter lists, where shape variables are introduced
+   * alongside the parameters.
    */
-  TVM_FFI_INLINE static AttachFieldFlag SEqHashDefRecursive() {
-    return AttachFieldFlag(kTVMFFIFieldFlagBitMaskSEqHashDefRecursive);
+  TVM_FFI_INLINE static AttachFieldFlag SEqHashDefPattern() {
+    return AttachFieldFlag(kTVMFFIFieldFlagBitMaskSEqHashDefPattern);
   }
   /*!
-   * \brief Attach kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive
+   * \brief Attach kTVMFFIFieldFlagBitMaskSEqHashDefSimple
    *
-   * The field enters a non-recursive def region: only the immediate free
-   * var at the field's value binds; free vars in its sub-fields are uses
-   * that must already be bound by an outer def region. Use for "let-style"
-   * bindings whose sub-fields reference outer-scope vars.
+   * The field enters a simple def region: the variable alone is defined, and
+   * its type is walked as uses, so variables appearing in the type must already
+   * be bound. Use for let-style bindings whose type refers to outer-scope
+   * variables. Entered inside a pattern region it stays a pattern region.
    */
-  TVM_FFI_INLINE static AttachFieldFlag SEqHashDefNonRecursive() {
-    return AttachFieldFlag(kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive);
+  TVM_FFI_INLINE static AttachFieldFlag SEqHashDefSimple() {
+    return AttachFieldFlag(kTVMFFIFieldFlagBitMaskSEqHashDefSimple);
   }
   /*!
    * \brief Attach kTVMFFIFieldFlagBitMaskSEqHashIgnore

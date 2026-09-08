@@ -323,7 +323,7 @@ class TObjectPtrHolder : public ObjectRef {
 // FreeVar test object that has a sub-field referencing another FreeVar.
 // This models the "var with nested vars" case (analogous to a relax::Var
 // whose struct_info contains tir shape vars). It is used to exercise the
-// difference between SEqHashDefRecursive and SEqHashDefNonRecursive at the
+// difference between SEqHashDefPattern and SEqHashDefSimple at the
 // FFI layer: under recursive semantics the nested ``dep`` var rebinds
 // transitively; under non-recursive semantics it is treated as a use of an
 // outer-scope binding and equality fails when no such outer binding exists.
@@ -377,9 +377,9 @@ class TDefHolderObj : public Object {
     namespace refl = tvm::ffi::reflection;
     refl::ObjectDef<TDefHolderObj>()
         .def_ro("def_recursive", &TDefHolderObj::def_recursive,
-                refl::AttachFieldFlag::SEqHashDefRecursive())
+                refl::AttachFieldFlag::SEqHashDefPattern())
         .def_ro("def_non_recursive", &TDefHolderObj::def_non_recursive,
-                refl::AttachFieldFlag::SEqHashDefNonRecursive());
+                refl::AttachFieldFlag::SEqHashDefSimple());
   }
 
   static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindTreeNode;
@@ -410,7 +410,7 @@ class TFuncObj : public Object {
     const auto* self = value.cast<const TFuncObj*>();
 
     TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->WithDefRegionKind(
-        kTVMFFIDefRegionKindRecursive, [&]() { return visitor->VisitExpected(self->params); }));
+        kTVMFFIDefRegionKindPattern, [&]() { return visitor->VisitExpected(self->params); }));
 
     auto body_result = visitor->VisitExpected(self->body);
     TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(body_result);
@@ -420,7 +420,7 @@ class TFuncObj : public Object {
   static void RegisterReflection() {
     namespace refl = tvm::ffi::reflection;
     refl::ObjectDef<TFuncObj>()
-        .def_ro("params", &TFuncObj::params, refl::AttachFieldFlag::SEqHashDefRecursive())
+        .def_ro("params", &TFuncObj::params, refl::AttachFieldFlag::SEqHashDefPattern())
         .def_ro("body", &TFuncObj::body)
         .def_ro("comment", &TFuncObj::comment, refl::AttachFieldFlag::SEqHashIgnore());
     refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralVisit);

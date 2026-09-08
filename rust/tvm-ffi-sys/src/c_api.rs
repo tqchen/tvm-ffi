@@ -109,7 +109,7 @@ pub enum TVMFFIFieldFlagBitMask {
     kTVMFFIFieldFlagBitMaskHasDefault = 1 << 1,
     kTVMFFIFieldFlagBitMaskIsStaticMethod = 1 << 2,
     kTVMFFIFieldFlagBitMaskSEqHashIgnore = 1 << 3,
-    kTVMFFIFieldFlagBitMaskSEqHashDefRecursive = 1 << 4,
+    kTVMFFIFieldFlagBitMaskSEqHashDefPattern = 1 << 4,
     kTVMFFIFieldFlagBitMaskDefaultFromFactory = 1 << 5,
     kTVMFFIFieldFlagBitMaskReprOff = 1 << 6,
     kTVMFFIFieldFlagBitMaskCompareOff = 1 << 7,
@@ -117,7 +117,7 @@ pub enum TVMFFIFieldFlagBitMask {
     kTVMFFIFieldFlagBitMaskInitOff = 1 << 9,
     kTVMFFIFieldFlagBitMaskKwOnly = 1 << 10,
     kTVMFFIFieldFlagBitSetterIsFunctionObj = 1 << 11,
-    kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive = 1 << 12,
+    kTVMFFIFieldFlagBitMaskSEqHashDefSimple = 1 << 12,
 }
 
 /// Definition-region mode used by structural traversal.
@@ -125,8 +125,8 @@ pub enum TVMFFIFieldFlagBitMask {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum TVMFFIDefRegionKind {
     kTVMFFIDefRegionKindNone = 0,
-    kTVMFFIDefRegionKindRecursive = 1,
-    kTVMFFIDefRegionKindNonRecursive = 2,
+    kTVMFFIDefRegionKindPattern = 1,
+    kTVMFFIDefRegionKindSimple = 2,
 }
 
 /// Structural equality/hash participation kind stored in type metadata.

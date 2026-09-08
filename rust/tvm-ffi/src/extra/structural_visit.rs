@@ -57,7 +57,7 @@ use crate::function::Function;
 use crate::object::{Object, ObjectArc, ObjectCore};
 use crate::reflection::TypeAttrColumn;
 use crate::tvm_ffi_sys::TVMFFIFieldFlagBitMask::{
-    kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive, kTVMFFIFieldFlagBitMaskSEqHashDefRecursive,
+    kTVMFFIFieldFlagBitMaskSEqHashDefSimple, kTVMFFIFieldFlagBitMaskSEqHashDefPattern,
     kTVMFFIFieldFlagBitMaskSEqHashIgnore,
 };
 use crate::tvm_ffi_sys::{
@@ -69,8 +69,8 @@ use super::structural_common::{impl_callback_chain_tuple_arities, with_structura
 
 const STRUCTURAL_VISIT_ATTR: &str = "__s_visit__";
 const FLAG_SEQ_HASH_IGNORE: i64 = kTVMFFIFieldFlagBitMaskSEqHashIgnore as i64;
-const FLAG_SEQ_HASH_DEF_RECURSIVE: i64 = kTVMFFIFieldFlagBitMaskSEqHashDefRecursive as i64;
-const FLAG_SEQ_HASH_DEF_NON_RECURSIVE: i64 = kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive as i64;
+const FLAG_SEQ_HASH_DEF_PATTERN: i64 = kTVMFFIFieldFlagBitMaskSEqHashDefPattern as i64;
+const FLAG_SEQ_HASH_DEF_SIMPLE: i64 = kTVMFFIFieldFlagBitMaskSEqHashDefSimple as i64;
 
 /// What a callback asks the Rust walker to do with the current value.
 pub enum WalkResult {
@@ -123,8 +123,8 @@ pub enum WalkOrder {
 
 /// Definition-region state active at the current value.
 ///
-/// Reflected fields marked `SEqHashDefRecursive` or
-/// `SEqHashDefNonRecursive` override the inherited state for that field's
+/// Reflected fields marked `SEqHashDefPattern` or
+/// `SEqHashDefSimple` override the inherited state for that field's
 /// complete recursive visit.
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -133,20 +133,20 @@ pub enum DefRegionKind {
     #[default]
     None = 0,
     /// Definitions apply recursively through the visited value.
-    Recursive = 1,
-    /// Definitions apply to the visited value using non-recursive semantics.
-    NonRecursive = 2,
+    Pattern = 1,
+    /// Definitions apply to the visited value alone; its type is walked as uses.
+    Simple = 2,
 }
 
 const _: () = {
     assert!(DefRegionKind::None as i32 == TVMFFIDefRegionKind::kTVMFFIDefRegionKindNone as i32);
     assert!(
-        DefRegionKind::Recursive as i32
-            == TVMFFIDefRegionKind::kTVMFFIDefRegionKindRecursive as i32
+        DefRegionKind::Pattern as i32
+            == TVMFFIDefRegionKind::kTVMFFIDefRegionKindPattern as i32
     );
     assert!(
-        DefRegionKind::NonRecursive as i32
-            == TVMFFIDefRegionKind::kTVMFFIDefRegionKindNonRecursive as i32
+        DefRegionKind::Simple as i32
+            == TVMFFIDefRegionKind::kTVMFFIDefRegionKindSimple as i32
     );
 };
 
@@ -1775,6 +1775,10 @@ fn with_visitor_def_region<T>(
 ) -> T {
     unsafe {
         let previous = (*visitor).def_region_mode;
+        // Precedence: a pattern region propagates; entering any kind inside it has no effect.
+        if previous == DefRegionKind::Pattern as i32 {
+            return callback();
+        }
         (*visitor).def_region_mode = kind as i32;
         struct Restore {
             visitor: StructuralVisitorHandle,
@@ -1794,8 +1798,8 @@ fn with_visitor_def_region<T>(
 fn def_region_from_raw(kind: i32) -> Result<DefRegionKind> {
     match kind {
         x if x == DefRegionKind::None as i32 => Ok(DefRegionKind::None),
-        x if x == DefRegionKind::Recursive as i32 => Ok(DefRegionKind::Recursive),
-        x if x == DefRegionKind::NonRecursive as i32 => Ok(DefRegionKind::NonRecursive),
+        x if x == DefRegionKind::Pattern as i32 => Ok(DefRegionKind::Pattern),
+        x if x == DefRegionKind::Simple as i32 => Ok(DefRegionKind::Simple),
         _ => Err(runtime_error("invalid structural definition-region kind")),
     }
 }
@@ -1869,16 +1873,19 @@ fn finish(result: NativeResult) -> Result<Option<VisitInterrupt>> {
 
 #[inline]
 pub(crate) fn field_def_region(field: &TVMFFIFieldInfo, inherited: DefRegionKind) -> DefRegionKind {
-    if field.flags & FLAG_SEQ_HASH_DEF_NON_RECURSIVE != 0 {
-        DefRegionKind::NonRecursive
-    } else if field.flags & FLAG_SEQ_HASH_DEF_RECURSIVE != 0 {
-        DefRegionKind::Recursive
+    // Precedence: a pattern region propagates; entering any kind inside it has no effect.
+    if inherited == DefRegionKind::Pattern {
+        DefRegionKind::Pattern
+    } else if field.flags & FLAG_SEQ_HASH_DEF_SIMPLE != 0 {
+        DefRegionKind::Simple
+    } else if field.flags & FLAG_SEQ_HASH_DEF_PATTERN != 0 {
+        DefRegionKind::Pattern
     } else {
         inherited
     }
 }
 
-/// A non-recursive definition applies to a FreeVar value itself, but not to
+/// A simple definition applies to a FreeVar value itself, but not to
 /// the FreeVar's own reflected children: nested free vars there must resolve
 /// against an outer binding instead of rebinding. Mirrors C++
 /// `VisitReflectedFieldsExpected`.
@@ -1887,7 +1894,7 @@ pub(crate) fn free_var_child_region(
     inherited: DefRegionKind,
     structural_eq_hash_kind: i32,
 ) -> DefRegionKind {
-    if inherited == DefRegionKind::NonRecursive
+    if inherited == DefRegionKind::Simple
         && structural_eq_hash_kind == TVMFFISEqHashKind::kTVMFFISEqHashKindFreeVar as i32
     {
         DefRegionKind::None
