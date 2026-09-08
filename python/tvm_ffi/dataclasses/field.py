@@ -152,19 +152,15 @@ class Field:
           structural comparison and hashing.
         - ``"ignore"``: the field is excluded from structural equality
           and hashing entirely (e.g. source spans, caches).
-        - ``"def-recursive"`` (alias: ``"def"``): the field is a
-          **recursive definition region** that introduces new variable
-          bindings.  Free variables encountered anywhere in this field's
-          subtree (including inside the var's own sub-fields) are
-          mapped by position. One example is function parameter lists,
-          where the value var and any shape parameters in its type are
-          co-introduced at the same site.
-        - ``"def-non-recursive"``: the field is a **non-recursive
-          definition region**.  Only the immediate free var(s) at this
-          field's value bind; free vars inside their sub-fields must
-          resolve against an outer binding (use semantics). One example
-          is a normal binding whose value type contains shape
-          parameters that reference outer-scope vars.
+        - ``"def-pattern"`` (alias: ``"def"``): the field is a **pattern
+          definition region**: the bound variable's type is matched as a
+          pattern, and the variable and every free variable in its type
+          bind on first occurrence. Example: function parameter lists,
+          where ``x: Tensor([n, m])`` introduces ``x``, ``n`` and ``m``.
+        - ``"def-simple"``: the field is a **simple definition region**:
+          the variable alone is defined, and its type is walked as uses,
+          so variables appearing in it must already be bound. Inside a
+          pattern region this kind has no effect; the pattern propagates.
     doc : str | None
         Optional docstring for the field.
     converter : Callable[[Any], Any]
@@ -206,11 +202,11 @@ class Field:
 
     #: Valid values for the *structural_eq* parameter.
     #:
-    #: ``"def"`` is kept as a Python-side alias for ``"def-recursive"`` to
+    #: ``"def"`` is kept as an alias for ``"def-pattern"`` to
     #: preserve back-compat with code written against the old single-flag
     #: ``SEqHashDef`` API.
     _VALID_STRUCTURAL_EQ_VALUES: ClassVar[frozenset[str | None]] = frozenset(
-        {None, "ignore", "def", "def-recursive", "def-non-recursive"}
+        {None, "ignore", "def", "def-pattern", "def-simple"}
     )
 
     def __init__(  # noqa: PLR0913
@@ -313,12 +309,12 @@ def field(  # noqa: PLR0913
     structural_eq
         Structural equality/hashing annotation. ``None`` (default) means
         the field participates normally. ``"ignore"`` excludes the field
-        from structural comparison and hashing. ``"def-recursive"``
-        (alias ``"def"``) marks the field as a recursive definition
-        region: free vars in the field's whole subtree bind. ``"def-non-recursive"``
-        marks it as a non-recursive definition region: only immediate
-        free vars bind; nested free vars must resolve against an outer
-        binding.
+        from structural comparison and hashing. ``"def-pattern"``
+        (alias ``"def"``) marks the field as a pattern definition
+        region: the bound variable's type is matched as a pattern and its
+        free vars bind. ``"def-simple"`` marks it as a simple definition
+        region: the variable alone is defined and its type is walked as
+        uses. A pattern region propagates over a nested simple one.
     doc
         Optional docstring for the field.
     converter
@@ -342,7 +338,7 @@ def field(  # noqa: PLR0913
 
         @py_class(structural_eq="tree")
         class MyFunc(Object):
-            params: Array = field(structural_eq="def")
+            params: Array = field(structural_eq="def-pattern")
             body: Expr
             span: Object = field(structural_eq="ignore")
 

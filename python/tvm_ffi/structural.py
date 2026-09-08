@@ -100,8 +100,8 @@ class DefRegionKind(IntEnum):
     """
 
     NONE = 0
-    DEF_RECURSIVE = 1
-    DEF_NON_RECURSIVE = 2
+    DEF_PATTERN = 1
+    DEF_SIMPLE = 2
 
 
 def structural_equal(

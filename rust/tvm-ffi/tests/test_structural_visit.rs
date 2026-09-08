@@ -309,7 +309,7 @@ impl StructuralVisitor for ManualRegionVisitor {
         if let Some(array) = value.cast::<Array<i64>>() {
             // Override the state for exactly this child's subtree...
             let overridden = array.get(0).unwrap();
-            if let Some(interrupt) = self.visit_child(&overridden, DefRegionKind::NonRecursive)? {
+            if let Some(interrupt) = self.visit_child(&overridden, DefRegionKind::Simple)? {
                 return Ok(Some(interrupt));
             }
             // ...and forward the received state to inherit it.
@@ -330,7 +330,7 @@ fn manual_child_visit_can_override_def_region() {
     assert!(structural_visit(&root, &mut probe).unwrap().is_none());
     assert_eq!(
         probe.seen,
-        vec![DefRegionKind::NonRecursive, DefRegionKind::None]
+        vec![DefRegionKind::Simple, DefRegionKind::None]
     );
 }
 
@@ -987,7 +987,7 @@ impl StructuralVisitor for InheritedRegionProbe {
             self.at_root = false;
             let outer = value.cast::<Array<Array<i64>>>().unwrap();
             let inner = outer.get(0).unwrap();
-            return self.visit_child(&inner, DefRegionKind::Recursive);
+            return self.visit_child(&inner, DefRegionKind::Pattern);
         }
         self.seen.push(def_region_kind);
         self.default_visit_children(value, def_region_kind)
@@ -1002,7 +1002,7 @@ fn def_region_is_inherited_through_containers() {
         seen: Vec::new(),
     };
     assert!(structural_visit(&root, &mut probe).unwrap().is_none());
-    assert_eq!(probe.seen, vec![DefRegionKind::Recursive; 3]);
+    assert_eq!(probe.seen, vec![DefRegionKind::Pattern; 3]);
 }
 
 #[test]
@@ -1297,7 +1297,7 @@ fn callback_visit_with_overrides_child_def_region() {
         (
             |array: Array<i64>, visitor: &mut VisitContext<'_, ()>| {
                 for value in array.iter() {
-                    if let Some(interrupt) = visitor.visit_with(&value, DefRegionKind::Recursive)? {
+                    if let Some(interrupt) = visitor.visit_with(&value, DefRegionKind::Pattern)? {
                         return Ok(Some(interrupt));
                     }
                 }
@@ -1312,7 +1312,7 @@ fn callback_visit_with_overrides_child_def_region() {
     .is_none());
     assert_eq!(
         *seen.borrow(),
-        vec![(1, DefRegionKind::Recursive), (2, DefRegionKind::Recursive),]
+        vec![(1, DefRegionKind::Pattern), (2, DefRegionKind::Pattern),]
     );
 }
 

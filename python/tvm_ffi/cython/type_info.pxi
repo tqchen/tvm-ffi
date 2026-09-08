@@ -1037,14 +1037,14 @@ cdef _register_one_field(
     cdef object field_structure = getattr(py_field, "structural_eq", None)
     if field_structure == "ignore":
         flags |= kTVMFFIFieldFlagBitMaskSEqHashIgnore
-    elif field_structure == "def" or field_structure == "def-recursive":
+    elif field_structure in ("def-pattern", "def"):
         # ``"def"`` is the legacy short form, kept as a Python-side synonym for
-        # ``"def-recursive"`` since the C-level rename of the underlying flag
-        # (``kTVMFFIFieldFlagBitMaskSEqHashDef`` -> ``...SEqHashDefRecursive``)
+        # ``"def-pattern"`` since the C-level rename of the underlying flag
+        # (``kTVMFFIFieldFlagBitMaskSEqHashDef`` -> ``...SEqHashDefPattern``)
         # only changed the constant name, not the recursive semantics.
-        flags |= kTVMFFIFieldFlagBitMaskSEqHashDefRecursive
-    elif field_structure == "def-non-recursive":
-        flags |= kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive
+        flags |= kTVMFFIFieldFlagBitMaskSEqHashDefPattern
+    elif field_structure == "def-simple":
+        flags |= kTVMFFIFieldFlagBitMaskSEqHashDefSimple
     info.flags = flags
 
     # --- native layout ---

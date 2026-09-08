@@ -168,6 +168,9 @@ class StructuralVisitorObj : public Object {
   /*!
    * \brief Return the current def-region context.
    * \return The active def-region kind.
+   * \note A custom visit hook for a FreeVar type must apply the simple-def clamp itself: when
+   *       this is kTVMFFIDefRegionKindSimple, descend the variable's type under
+   *       kTVMFFIDefRegionKindNone. The reflected walk does this on its own.
    */
   TVM_FFI_INLINE TVMFFIDefRegionKind def_region_kind() const { return def_region_mode_; }
 
@@ -177,9 +180,15 @@ class StructuralVisitorObj : public Object {
    * \param kind The def-region kind to set during the callback.
    * \param callback A nullary callable that performs recursive visiting.
    * \return The value returned by \p callback.
+   * \note Inside a pattern region this is a no-op: the pattern propagates, so \p kind is
+   *       ignored and the callback runs under the pattern.
    */
   template <typename Callback>
   TVM_FFI_INLINE auto WithDefRegionKind(TVMFFIDefRegionKind kind, Callback&& callback) {
+    // Precedence: a pattern region propagates; entering any kind inside it has no effect.
+    if (def_region_mode_ == kTVMFFIDefRegionKindPattern) {
+      return std::forward<Callback>(callback)();
+    }
     class Scope {
      public:
       Scope(StructuralVisitorObj* visitor, TVMFFIDefRegionKind kind)
@@ -362,14 +371,12 @@ TVM_FFI_INLINE static Expected<Optional<VisitInterrupt>> VisitReflectedFieldsExp
             return true;
           }
 
-          if (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive) {
-            result = visitor->WithDefRegionKind(kTVMFFIDefRegionKindNonRecursive, [&]() {
-              return visitor->VisitExpected(field_value);
-            });
-          } else if (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefRecursive) {
-            result = visitor->WithDefRegionKind(kTVMFFIDefRegionKindRecursive, [&]() {
-              return visitor->VisitExpected(field_value);
-            });
+          if (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefSimple) {
+            result = visitor->WithDefRegionKind(
+                kTVMFFIDefRegionKindSimple, [&]() { return visitor->VisitExpected(field_value); });
+          } else if (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefPattern) {
+            result = visitor->WithDefRegionKind(
+                kTVMFFIDefRegionKindPattern, [&]() { return visitor->VisitExpected(field_value); });
           } else {
             result = visitor->VisitExpected(field_value);
           }
@@ -378,10 +385,9 @@ TVM_FFI_INLINE static Expected<Optional<VisitInterrupt>> VisitReflectedFieldsExp
     return result;
   };
 
-  // A non-recursive definition applies to the FreeVar itself, but its fields are uses. The
+  // A simple definition applies to the FreeVar itself, but its fields are uses. The
   // complete field traversal are clamped to None, then the definition region is restored.
-  if (visitor->def_region_kind() == kTVMFFIDefRegionKindNonRecursive &&
-      type_info->metadata != nullptr &&
+  if (visitor->def_region_kind() == kTVMFFIDefRegionKindSimple && type_info->metadata != nullptr &&
       type_info->metadata->structural_eq_hash_kind == kTVMFFISEqHashKindFreeVar) {
     return visitor->WithDefRegionKind(kTVMFFIDefRegionKindNone, visit_fields);
   }

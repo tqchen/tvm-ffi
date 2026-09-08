@@ -974,13 +974,13 @@ typedef enum {
    */
   kTVMFFIFieldFlagBitMaskSEqHashIgnore = 1 << 3,
   /*!
-   * \brief The field enters a recursive def region.
+   * \brief The field enters a pattern def region.
    *
    * This is an optional meta-data for structural eq/hash.
    *
    * \sa TVMFFIDefRegionKind for the def-region semantics.
    */
-  kTVMFFIFieldFlagBitMaskSEqHashDefRecursive = 1 << 4,
+  kTVMFFIFieldFlagBitMaskSEqHashDefPattern = 1 << 4,
   /*!
    * \brief The default_value_or_factory is a callable factory function () -> Any.
    *
@@ -1041,7 +1041,7 @@ typedef enum {
    */
   kTVMFFIFieldFlagBitSetterIsFunctionObj = 1 << 11,
   /*!
-   * \brief The field enters a non-recursive def region.
+   * \brief The field enters a simple def region.
    *
    * This is an optional meta-data for structural eq/hash.
    *
@@ -1050,7 +1050,7 @@ typedef enum {
    * \note Bit 1 << 12 is used here because bits 1 << 5 .. 1 << 11 are
    *       already taken by other field flags above.
    */
-  kTVMFFIFieldFlagBitMaskSEqHashDefNonRecursive = 1 << 12,
+  kTVMFFIFieldFlagBitMaskSEqHashDefSimple = 1 << 12,
 #ifdef __cplusplus
 };
 #else
@@ -1140,33 +1140,21 @@ typedef enum {
    */
   kTVMFFIDefRegionKindNone = 0,
   /*!
-   * \brief In a recursive def region.
+   * \brief A pattern def region: the value's type is matched as a pattern.
    *
-   * When we see a free var for the first time, we define the var, and
-   * the sub-fields of the var (e.g. its struct_info / type_annotation /
-   * shape) are also still in the def region — any free vars discovered
-   * inside those sub-fields are themselves treated as fresh defs at the
-   * same site.
-   *
-   * One example is function parameter lists: the value var and any
-   * shape parameters in its type are co-introduced at the same binding
-   * site.
+   * The descent recurses through the type. The value variable and every free
+   * variable in the type bind on first occurrence and must match on later ones.
+   * A pattern region propagates: kinds entered inside it have no effect.
    */
-  kTVMFFIDefRegionKindRecursive = 1,
+  kTVMFFIDefRegionKindPattern = 1,
   /*!
-   * \brief In a non-recursive def region.
+   * \brief A simple def region: the variable alone is defined here.
    *
-   * When we see a free var for the first time, we define the var, but
-   * the sub-fields of the var are NOT in the def region — they are
-   * treated as use references that must resolve against an outer
-   * binding. Free vars found in those sub-fields therefore do not
-   * rebind; if they are not already bound, equality fails.
-   *
-   * One example is a normal binding whose value type contains shape
-   * parameters: the value var is introduced fresh, but its shape
-   * parameters reference vars defined in an outer scope.
+   * Its type is walked as uses: variables appearing in the type must already
+   * be bound. Inside a pattern region this kind has no effect; the pattern
+   * propagates.
    */
-  kTVMFFIDefRegionKindNonRecursive = 2,
+  kTVMFFIDefRegionKindSimple = 2,
 #ifdef __cplusplus
 };
 #else

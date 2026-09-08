@@ -2074,8 +2074,8 @@ fn with_current_driver_context<D, T>(
 fn def_region_from_raw(kind: i32) -> Result<DefRegionKind> {
     match kind {
         x if x == DefRegionKind::None as i32 => Ok(DefRegionKind::None),
-        x if x == DefRegionKind::Recursive as i32 => Ok(DefRegionKind::Recursive),
-        x if x == DefRegionKind::NonRecursive as i32 => Ok(DefRegionKind::NonRecursive),
+        x if x == DefRegionKind::Pattern as i32 => Ok(DefRegionKind::Pattern),
+        x if x == DefRegionKind::Simple as i32 => Ok(DefRegionKind::Simple),
         _ => Err(runtime_error("invalid structural definition-region kind")),
     }
 }
@@ -2354,6 +2354,10 @@ fn with_mutator_def_region<T>(
 ) -> T {
     unsafe {
         let previous = (*mutator).def_region_mode;
+        // Precedence: a pattern region propagates; entering any kind inside it has no effect.
+        if previous == DefRegionKind::Pattern as i32 {
+            return callback();
+        }
         (*mutator).def_region_mode = kind as i32;
         struct Restore {
             mutator: StructuralMutatorHandle,

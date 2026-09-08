@@ -196,9 +196,9 @@ TEST(StructuralVisitor, TraversesFunction) {
   TestVisitorObj* test_visitor = AsTestVisitor(visitor);
   ASSERT_EQ(test_visitor->visited.size(), 4U);
   EXPECT_TRUE(test_visitor->visited[0].same_as(params));
-  EXPECT_EQ(test_visitor->modes[0], kTVMFFIDefRegionKindRecursive);
+  EXPECT_EQ(test_visitor->modes[0], kTVMFFIDefRegionKindPattern);
   EXPECT_TRUE(test_visitor->visited[1].same_as(param));
-  EXPECT_EQ(test_visitor->modes[1], kTVMFFIDefRegionKindRecursive);
+  EXPECT_EQ(test_visitor->modes[1], kTVMFFIDefRegionKindPattern);
   EXPECT_TRUE(test_visitor->visited[2].same_as(body));
   EXPECT_EQ(test_visitor->modes[2], kTVMFFIDefRegionKindNone);
   EXPECT_TRUE(test_visitor->visited[3].same_as(body_value));
@@ -266,9 +266,9 @@ TEST(StructuralVisitor, UsesFuncHook) {
   EXPECT_TRUE(test_visitor->visited[0].same_as(root));
   EXPECT_EQ(test_visitor->modes[0], kTVMFFIDefRegionKindNone);
   EXPECT_TRUE(test_visitor->visited[1].same_as(params));
-  EXPECT_EQ(test_visitor->modes[1], kTVMFFIDefRegionKindRecursive);
+  EXPECT_EQ(test_visitor->modes[1], kTVMFFIDefRegionKindPattern);
   EXPECT_TRUE(test_visitor->visited[2].same_as(param));
-  EXPECT_EQ(test_visitor->modes[2], kTVMFFIDefRegionKindRecursive);
+  EXPECT_EQ(test_visitor->modes[2], kTVMFFIDefRegionKindPattern);
   EXPECT_TRUE(test_visitor->visited[3].same_as(body));
   EXPECT_EQ(test_visitor->modes[3], kTVMFFIDefRegionKindNone);
   EXPECT_TRUE(test_visitor->visited[4].same_as(body_value));
@@ -293,9 +293,9 @@ TEST(StructuralVisitor, RestoresFuncDefRegion) {
   EXPECT_TRUE(test_visitor->visited[0].same_as(root));
   EXPECT_EQ(test_visitor->modes[0], kTVMFFIDefRegionKindNone);
   EXPECT_TRUE(test_visitor->visited[1].same_as(params));
-  EXPECT_EQ(test_visitor->modes[1], kTVMFFIDefRegionKindRecursive);
+  EXPECT_EQ(test_visitor->modes[1], kTVMFFIDefRegionKindPattern);
   EXPECT_TRUE(test_visitor->visited[2].same_as(param));
-  EXPECT_EQ(test_visitor->modes[2], kTVMFFIDefRegionKindRecursive);
+  EXPECT_EQ(test_visitor->modes[2], kTVMFFIDefRegionKindPattern);
   EXPECT_EQ(test_visitor->def_region_kind(), kTVMFFIDefRegionKindNone);
 }
 
@@ -307,20 +307,20 @@ TEST(StructuralVisitor, ExplicitDefRegionsOverrideFreeVarFieldClamp) {
   StructuralVisitor visitor = MakeTestVisitor();
 
   Expected<Optional<VisitInterrupt>> result = visitor->WithDefRegionKind(
-      kTVMFFIDefRegionKindNonRecursive, [&]() { return visitor->VisitExpected(root); });
+      kTVMFFIDefRegionKindSimple, [&]() { return visitor->VisitExpected(root); });
 
   ASSERT_TRUE(result.is_ok());
   EXPECT_FALSE(result.value().has_value());
   TestVisitorObj* test_visitor = AsTestVisitor(visitor);
   ASSERT_EQ(test_visitor->visited.size(), 4U);
   EXPECT_TRUE(test_visitor->visited[0].same_as(root));
-  EXPECT_EQ(test_visitor->modes[0], kTVMFFIDefRegionKindNonRecursive);
+  EXPECT_EQ(test_visitor->modes[0], kTVMFFIDefRegionKindSimple);
   EXPECT_TRUE(test_visitor->visited[1].same_as(holder));
   EXPECT_EQ(test_visitor->modes[1], kTVMFFIDefRegionKindNone);
   EXPECT_TRUE(test_visitor->visited[2].same_as(recursive));
-  EXPECT_EQ(test_visitor->modes[2], kTVMFFIDefRegionKindRecursive);
+  EXPECT_EQ(test_visitor->modes[2], kTVMFFIDefRegionKindPattern);
   EXPECT_TRUE(test_visitor->visited[3].same_as(non_recursive));
-  EXPECT_EQ(test_visitor->modes[3], kTVMFFIDefRegionKindNonRecursive);
+  EXPECT_EQ(test_visitor->modes[3], kTVMFFIDefRegionKindSimple);
   EXPECT_EQ(test_visitor->def_region_kind(), kTVMFFIDefRegionKindNone);
 }
 
@@ -690,9 +690,9 @@ TEST(StructuralVisit, CallbackDrivenTraversal) {
       [](const TPairObj* pair,
          StructuralVisitorObj* visitor) -> Expected<Optional<VisitInterrupt>> {
         TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->WithDefRegionKind(
-            kTVMFFIDefRegionKindRecursive, [&] { return visitor->VisitExpected(pair->lhs); }));
+            kTVMFFIDefRegionKindPattern, [&] { return visitor->VisitExpected(pair->lhs); }));
         TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->WithDefRegionKind(
-            kTVMFFIDefRegionKindNonRecursive, [&] { return visitor->VisitExpected(pair->rhs); }));
+            kTVMFFIDefRegionKindSimple, [&] { return visitor->VisitExpected(pair->rhs); }));
         return Optional<VisitInterrupt>(std::nullopt);
       },
       [&](const TVarWithDepObj* var,
@@ -707,8 +707,8 @@ TEST(StructuralVisit, CallbackDrivenTraversal) {
   ASSERT_TRUE(result.value().has_value());
   EXPECT_EQ(result.value().value()->value.cast<String>(), "found stop");
   ASSERT_EQ(trace.size(), 2u);
-  EXPECT_EQ(trace[0], std::make_pair(std::string("lhs"), kTVMFFIDefRegionKindRecursive));
-  EXPECT_EQ(trace[1], std::make_pair(std::string("stop"), kTVMFFIDefRegionKindNonRecursive));
+  EXPECT_EQ(trace[0], std::make_pair(std::string("lhs"), kTVMFFIDefRegionKindPattern));
+  EXPECT_EQ(trace[1], std::make_pair(std::string("stop"), kTVMFFIDefRegionKindSimple));
 
   using CallbackLayer = StructuralWalkWithVisitCount<>;
   using ComposedLayer = StructuralVisitOuterLayer<CallbackLayer>;

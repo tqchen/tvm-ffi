@@ -635,14 +635,14 @@ Use for:
   redundant to compare.
 - **Debug annotations** — names, comments, metadata for human consumption.
 
-``structural_eq="def-recursive"`` / ``"def-non-recursive"`` — Definition region
+``structural_eq="def-pattern"`` / ``"def-simple"`` — Definition region
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: python
 
    @py_class(structural_eq="tree")
    class Lambda(Object):
-       params: list[Var] = field(structural_eq="def-recursive")
+       params: list[Var] = field(structural_eq="def-pattern")
        body: Expr
 
 **Meaning**: "This field introduces new variable bindings. When comparing
@@ -654,40 +654,36 @@ variable"; the ``"def-*"`` flags on a field say "this field is where
 variables are defined." Together they enable alpha-equivalence:
 comparing functions up to consistent variable renaming.
 
-There are two flavors of definition region, distinguished by what
-happens when a ``"var"`` reached through the field carries its own
-sub-fields (for example, a shape annotation in the var's type):
+There are two kinds of definition region, distinguished by how the
+bound variable's type is treated:
 
-- ``"def-recursive"`` (alias: ``"def"``) — the variable's sub-fields
-  stay inside the definition region. Any free variables encountered
-  in those sub-fields are themselves treated as fresh definitions at
-  the same site. One example is **function parameter lists**, where
-  the value var and any shape parameters in its type are co-introduced
-  together at the function boundary.
+- ``"def-pattern"`` (alias: ``"def"``) — the variable's type is matched
+  as a pattern. The variable and every free variable in its type bind on
+  first occurrence and must match on later ones. Example: **function
+  parameter lists**, where ``x: Tensor([n, m])`` introduces ``x``, ``n``
+  and ``m`` together.
 
-- ``"def-non-recursive"`` — only the immediate variable(s) reached
-  through the field bind. The variable's sub-fields are walked
-  outside the definition region, so any free variables there are
-  *use* references that must resolve against an outer-scope binding.
-  One example is a **normal binding** whose value type references
-  outer-scope shape parameters (a ``let v = expr`` where ``v``'s
-  type refers to vars defined earlier).
+- ``"def-simple"`` — the variable alone is defined. Its type is walked as
+  uses, so variables appearing in it must already be bound. Example: a
+  **normal binding** ``let v = expr`` whose type refers to vars defined
+  earlier.
 
-When the distinction does not matter (no nested free vars under the
-bound variable), either flavor works and ``"def-recursive"`` is the
-conventional default — that's why the bare ``"def"`` alias resolves
-to it.
+A pattern region propagates: a ``"def-simple"`` field reached inside a
+pattern region (or under ``map_free_vars``) behaves as a pattern, since
+the enclosing pattern already binds every free variable. When the
+distinction does not matter (no free vars in the bound variable's type),
+either kind works and ``"def-pattern"`` is the conventional default —
+that's why the bare ``"def"`` alias resolves to it.
 
 Use for:
 
-- **Function parameter lists** — ``"def-recursive"`` so shape
-  parameters in each param's type co-introduce at the same site.
+- **Function parameter lists** — ``"def-pattern"``, so the shape
+  variables in each parameter's type are introduced with it.
 - **Normal binding left-hand sides** (let bindings, for-loop
-  iterators) whose value type references outer-scope vars —
-  ``"def-non-recursive"`` so those references don't rebind.
-- **Any field that introduces names into scope** — pick the flavor
-  that matches the binding form's contract; default to
-  ``"def-recursive"`` when in doubt.
+  iterators) whose type refers to outer-scope vars — ``"def-simple"``,
+  so those references stay uses.
+- **Any field that introduces names into scope** — pick the kind that
+  matches the binding form; default to ``"def-pattern"`` when in doubt.
 
 
 .. _sequal-shash:
@@ -740,16 +736,16 @@ field-level ``"def-*"`` flags and controls whether the sub-value is
 compared/hashed inside a definition region:
 
 - ``0`` — not in a def region (matches ``None`` on a field).
-- ``1`` — recursive def region (matches ``"def-recursive"``, alias
+- ``1`` — pattern def region (matches ``"def-pattern"``, alias
   ``"def"``).
-- ``2`` — non-recursive def region (matches ``"def-non-recursive"``).
+- ``2`` — simple def region (matches ``"def-simple"``).
 
 For back-compat with the original single-flag API, the callback also
-accepts a plain ``bool``: ``True`` is treated as ``1`` (recursive) and
+accepts a plain ``bool``: ``True`` is treated as ``1`` (pattern) and
 ``False`` as ``0`` (not in a def region). The Python examples below
 use ``True`` / ``False`` for that reason; pass an explicit ``2`` (or
-the ``kTVMFFIDefRegionKindNonRecursive`` enum value from C++) when the
-non-recursive kind is needed.
+the ``kTVMFFIDefRegionKindSimple`` enum value from C++) when the
+simple kind is needed.
 
 The ``field_name`` argument on ``eq_cb`` is used only for mismatch path
 reporting from :py:func:`~tvm_ffi.get_first_structural_mismatch`.
@@ -1191,14 +1187,14 @@ Callbacks passed through ``with_def_region_kind`` receive
 ``(value, def_region_kind)``.  The kind is one of:
 
 - ``DefRegionKind.NONE`` for an ordinary use.
-- ``DefRegionKind.DEF_RECURSIVE`` for a recursive definition region.
-- ``DefRegionKind.DEF_NON_RECURSIVE`` for a non-recursive definition.
+- ``DefRegionKind.DEF_PATTERN`` for a pattern definition region.
+- ``DefRegionKind.DEF_SIMPLE`` for a simple definition.
 
 The field annotations described earlier in this document establish these
-regions.  Recursive definitions propagate the definition mode into the defined
-value's children.  A non-recursive definition applies to the FreeVar identity
-itself, while its unannotated children are treated as ordinary uses.  Explicit
-nested definition annotations establish their own region.
+regions.  A pattern definition matches the defined value's type as a pattern,
+binding the free variables found there, and propagates: kinds entered inside
+it have no effect.  A simple definition applies to the FreeVar itself, while
+its type is walked as ordinary uses.
 
 .. code-block:: python
 

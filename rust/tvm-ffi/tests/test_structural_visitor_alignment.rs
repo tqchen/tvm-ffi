@@ -70,13 +70,13 @@ impl StructuralVisitor for RecordingVisitor {
         }
 
         // C++ analog: `TFuncObj::StructuralVisit` — visit "params"
-        // (element 0) under a recursive definition region, then the "body"
+        // (element 0) under a pattern definition region, then the "body"
         // (element 1) under the inherited state.
         if let Some(array) = value.cast::<Array<i64>>() {
-            // C++: visitor->WithDefRegionKind(kTVMFFIDefRegionKindRecursive,
+            // C++: visitor->WithDefRegionKind(kTVMFFIDefRegionKindPattern,
             //          [&] { return visitor->VisitExpected(self->params); })
             let params = array.get(0).unwrap();
-            if let Some(interrupt) = self.visit_child(&params, DefRegionKind::Recursive)? {
+            if let Some(interrupt) = self.visit_child(&params, DefRegionKind::Pattern)? {
                 return Ok(Some(interrupt));
             }
             // C++: visitor->VisitExpected(self->body)  (inherits the state)
@@ -104,7 +104,7 @@ fn records_values_and_def_region_modes() {
         visitor.modes,
         vec![
             DefRegionKind::None,      // the array itself
-            DefRegionKind::Recursive, // element 0: the "params" position
+            DefRegionKind::Pattern, // element 0: the "params" position
             DefRegionKind::None,      // element 1: the "body" position
         ]
     );
