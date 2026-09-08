@@ -517,13 +517,13 @@ namespace details {
  *
  * \param Result An expression yielding the descent result to inspect.
  */
-#define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result)                                \
-  do {                                                                            \
-    auto&& tvm_ffi_res_ = (Result);                                               \
-    if (TVM_FFI_PREDICT_FALSE(                                                    \
-            ::tvm::ffi::details::StructuralVisitNeedEarlyReturn(tvm_ffi_res_))) { \
-      return ::tvm::ffi::details::MaybeReturnHelper(::std::move(tvm_ffi_res_));   \
-    }                                                                             \
+#define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result)                                 \
+  do {                                                                             \
+    auto&& tvm_ffi_res_ = (Result);                                                \
+    if (TVM_FFI_PREDICT_FALSE(                                                     \
+            ::tvm::ffi::details::StructuralVisitNeedEarlyReturn(tvm_ffi_res_))) {  \
+      return ::tvm::ffi::details::ExpectedReturnHelper(::std::move(tvm_ffi_res_)); \
+    }                                                                              \
   } while (0)
 
 }  // namespace details

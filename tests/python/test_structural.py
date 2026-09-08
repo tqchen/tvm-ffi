@@ -413,6 +413,14 @@ def test_structural_mutate_callback_owned_recursion_and_errors() -> None:
     assert nested_trace == [1, 2]
 
 
+def test_structural_mutate_callback_resolves_unchanged() -> None:
+    unchanged = tvm_ffi.structural_mutate(
+        tvm_ffi.Array(["unchanged"]),
+        (tvm_ffi.Array, lambda value, mutator: mutator.mutate(value[0])),
+    )
+    assert unchanged == "unchanged"
+
+
 def test_structural_walk_nested_containers_and_skips_map_keys() -> None:
     root = tvm_ffi.Array(
         [

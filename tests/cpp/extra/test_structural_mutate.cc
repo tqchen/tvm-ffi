@@ -40,6 +40,160 @@ using namespace tvm::ffi::testing;
 using AnyArray = Array<Any>;
 using StringMap = Map<String, Any>;
 
+// ---------------------------------------------------------------------------
+// Unchanged result protocol.
+// ---------------------------------------------------------------------------
+
+Expected<UnchangedOr<String>> ReturnTypedUnchangedExpected() noexcept { return Unchanged(); }
+
+TEST(UnchangedOr, ErrorRoundTrip) {
+  static_assert(std::is_copy_constructible_v<UnchangedOr<String>>);
+
+  UnchangedOr<String> original = String("unchanged-or special-member value");
+  UnchangedOr<String> copied_value(original);
+  UnchangedOr<String> copy_assigned = Unchanged();
+  copy_assigned = original;
+  EXPECT_EQ(std::move(copied_value).ValueUnchecked(), "unchanged-or special-member value");
+  EXPECT_EQ(std::move(copy_assigned).ValueUnchecked(), "unchanged-or special-member value");
+
+  UnchangedOr<String> moved_value(std::move(original));
+  UnchangedOr<String> move_source = String("unchanged-or move-assignment value");
+  UnchangedOr<String> move_assigned = Unchanged();
+  move_assigned = std::move(move_source);
+  EXPECT_EQ(std::move(moved_value).ValueUnchecked(), "unchanged-or special-member value");
+  EXPECT_EQ(std::move(move_assigned).ValueUnchecked(), "unchanged-or move-assignment value");
+
+  Expected<UnchangedOr<Any>> failure = Error("ValueError", "expected failure", "");
+  const Any copied_storage(failure);
+  Expected<UnchangedOr<Any>> copied =
+      details::AnyUnsafe::CopyFromAnyViewAfterCheck<Expected<UnchangedOr<Any>>>(copied_storage);
+
+  ASSERT_TRUE(copied.is_err());
+  EXPECT_EQ(copied.error().kind(), "ValueError");
+  EXPECT_EQ(copied.error().message(), "expected failure");
+
+  Any moved_storage(failure);
+  Expected<UnchangedOr<Any>> moved =
+      details::AnyUnsafe::MoveFromAnyAfterCheck<Expected<UnchangedOr<Any>>>(
+          std::move(moved_storage));
+
+  ASSERT_TRUE(moved.is_err());
+  EXPECT_EQ(moved.error().kind(), "ValueError");
+  EXPECT_EQ(moved.error().message(), "expected failure");
+
+  Expected<Any> source_error = Error("TypeError", "converted failure", "");
+  Expected<UnchangedOr<Any>> converted_error = std::move(source_error);
+  ASSERT_TRUE(converted_error.is_err());
+  EXPECT_EQ(converted_error.error().kind(), "TypeError");
+  EXPECT_EQ(converted_error.error().message(), "converted failure");
+
+  Expected<Any> unexpected_error = Unexpected(Error("IndexError", "unexpected failure", ""));
+  ASSERT_TRUE(unexpected_error.is_err());
+  EXPECT_EQ(unexpected_error.error().kind(), "IndexError");
+  EXPECT_EQ(unexpected_error.error().message(), "unexpected failure");
+
+  Expected<UnchangedOr<Any>> unexpected_result =
+      Unexpected(Error("RuntimeError", "unchanged-or unexpected failure", ""));
+  ASSERT_TRUE(unexpected_result.is_err());
+  EXPECT_EQ(unexpected_result.error().kind(), "RuntimeError");
+  EXPECT_EQ(unexpected_result.error().message(), "unchanged-or unexpected failure");
+}
+
+TEST(StructuralMutate, UnchangedProtocolResolvesAtThrowingEntryPoints) {
+  Expected<Any> raw_tag = []() -> Expected<Any> { return Unchanged(); }();
+  ASSERT_TRUE(raw_tag.is_ok());
+  EXPECT_EQ(details::ExpectedUnsafe::GetData(raw_tag).type_index(), TypeIndex::kTVMFFIUnchanged);
+  EXPECT_TRUE(ReturnTypedUnchangedExpected().value().IsUnchanged());
+  auto never_matches = [](int64_t, StructuralMutatorObj*) -> Expected<Any> { return Any(); };
+  using Mutator = StructuralMutateEngine<StructuralMapEngineBase, decltype(never_matches)>;
+  StructuralMutator mutator(make_object<Mutator>(std::move(never_matches)));
+  String value("value longer than small-string storage");
+
+  auto untyped = mutator->MutateExpected(AnyView(value));
+  ASSERT_TRUE(untyped.is_ok());
+  EXPECT_TRUE(std::move(untyped).value().IsUnchanged());
+  auto untyped_throwing = mutator->Mutate(AnyView(value));
+  EXPECT_TRUE(untyped_throwing.IsUnchanged());
+  EXPECT_TRUE(std::move(untyped_throwing).ValueOrUnchanged(AnyView(value)).same_as(value));
+
+  auto typed = mutator->MutateExpected<String>(value);
+  ASSERT_TRUE(typed.is_ok());
+  EXPECT_TRUE(std::move(typed).value().IsUnchanged());
+  auto typed_throwing = mutator->Mutate<String>(value);
+  EXPECT_TRUE(typed_throwing.IsUnchanged());
+  String moved_value = value;
+  String moved_value_alias = moved_value;
+  EXPECT_EQ(std::move(typed_throwing).ValueOrUnchanged(std::move(moved_value)), moved_value_alias);
+  EXPECT_TRUE(mutator->MaybeInplaceMutate(AnyView(value)).IsUnchanged());
+  EXPECT_TRUE(mutator->MaybeInplaceMutate<String>(value).IsUnchanged());
+  auto unique = mutator->MaybeInplaceMutateIfUniqueExpected(AnyView(value));
+  ASSERT_TRUE(unique.is_ok());
+  EXPECT_TRUE(std::move(unique).value().IsUnchanged());
+  auto typed_unique = mutator->MaybeInplaceMutateIfUniqueExpected<String>(value);
+  ASSERT_TRUE(typed_unique.is_ok());
+  EXPECT_TRUE(std::move(typed_unique).value().IsUnchanged());
+  EXPECT_TRUE(StructuralMutateExpected(Any(value), never_matches).value().same_as(value));
+  EXPECT_TRUE(StructuralMapExpected<WalkOrder::kPostOrder>(
+                  Any(value), [](int64_t item) -> Expected<Any> { return Any(item + 1); })
+                  .value()
+                  .same_as(value));
+
+  auto replace_int_with_string = [](int64_t value, StructuralMutatorObj*) -> Expected<Any> {
+    if (value == -1) return Unexpected(Error("ValueError", "direct-forward failure", ""));
+    return String("wrong replacement uses heap storage");
+  };
+  using WrongTypeMutator =
+      StructuralMutateEngine<StructuralMapEngineBase, decltype(replace_int_with_string)>;
+  StructuralMutator wrong_type_mutator(
+      make_object<WrongTypeMutator>(std::move(replace_int_with_string)));
+
+  auto any_error = wrong_type_mutator->MutateExpected(int64_t{-1});
+  ASSERT_TRUE(any_error.is_err());
+  EXPECT_EQ(any_error.error().message(), "direct-forward failure");
+  auto any_inplace_error = wrong_type_mutator->MaybeInplaceMutateExpected(int64_t{-1});
+  ASSERT_TRUE(any_inplace_error.is_err());
+  EXPECT_EQ(any_inplace_error.error().message(), "direct-forward failure");
+  auto typed_error = wrong_type_mutator->MutateExpected<int64_t>(int64_t{-1});
+  ASSERT_TRUE(typed_error.is_err());
+  EXPECT_EQ(typed_error.error().message(), "direct-forward failure");
+  auto typed_inplace_error = wrong_type_mutator->MaybeInplaceMutateExpected<int64_t>(int64_t{-1});
+  ASSERT_TRUE(typed_inplace_error.is_err());
+  EXPECT_EQ(typed_inplace_error.error().message(), "direct-forward failure");
+
+  Expected<UnchangedOr<int64_t>> result = wrong_type_mutator->MutateExpected<int64_t>(int64_t{1});
+  ASSERT_TRUE(result.is_err());
+  EXPECT_EQ(result.error().kind(), "TypeError");
+  Expected<UnchangedOr<int64_t>> inplace_result =
+      wrong_type_mutator->MaybeInplaceMutateExpected<int64_t>(int64_t{1});
+  ASSERT_TRUE(inplace_result.is_err());
+  EXPECT_EQ(inplace_result.error().kind(), "TypeError");
+  Expected<UnchangedOr<int64_t>> unique_result =
+      wrong_type_mutator->MaybeInplaceMutateIfUniqueExpected<int64_t>(int64_t{1});
+  ASSERT_TRUE(unique_result.is_err());
+  EXPECT_EQ(unique_result.error().kind(), "TypeError");
+
+  for (WalkOrder order : {WalkOrder::kPreOrder, WalkOrder::kPostOrder}) {
+    TVar root("n");
+    TVar unchanged = (order == WalkOrder::kPreOrder
+                          ? StructuralMap<WalkOrder::kPreOrder>(
+                                root, [](const TVar&) -> Expected<Any> { return Unchanged(); })
+                          : StructuralMap<WalkOrder::kPostOrder>(
+                                root, [](const TVar&) -> Expected<Any> { return Unchanged(); }))
+                         .cast<TVar>();
+    EXPECT_TRUE(unchanged.same_as(root));
+  }
+
+  Function dynamic_unchanged = Function::FromTyped([](int64_t) -> Any { return Unchanged(); });
+  Array<Tuple<int32_t, Function>> callbacks{
+      Tuple<int32_t, Function>(TypeIndex::kTVMFFIInt, dynamic_unchanged)};
+  Function structural_map = Function::GetGlobalRequired("ffi.StructuralMap");
+  for (WalkOrder order : {WalkOrder::kPreOrder, WalkOrder::kPostOrder}) {
+    Any unchanged = structural_map(int64_t{1}, callbacks, Array<Tuple<int32_t, Function>>(),
+                                   static_cast<int32_t>(order));
+    EXPECT_EQ(unchanged.cast<int64_t>(), 1);
+  }
+}
+
 class TNestedMapHookObj : public Object {
  public:
   AnyArray field;
@@ -48,11 +202,13 @@ class TNestedMapHookObj : public Object {
 
   static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
     const auto* self = value.cast<const TNestedMapHookObj*>();
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, mapped, mutator->MutateExpected(self->field));
-    AnyArray mapped_field = mapped.cast<AnyArray>();
-    if (mapped_field.same_as(self->field)) {
-      return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, mapped,
+                                      mutator->MutateExpected(self->field));
+    if (mapped.UnchangedOrSameAs(Any(self->field))) {
+      return Unchanged().CopyToTVMFFIAny();
     }
+    Any mapped_value = std::move(mapped).ValueOrUnchanged(Any(self->field));
+    AnyArray mapped_field = mapped_value.cast<AnyArray>();
     return details::AnyUnsafe::MoveAnyToTVMFFIAny(
         Any(make_object<TNestedMapHookObj>(std::move(mapped_field))));
   }
@@ -198,7 +354,8 @@ TEST(StructuralMap, ParentLayerOwnsBothDescentsAndProvidesState) {
 
   TVar var("n");
   AnyArray repeated{var, var};
-  AnyArray mapped = mutator->MutateExpected(repeated).value().cast<AnyArray>();
+  AnyArray mapped =
+      std::move(mutator->Mutate<AnyArray>(repeated)).ValueOrUnchanged(std::move(repeated));
   EXPECT_EQ(var_callback_count, 1);
   EXPECT_TRUE(mapped[0].cast<TVar>().same_as(mapped[1].cast<TVar>()));
 }
@@ -207,7 +364,11 @@ TEST(StructuralMutate, CallbackOwnsMutationAndErrorsStayExpected) {
   std::vector<int64_t> trace;
   auto mutate_array = [&](const AnyArray& value, StructuralMutateLayer* mutator) -> Expected<Any> {
     EXPECT_EQ(mutator->callback_tag(), 23);
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, first, mutator->MutateExpected(value[0]));
+    auto first_result = mutator->MutateExpected(value[0]);
+    if (TVM_FFI_PREDICT_FALSE(first_result.is_err())) {
+      return Unexpected(std::move(first_result).error());
+    }
+    Any first = std::move(first_result).value().ValueOrUnchanged(AnyView(value[0]));
     return Any(AnyArray{std::move(first), int64_t{10}});
   };
   auto mutate_int = [&](int64_t value, StructuralMutateLayer*) -> Expected<Any> {
@@ -218,8 +379,8 @@ TEST(StructuralMutate, CallbackOwnsMutationAndErrorsStayExpected) {
       StructuralMutateEngine<StructuralMutateLayer, decltype(mutate_array), decltype(mutate_int)>;
   StructuralMutator mutator(make_object<Mutator>(std::move(mutate_array), std::move(mutate_int)));
 
-  AnyArray mapped =
-      mutator->MutateExpected(AnyArray{int64_t{1}, int64_t{2}}).value().cast<AnyArray>();
+  AnyArray root{int64_t{1}, int64_t{2}};
+  AnyArray mapped = std::move(mutator->Mutate<AnyArray>(root)).ValueOrUnchanged(std::move(root));
   ASSERT_EQ(mapped.size(), 2U);
   EXPECT_EQ(mapped[0].cast<int64_t>(), 2);
   EXPECT_EQ(mapped[1].cast<int64_t>(), 10);
@@ -257,8 +418,11 @@ TEST(StructuralMutate, CallbackControlsRecursion) {
       StructuralMutate(
           root,
           [](const TPair& pair, StructuralMutatorObj* mutator) -> Expected<Any> {
-            TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, lhs, mutator->MutateExpected(pair->lhs));
-            return Any(TPair(lhs.cast<ObjectRef>(), pair->rhs));
+            TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, lhs_result,
+                                              mutator->MutateExpected<ObjectRef>(pair->lhs));
+            ObjectRef original_lhs = pair->lhs;
+            ObjectRef lhs = std::move(lhs_result).ValueOrUnchanged(std::move(original_lhs));
+            return Any(TPair(std::move(lhs), pair->rhs));
           },
           [](const TInt& value, StructuralMutatorObj*) -> Expected<Any> {
             return Any(TInt(value->value + 100));
@@ -350,21 +514,23 @@ TEST(StructuralMutate, MatchedVarOwnsRemapConsistency) {
   int callback_count = 0;
 
   AnyArray mapped =
-      StructuralMutate(
-          root,
-          [&](const TVar& value, StructuralMutatorObj* mutator) -> Expected<Any> {
-            ++callback_count;
-            TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Any, remapped, mutator->VarRemapGetExpected(value));
-            if (remapped.type_index() != TypeIndex::kTVMFFINone) {
-              return remapped;
-            }
-            Any replacement(TVar(value->name + "-mapped"));
-            Expected<void> set_result = mutator->VarRemapSetExpected(value, replacement);
-            if (set_result.is_err()) {
-              return Unexpected(std::move(set_result).error());
-            }
-            return replacement;
-          })
+      StructuralMutate(root,
+                       [&](const TVar& value, StructuralMutatorObj* mutator) -> Expected<Any> {
+                         ++callback_count;
+                         TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, remapped_result,
+                                                           mutator->VarRemapGetExpected(value));
+                         Any remapped = std::move(remapped_result).ValueUnchecked();
+                         if (remapped.type_index() != TypeIndex::kTVMFFINone) {
+                           return remapped;
+                         }
+                         Any replacement(TVar(value->name + "-mapped"));
+                         Expected<void> set_result =
+                             mutator->VarRemapSetExpected(value, replacement);
+                         if (set_result.is_err()) {
+                           return Unexpected(std::move(set_result).error());
+                         }
+                         return replacement;
+                       })
           .cast<AnyArray>();
 
   EXPECT_EQ(callback_count, 2);
@@ -610,6 +776,22 @@ TEST(StructuralMap, PreOrderRecursivelyMapsCallbackResult) {
   EXPECT_FALSE(mapped_value.same_as(replacement));
   EXPECT_EQ(replacement[0].cast<int64_t>(), 10);
   EXPECT_EQ(mapped_value[0].cast<int64_t>(), 11);
+
+  // The changed callback result remains owned while its leaf descent reports unchanged.
+  String replacement_leaf("replacement longer than small-string storage");
+  String retained =
+      StructuralMap<WalkOrder::kPreOrder>(TVar("n"), [&](const TVar&) -> Expected<Any> {
+        return Any(replacement_leaf);
+      }).cast<String>();
+  EXPECT_EQ(retained, replacement_leaf);
+
+  // An unchanged pre-order callback still descends the original node.
+  AnyArray unchanged_root{int64_t{1}};
+  AnyArray descended_original =
+      StructuralMap<WalkOrder::kPreOrder>(
+          unchanged_root, [](const AnyArray&) -> Expected<Any> { return Unchanged(); }, Increment)
+          .cast<AnyArray>();
+  EXPECT_EQ(descended_original[0].cast<int64_t>(), 2);
 }
 
 TEST(StructuralMap, AcceptsExpectedCallbackReturnTypes) {
@@ -811,6 +993,20 @@ Any CallDynStructuralMap(AnyView root, const Array<Tuple<int32_t, Function>>& ca
   return fn(root, callbacks, Array<Tuple<int32_t, Function>>(), static_cast<int32_t>(order));
 }
 
+TEST(StructuralMapDyn, PreOrderDescendsOriginalAfterUnchangedCallback) {
+  AnyArray root{int64_t{1}};
+  Function unchanged = Function::FromTyped([](const AnyArray&) -> Any { return Unchanged(); });
+  Function increment = Function::FromTyped([](int64_t value) -> Any { return Any(value + 1); });
+
+  AnyArray mapped =
+      CallDynStructuralMap(root,
+                           {Tuple<int32_t, Function>(TypeIndex::kTVMFFIArray, unchanged),
+                            Tuple<int32_t, Function>(TypeIndex::kTVMFFIInt, increment)},
+                           WalkOrder::kPreOrder)
+          .cast<AnyArray>();
+  EXPECT_EQ(mapped[0].cast<int64_t>(), 2);
+}
+
 TEST(StructuralMapDyn, ReusesRemapResultForRepeatedVar) {
   // A FreeVar maps once and every later occurrence reuses that result. Both mutators share this
   // half of the walk, so it must hold identically here.
@@ -841,7 +1037,8 @@ void CheckDynamicParentLayer() {
       Array<Tuple<int32_t, Function>>());
   StructuralMutator mutator(engine);
 
-  AnyArray mapped = mutator->Mutate(AnyArray{int64_t{1}}).cast<AnyArray>();
+  AnyArray root{int64_t{1}};
+  AnyArray mapped = std::move(mutator->Mutate<AnyArray>(root)).ValueOrUnchanged(std::move(root));
   EXPECT_EQ(mapped[0].cast<int64_t>(), 2);
   EXPECT_EQ(calls, 1);
   EXPECT_GT(engine->count().value, 0);
