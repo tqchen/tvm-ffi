@@ -504,7 +504,9 @@ class ObjectPtr {
    */
   explicit operator bool() const { return get() != nullptr; }
   /*! \brief reset the content of ptr to be nullptr */
-  void reset() {
+  // Explicitly inlined: the inlined destructor delegates here, so an out-of-line
+  // reset would turn every destruction back into a call.
+  TVM_FFI_INLINE void reset() {
     if (data_ != nullptr) {
       data_->DecRef();
       data_ = nullptr;
@@ -764,7 +766,9 @@ class WeakObjectPtr {
   }
 
   /*! \brief reset the content of ptr to be nullptr */
-  void reset() {
+  // Explicitly inlined: the inlined destructor delegates here, so an out-of-line
+  // reset would turn every destruction back into a call.
+  TVM_FFI_INLINE void reset() {
     if (data_ != nullptr) {
       data_->DecWeakRef();
       data_ = nullptr;
