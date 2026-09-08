@@ -44,7 +44,7 @@ namespace ffi {
 inline int32_t GetBacktraceLimit() {
   if (const char* env = std::getenv("TVM_TRACEBACK_LIMIT")) {
     char* end = nullptr;
-    long value = std::strtol(env, &end, 10);  // NOLINT(runtime/int)
+    int64_t value = std::strtol(env, &end, 10);
     // An empty, non-numeric, negative, or out-of-range value falls back to the
     // default rather than throwing from inside the error reporter.
     if (end != env && *end == '\0' && value >= 0 && value <= INT32_MAX) {
