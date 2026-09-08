@@ -89,7 +89,9 @@ const TVMFFIByteArray* TVMFFIBacktrace(const char* filename, int lineno, const c
     // need to skip TVMFFIBacktrace and the caller function
     // which is already included in filename and func
     backtrace.skip_frame_count = 2;
-    backtrace.Append(filename, func, lineno);
+    if (!tvm::ffi::ShouldExcludeFrame(filename, func)) {
+      backtrace.Append(filename, func, lineno);
+    }
   }
 
   HANDLE thread = GetCurrentThread();
@@ -105,6 +107,11 @@ const TVMFFIByteArray* TVMFFIBacktrace(const char* filename, int lineno, const c
     backtrace_array.size = backtrace_str.size();
     return &backtrace_array;
   }
+  // Register modules loaded since the session was created. StackWalk64 needs a
+  // module's unwind tables to step through it, so a DLL DbgHelp does not know
+  // truncates the walk at its first frame rather than just losing the name.
+  SymRefreshModuleList(process);
+
   CONTEXT context = {};
   RtlCaptureContext(&context);
 
