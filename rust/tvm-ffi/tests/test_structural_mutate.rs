@@ -367,6 +367,16 @@ fn reflected_no_change_returns_original() {
 }
 
 #[test]
+fn native_unchanged_hook_returns_original_without_exposing_marker() {
+    let source = Any::from(FfiString::from("unchanged"));
+    let source_pointer = any_object_pointer(&source);
+    let mutated = structural_mutate(source, &mut ManualIncrement::default()).unwrap();
+
+    assert_eq!(any_object_pointer(&mutated), source_pointer);
+    assert_ne!(mutated.type_index(), TypeIndex::kTVMFFIUnchanged as i32);
+}
+
+#[test]
 fn reflected_object_without_shallow_copy_is_rejected_even_when_unchanged() {
     // Keep the C++ test library linked for its startup registrations.
     assert_eq!(

@@ -459,20 +459,46 @@ struct ExpectedUnsafe {
 };
 
 /*!
- * \brief Return proxy used by early-return macros in raw or typed functions.
+ * \brief Error-only return proxy used by mutation early-return macros.
+ *
+ * An error has the same shape in every mutation return type, so this proxy
+ * converts to the raw ``TVMFFIAny`` used by hooks or to any ``Expected<T>``.
+ */
+class UnexpectedReturnHelper {
+ public:
+  TVM_FFI_INLINE explicit UnexpectedReturnHelper(Unexpected<Error>&& value) noexcept
+      : value_(std::move(value)) {}
+
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE operator TVMFFIAny() && noexcept {
+    return ExpectedUnsafe::MoveToTVMFFIAny(Expected<Any>(std::move(value_)));
+  }
+
+  template <typename T>
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE operator Expected<T>() && noexcept {
+    return std::move(value_);
+  }
+
+ private:
+  Unexpected<Error> value_;
+};
+
+/*!
+ * \brief Expected-value return proxy used by visit early-return macros.
  * \tparam T The success type, fixed when the proxy stores its ``Expected<T>``.
  *
- * A return statement selects either the raw ``TVMFFIAny`` conversion used by
- * hooks or the same ``Expected<T>`` type used by typed helpers. Both
- * conversions are rvalue-qualified because handing off the stored payload is
- * a single move; an lvalue helper cannot accidentally transfer it twice. As
- * with other moved-from values, deliberately converting ``std::move(helper)``
- * twice remains caller error.
+ * A return statement selects the raw ``TVMFFIAny`` conversion used by hooks or
+ * the same ``Expected<T>`` type used by typed helpers. The payload-bearing
+ * conversions are rvalue-qualified because handing it off is a single move; an
+ * lvalue helper cannot accidentally transfer it twice. As with other moved-from
+ * values, deliberately converting ``std::move(helper)`` twice remains caller
+ * error.
  */
 template <typename T>
-class MaybeReturnHelper {
+class ExpectedReturnHelper {
  public:
-  TVM_FFI_INLINE explicit MaybeReturnHelper(Expected<T>&& value) noexcept
+  TVM_FFI_INLINE explicit ExpectedReturnHelper(Expected<T>&& value) noexcept
       : value_(std::move(value)) {}
 
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
