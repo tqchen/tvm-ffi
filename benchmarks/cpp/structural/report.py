@@ -384,7 +384,7 @@ def render_compare(merged, states, runs, differs, out):
       "`subst`/`swap` are read against whatever the states differ in, named above.\n\n")
 
     for kind, title, note in [
-        ("subst", "Expr-level -- split/fuse", "`subst` substitutes `Var`s."),
+        ("subst", "Expr-level -- split/fuse and add-tree", "`subst` substitutes `Var`s."),
         ("swap", "Stmt-level -- seq", "`swap` swaps two whole `Evaluate` nodes."),
     ]:
         rows = [n for n in names if fixtures[n]["kind"] == kind]

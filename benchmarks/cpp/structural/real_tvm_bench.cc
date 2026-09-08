@@ -156,6 +156,46 @@ PrimExpr CallSplitFuse(bool shared) {
 }
 
 /*!
+ * \brief The split/fuse topology with every binary operator replaced by `Add`.
+ *
+ * From bench/393-add-tree. Same topology, same `Var`s, same `IntImm` sites as `SplitFuse`, so
+ * the counts are its: 12 unique / 17 occurrences shared, 15 / 17 distinct. What it removes is
+ * node-type variety: every interior node dispatches to the one `Add` hook, so the row prices
+ * the engine's per-node descent and one hook body with nothing else varying.
+ */
+PrimExpr AddTree(bool shared) {
+  PrimExpr q = (Outer() + 16) + Inner();
+  PrimExpr r = shared ? q : PrimExpr((Outer() + 16) + Inner());
+  return ((q + 32) + 32) + (r + 32);
+}
+
+// Function-local statics, as `Outer()` / `Inner()`: two `IntImm` identities shared across the
+// tree the way the two `Var`s are, so the shared/distinct topologies and their counts match
+// `AddTree`'s exactly.
+PrimExpr& OuterImm() {
+  static PrimExpr value(101);
+  return value;
+}
+PrimExpr& InnerImm() {
+  static PrimExpr value(103);
+  return value;
+}
+
+/*!
+ * \brief `AddTree` with the two `Var` leaves replaced by `IntImm` identities: no `Var` anywhere,
+ *        so no remap lookup or bind on any path, and `subst` changes nothing.
+ *
+ * Same unique / occurrence counts as `AddTree` (12 / 17 shared, 15 / 17 distinct); rebuild
+ * counts are zero under both ownerships because the substitution callback never matches.
+ */
+PrimExpr AddTreeIntImm(bool shared) {
+  auto add = [](PrimExpr a, PrimExpr b) { return prim::Add(std::move(a), std::move(b)); };
+  PrimExpr q = add(add(OuterImm(), PrimExpr(16)), InnerImm());
+  PrimExpr r = shared ? q : PrimExpr(add(add(OuterImm(), PrimExpr(16)), InnerImm()));
+  return add(add(add(q, PrimExpr(32)), PrimExpr(32)), add(r, PrimExpr(32)));
+}
+
+/*!
  * \brief The `Evaluate` elements a `seq` replacement swaps, by position.
  *
  * A swap rather than a one-way replacement, so the arm is an involution: applying it twice
@@ -176,9 +216,14 @@ std::vector<SwapPair> SwapPairs(int length, int density) {
   return pairs;
 }
 
-/*! \brief Partner table for the seq swap: raw element pointer -> the element it swaps with. */
-std::unordered_map<const ffi::Object*, Stmt>* SwapTable() {
-  static std::unordered_map<const ffi::Object*, Stmt> table;
+/*!
+ * \brief Partner table for the seq swap: the `IntImm` constant inside an `Evaluate` -> the
+ *        element it swaps with. Keyed on the constant, not the node identity, so the swap
+ *        selects its targets by what the element says and stays an involution: after one
+ *        application the constant at position `lo` is `hi`'s, which maps back to `lo`'s node.
+ */
+std::unordered_map<int64_t, Stmt>* SwapTable() {
+  static std::unordered_map<int64_t, Stmt> table;
   return &table;
 }
 
@@ -197,12 +242,23 @@ constexpr int kSpliceWidth = 4;
 /*! \brief Which table a fixture build populates: element swaps, or splice targets. */
 enum class SwapMode { kElement, kSpliceGrow, kSpliceShrink };
 
+/*! \brief The constant the `i`-th seq element evaluates: nonzero and distinct per element. */
+constexpr int64_t SeqConstant(int i) { return i + 1; }
+
+/*!
+ * \brief `SeqStmt` of `length` statements `Evaluate(IntImm(i + 1))`.
+ *
+ * One `IntImm` per element, nonzero so `IsSeqStmtNoOp` never drops one and distinct so the
+ * swap can pick its targets by the constant. No `Var` and no arithmetic subtree: the fixture
+ * measures the container loop and the two leaf hooks, nothing else. (Before this shape the
+ * element was `Evaluate(outer * (i + 2) + inner)`; seq numbers from then are not comparable
+ * with seq numbers from now.)
+ */
 Stmt LongSeq(int length, int density, SwapMode mode) {
   ffi::Array<Stmt> body;
   body.reserve(length);
   for (int i = 0; i < length; ++i) {
-    // `i + 2`: a multiplier of one would constant-fold the Mul away.
-    body.push_back(Evaluate(Outer() * (i + 2) + Inner()));
+    body.push_back(Evaluate(IntImm(PrimType::Int(32), SeqConstant(i))));
   }
   SwapTable()->clear();
   SpliceTable()->clear();
@@ -211,8 +267,8 @@ Stmt LongSeq(int length, int density, SwapMode mode) {
     if (mode == SwapMode::kElement) {
       // Holds a handle to each swapped element, which is harmless here because the arm
       // replaces elements rather than mutating them.
-      (*SwapTable())[lo.get()] = hi;
-      (*SwapTable())[hi.get()] = lo;
+      (*SwapTable())[SeqConstant(pair.lo)] = hi;
+      (*SwapTable())[SeqConstant(pair.hi)] = lo;
     } else {
       ffi::Array<Stmt> expansion;
       if (mode == SwapMode::kSpliceGrow) {
@@ -249,17 +305,19 @@ constexpr int64_t kCallSplitFuseSharedBytes =
     2 * kVarBytes + 4 * kImmBytes + 6 * (kCallBytes + kArgsBytes);
 constexpr int64_t kCallSplitFuseDistinctBytes =
     kCallSplitFuseSharedBytes + kImmBytes + 2 * (kCallBytes + kArgsBytes);
-// Two Vars (Outer, Inner) are shared across every element; 20275's SeqStmtVisit visits the
-// Array itself, so it is a node too and kSeqBytes covers it.
-constexpr int64_t kSeqWorkingSet(int64_t l) {
-  return l * (kMulBytes + kImmBytes + kAddBytes + kEvalBytes) + 2 * kVarBytes + kSeqBytes(l);
-}
+// One Evaluate and one IntImm per element; 20275's SeqStmtVisit visits the Array itself, so it
+// is a node too and kSeqBytes covers it.
+constexpr int64_t kSeqWorkingSet(int64_t l) { return l * (kImmBytes + kEvalBytes) + kSeqBytes(l); }
+
+constexpr int64_t kAddTreeSharedBytes = 6 * kAddBytes + 2 * kVarBytes + 4 * kImmBytes;
+constexpr int64_t kAddTreeDistinctBytes = 8 * kAddBytes + 2 * kVarBytes + 5 * kImmBytes;
+constexpr int64_t kAddTreeIntImmSharedBytes = 6 * kAddBytes + 6 * kImmBytes;
+constexpr int64_t kAddTreeIntImmDistinctBytes = 8 * kAddBytes + 7 * kImmBytes;
 
 constexpr int kSeqLengths[] = {16, 256, 16384};
-// The seq replacement swaps two Evaluate nodes, so it rebuilds their two Mul/Add-free spines:
-// each swapped element's parent chain is just the SeqStmt, and the Evaluate objects themselves
-// are reused rather than rebuilt. Retained copies the SeqStmt and its Array; moved mutates
-// both in place.
+// The seq replacement swaps two Evaluate nodes: each swapped element's parent chain is just
+// the SeqStmt, and the Evaluate objects themselves are reused rather than rebuilt. Retained
+// copies the SeqStmt and its Array; moved mutates both in place.
 constexpr int64_t kSeqRebuiltRetained = 2;
 constexpr int64_t kSeqRebuiltMoved = 0;
 constexpr int kSplitFuseRepeats = 20000;
@@ -336,8 +394,12 @@ ffi::Any SwapEvaluates(const Stmt& stmt) {
   // every statement and narrows in user code, which is how a Stmt-level pass is actually
   // written.  It also gives this arm and `map_identity_stmt` the same link, so the difference
   // between them is the rebuild and not how many nodes the link accepted.
-  if (stmt.as<EvaluateNode>() == nullptr) return ffi::Any(stmt);
-  auto it = SwapTable()->find(stmt.get());
+  // The two targets are selected by the constant inside, not by node identity.
+  const auto* evaluate = stmt.as<EvaluateNode>();
+  if (evaluate == nullptr) return ffi::Any(stmt);
+  const auto* imm = evaluate->value.as<IntImmNode>();
+  if (imm == nullptr) return ffi::Any(stmt);
+  auto it = SwapTable()->find(imm->value);
   if (it != SwapTable()->end()) return ffi::Any(it->second);
   return ffi::Any(stmt);
 }
@@ -1135,14 +1197,29 @@ int main() {
       {{"call-split-fuse-distinct", 23, 25, kCallSplitFuseDistinctBytes, 18, 2,
         kSplitFuseRepeats, false, ArmKind::kSubst},
        [] { return ffi::Any(CallSplitFuse(false)); }},
+      // The Add-only topology, both leaf kinds. Same counts as split-fuse; the IntImm variant
+      // has no Var, so `subst` rebuilds nothing under either ownership.
+      {{"add-tree-shared", 12, 17, kAddTreeSharedBytes, 10, 4, kSplitFuseRepeats, true,
+        ArmKind::kSubst},
+       [] { return ffi::Any(AddTree(true)); }},
+      {{"add-tree-distinct", 15, 17, kAddTreeDistinctBytes, 10, 2, kSplitFuseRepeats, false,
+        ArmKind::kSubst},
+       [] { return ffi::Any(AddTree(false)); }},
+      {{"add-tree-intimm-shared", 12, 17, kAddTreeIntImmSharedBytes, 0, 0, kSplitFuseRepeats,
+        true, ArmKind::kSubst},
+       [] { return ffi::Any(AddTreeIntImm(true)); }},
+      {{"add-tree-intimm-distinct", 15, 17, kAddTreeIntImmDistinctBytes, 0, 0,
+        kSplitFuseRepeats, false, ArmKind::kSubst},
+       [] { return ffi::Any(AddTreeIntImm(false)); }},
   };
   for (const ExprFixture& f : expr_fixtures) {
     PrepareFixture(f.info, f.build, f.info.name);
     RunFixture(f.info, f.build, kExprMapArms, sizeof(kExprMapArms) / sizeof(kExprMapArms[0]));
   }
 
-  // seq swaps two Evaluate nodes: no remap is involved, and the change count is exactly two
-  // regardless of L, so the update stays sparse as the body grows.
+  // seq swaps two Evaluate nodes, selected by the constant each evaluates: no remap is
+  // involved, and the change count is exactly two regardless of L, so the update stays sparse
+  // as the body grows. Two nodes per element (Evaluate, IntImm) plus the SeqStmt and its Array.
   for (int length : kSeqLengths) {
     static int current_length = 0;
     current_length = length;
@@ -1150,8 +1227,8 @@ int main() {
     CheckSeqSwap(length, 1);
     std::string name = "seq-" + std::to_string(length);
     FixtureInfo info{name.c_str(),
-                     4LL * length + 4,
-                     6LL * length + 2,
+                     2LL * length + 2,
+                     2LL * length + 2,
                      kSeqWorkingSet(length),
                      kSeqRebuiltRetained,
                      kSeqRebuiltMoved,

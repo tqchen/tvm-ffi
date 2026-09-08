@@ -431,7 +431,11 @@ the DAG — so those cases run over a pool of independent copies rebuilt untimed
 | `split-fuse-distinct` | the same with two structurally equal, pointer-distinct intermediates | `subst` | no, N=15 |
 | `call-split-fuse-shared` | the shared shape with every arithmetic node expressed as a `Call` | `subst` | no, N=18 |
 | `call-split-fuse-distinct` | the distinct shape, likewise | `subst` | no, N=23 |
-| `seq-L` | `SeqStmt` of `L` statements `Evaluate(o*(i+2) + inner)`, `L` in 16, 256, 16384 | `swap` | **yes** |
+| `add-tree-shared` | the shared split/fuse topology with every binary operator replaced by `Add`, `Var` leaves | `subst` | no, N=12 |
+| `add-tree-distinct` | the distinct topology, likewise | `subst` | no, N=15 |
+| `add-tree-intimm-shared` | `add-tree-shared` with the two `Var` leaves replaced by two shared `IntImm` identities | `subst` | no, N=12 |
+| `add-tree-intimm-distinct` | the distinct topology, likewise | `subst` | no, N=15 |
+| `seq-L` | `SeqStmt` of `L` statements `Evaluate(IntImm(i+1))`, `L` in 16, 256, 16384 | `swap` | **yes** |
 
 **split/fuse** is a small `Expr` tree. It carries the Expr-level comparison against both
 baselines, and the shared variant is the only fixture that exercises DAG un-sharing. It does not
@@ -464,12 +468,28 @@ the port is not a real-TVM-only row. `Call` is where the engine wins most, and h
 one side only put the largest result in the map tables out of the fidelity comparison's
 reach.
 
+**add-tree** (from bench/393-add-tree) is split/fuse's topology with every interior node an
+`Add`: same `Var`s, same `IntImm` sites, same counts, so the delta against `split-fuse-*` is
+what node-type variety costs and nothing else, and every interior dispatch lands in one hook
+body. **add-tree-intimm** is that tree with its two `Var` leaves replaced by two shared
+`IntImm` identities: no `Var` anywhere, so no remap lookup or bind on any path and nothing for
+`subst` to change -- it isolates the engine's per-node descent plus the `Add` and `IntImm`
+hooks from every Var-related cost, and its `subst` row is a substitution pass whose callback
+never fires (rebuild counts are zero under both ownerships).
+
 **seq** is the one that scales, and the three lengths are one per cache level: 16 inside a
 32 KiB L1d, 256 inside a 1 MiB L2, 16384 inside a 32 MiB L3. `report.py` names the level from
 that stated geometry. Any question about how a result behaves as the tree stops fitting in cache
 is a seq question. It carries the Stmt-level swap: `Evaluate` is not a free variable, so no
-remap is involved, each element is exactly one `Evaluate`, and "swap k pairs" is a controlled
-sparse input.
+remap is involved, each element is exactly one `Evaluate` over one `IntImm`, and "swap k pairs"
+is a controlled sparse input whose two targets are selected by the constant each element
+evaluates (`i + 1`: nonzero, so the no-op normalization never drops one; distinct, so the
+selection is unambiguous). With no `Var` and no arithmetic subtree the fixture measures the
+container loop and the two leaf hooks and nothing else. **The element shape changed here:**
+before the Round 3 commit on `bench/tvm-hook` it was `Evaluate(outer * (i + 2) + inner)`, four
+nodes per element with two shared `Var`s; seq numbers from before that commit are on the old
+shape and are not comparable with seq numbers after it. mini-TIR's seq fixture still has the
+old shape, so a fidelity run's seq rows are not counterparts until it is redefined the same way.
 
 `N` and `occurrences` include the `Array` inside each `SeqStmt` and inside each `Call`:
 apache/tvm#20275's hooks visit those containers as values rather than iterating their elements,
