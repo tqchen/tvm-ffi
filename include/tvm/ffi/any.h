@@ -617,6 +617,18 @@ struct AnyUnsafe : public ObjectUnsafe {
     }
   }
 
+  // Borrowed form: a caller checking a field it does not own passes AnyView(field), which
+  // costs no refcount where CheckAnyStrict would build a temporary Any. A distinct name, so
+  // an ObjectRef argument never has two conversions to choose from.
+  template <typename T>
+  TVM_FFI_INLINE static bool CheckAnyViewStrict(const AnyView& ref) {
+    if constexpr (!std::is_same_v<T, Any>) {
+      return TypeTraits<T>::CheckAnyStrict(&(ref.data_));
+    } else {
+      return true;
+    }
+  }
+
   template <typename T>
   TVM_FFI_INLINE static T CopyFromAnyViewAfterCheck(const Any& ref) {
     if constexpr (!std::is_same_v<T, Any>) {
