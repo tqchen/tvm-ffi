@@ -22,12 +22,19 @@
 #                                          # configured with -DTVM_FFI_BENCH_ALLOW_TYPE_ATTR_OVERRIDE=ON
 #                                          # and built (--target tvm_compiler)
 #
-# Five executables come out, each compiled against exactly one engine header and one hook file:
+# Seven executables come out, each compiled against exactly one engine header and one hook file:
 #
 #   variant  engine header                                    hook file                  drivers
 #   gold     include/tvm/ffi/extra/structural_mutate_gold.h   tvm_hook_override_gold.h   split_fuse_bench, real_tvm_bench
 #   uc       include/tvm/ffi/extra/structural_mutate.h        tvm_hook_override_uc.h     split_fuse_bench, real_tvm_bench
 #   mixed    include/tvm/ffi/extra/structural_mutate_mixed.h  tvm_hook_override_mixed.h  split_fuse_bench
+#   old      include/tvm/ffi/extra/structural_mutate_old.h    tvm_hook_override.h        split_fuse_bench, real_tvm_bench
+#
+# old is upstream main e74e58f's engine verbatim (structural_mutate_old.h) under the OLD hook
+# file, reached through the tvm_hook_override_old.h wrapper; it also compiles
+# src/ffi/extra/structural_mutate_old.cc into the executable so the OLD engine's container
+# descent uses OLD's own Array/Map hooks rather than the library's UC ones. `--only a,b`
+# builds a subset, leaving the other executables exactly as they are.
 #
 # split_fuse_bench_<variant> is the two binary split-fuse fixtures; real_tvm_bench_<variant> is
 # the full fixture set (split-fuse, call-split-fuse, seq), which the gold and uc hook files cover
@@ -53,11 +60,13 @@ STD="${STD:-c++20}"
 FLAGS="${FLAGS:--O3 -DNDEBUG -std=${STD}}"
 TVM_ROOT=""
 TVM_BUILD=""
+ONLY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --tvm) TVM_ROOT="$(cd "$2" && pwd)"; shift 2 ;;
     --tvm-build) TVM_BUILD="$(cd "$2" && pwd)"; shift 2 ;;
+    --only) ONLY=",$2,"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 1 ;;
   esac
 done
@@ -84,13 +93,14 @@ expected_sha="$(sha "${FFI_ROOT}/include/tvm/ffi/expected.h")"
 echo "expected.h sha256:${expected_sha:0:12}"
 
 build_variant() {
-  local driver="$1" name="$2" code="$3" engine="$4" hooks="$5"
+  local driver="$1" name="$2" code="$3" engine="$4" hooks="$5" hooks_sha_of="${6:-$5}" extra_src="${7:-}"
+  if [[ -n "${ONLY}" && "${ONLY}" != *",${name},"* ]]; then return; fi
   local engine_path="${FFI_ROOT}/include/tvm/ffi/extra/${engine}"
-  local hooks_path="${HERE}/${hooks}"
+  local hooks_path="${HERE}/${hooks_sha_of}"
   local engine_sha hooks_sha
   engine_sha="$(sha "${engine_path}")"
   hooks_sha="$(sha "${hooks_path}")"
-  echo "${driver} ${name}: ${engine} sha256:${engine_sha:0:12}, ${hooks} sha256:${hooks_sha:0:12}"
+  echo "${driver} ${name}: ${engine} sha256:${engine_sha:0:12}, ${hooks_sha_of} sha256:${hooks_sha:0:12}"
   ${CXX} ${FLAGS} \
     -I"${TVM_ROOT}/include" -I"${TVM_ROOT}/3rdparty/tvm-ffi/include" \
     -I"${TVM_ROOT}/3rdparty/tvm-ffi/3rdparty/dlpack/include" -I"${HERE}" \
@@ -99,14 +109,15 @@ build_variant() {
     "-DTVM_FFI_BENCH_ENGINE_SHA=\"${harness_commit} (${name})\"" \
     "-DTVM_FFI_BENCH_TVM_SHA=\"${tvm_sha}\"" \
     "-DTVM_FFI_BENCH_TVM_FFI_PIN=\"${harness_commit}\"" \
-    "-DTVM_FFI_BENCH_HOOK_HEADER=\"${hooks}\"" \
+    "-DTVM_FFI_BENCH_HOOK_HEADER=\"${hooks_sha_of}\"" \
+    "-DTVM_FFI_BENCH_HOOK_INCLUDE=\"${hooks}\"" \
     "-DTVM_FFI_BENCH_VARIANT=\"${name}\"" \
     "-DTVM_FFI_BENCH_VARIANT_CODE=${code}" \
     "-DTVM_FFI_BENCH_ENGINE_HEADER=\"${engine}\"" \
     "-DTVM_FFI_BENCH_ENGINE_SHA256=\"${engine_sha}\"" \
     "-DTVM_FFI_BENCH_EXPECTED_SHA256=\"${expected_sha}\"" \
     "-DTVM_FFI_BENCH_HOOKS_SHA256=\"${hooks_sha}\"" \
-    "${HERE}/${driver}.cc" \
+    "${HERE}/${driver}.cc" ${extra_src} \
     -L"${TVM_BUILD}/lib" -ltvm_compiler -ltvm_ffi -Wl,-rpath,"${TVM_BUILD}/lib" \
     -o "${OUT}/${driver}_${name}"
   echo "  -> ${OUT}/${driver}_${name}"
@@ -117,4 +128,6 @@ build_variant split_fuse_bench uc    2 structural_mutate.h       tvm_hook_overri
 build_variant split_fuse_bench mixed 3 structural_mutate_mixed.h tvm_hook_override_mixed.h
 build_variant real_tvm_bench   gold  1 structural_mutate_gold.h  tvm_hook_override_gold.h
 build_variant real_tvm_bench   uc    2 structural_mutate.h       tvm_hook_override_uc.h
+build_variant split_fuse_bench old   4 structural_mutate_old.h   tvm_hook_override_old.h tvm_hook_override.h "${FFI_ROOT}/src/ffi/extra/structural_mutate_old.cc"
+build_variant real_tvm_bench   old   4 structural_mutate_old.h   tvm_hook_override_old.h tvm_hook_override.h "${FFI_ROOT}/src/ffi/extra/structural_mutate_old.cc"
 echo "binaries in ${OUT}"

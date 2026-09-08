@@ -54,7 +54,12 @@
 #ifndef TVM_FFI_BENCH_HOOK_HEADER
 #error "build_mix.sh selects the hook file with -DTVM_FFI_BENCH_HOOK_HEADER"
 #endif
-#include TVM_FFI_BENCH_HOOK_HEADER
+// build_mix.sh may include the hooks through a wrapper (the old variant) while stamping the
+// hook file itself as TVM_FFI_BENCH_HOOK_HEADER.
+#ifndef TVM_FFI_BENCH_HOOK_INCLUDE
+#define TVM_FFI_BENCH_HOOK_INCLUDE TVM_FFI_BENCH_HOOK_HEADER
+#endif
+#include TVM_FFI_BENCH_HOOK_INCLUDE
 
 // Which engine header is in this translation unit, read off the macros each one defines:
 // GOLD's assign macro is built on TVM_FFI_S_MUTATE_DATA_OR_RETURN_IMPL_, UC's on
@@ -65,11 +70,14 @@
 #define TVM_FFI_BENCH_DETECTED_ENGINE_CODE 1
 #elif defined(TVM_FFI_S_MUTATE_RETURN_UNCHANGED)
 #define TVM_FFI_BENCH_DETECTED_ENGINE_CODE 2
+#elif defined(TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN)
+// The OLD engine (structural_mutate_old.h, upstream main e74e58f) defines only the assign macros.
+#define TVM_FFI_BENCH_DETECTED_ENGINE_CODE 4
 #else
 #error "no structural-mutation engine header is in this translation unit"
 #endif
 #ifndef TVM_FFI_BENCH_VARIANT_CODE
-#error "build_mix.sh states the expected engine with -DTVM_FFI_BENCH_VARIANT_CODE (1 gold, 2 uc, 3 mixed)"
+#error "build_mix.sh states the expected engine with -DTVM_FFI_BENCH_VARIANT_CODE (1 gold, 2 uc, 3 mixed, 4 old)"
 #endif
 #if TVM_FFI_BENCH_VARIANT_CODE != TVM_FFI_BENCH_DETECTED_ENGINE_CODE
 #error "the hook file pulled in a different engine header than this executable was asked for"
