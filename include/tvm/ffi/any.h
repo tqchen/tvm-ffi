@@ -72,6 +72,15 @@ class AnyView {
   TVM_FFI_INLINE void swap(AnyView& other) noexcept { std::swap(data_, other.data_); }
   /*! \return the internal type index */
   TVM_FFI_INLINE int32_t type_index() const noexcept { return data_.type_index; }
+  /*!
+   * \brief Check if the two AnyView values have the same raw type and value.
+   * \param other The other AnyView.
+   * \return True if the raw values are identical, false otherwise.
+   */
+  TVM_FFI_INLINE bool same_as(const AnyView& other) const noexcept {
+    return data_.type_index == other.data_.type_index &&
+           data_.zero_padding == other.data_.zero_padding && data_.v_int64 == other.data_.v_int64;
+  }
   /*! \brief Default constructor */
   TVM_FFI_INLINE AnyView() {
     data_.type_index = TypeIndex::kTVMFFINone;
@@ -530,6 +539,15 @@ class Any {
    */
   TVM_FFI_INLINE std::string GetTypeKey() const { return TypeIndexToTypeKey(data_.type_index); }
 
+ private:
+  // Member-wise on purpose: an aggregate copy makes GCC re-store type_index as a partial
+  // write before a wide reload of the same word, which stalls store forwarding.
+  TVM_FFI_INLINE explicit Any(UnsafeInit, TVMFFIAny raw) noexcept {
+    data_.type_index = raw.type_index;
+    data_.zero_padding = raw.zero_padding;
+    data_.v_int64 = raw.v_int64;
+  }
+
   friend struct details::AnyUnsafe;
   friend struct AnyHash;
   friend struct AnyEqual;
@@ -606,6 +624,15 @@ struct AnyUnsafe : public ObjectUnsafe {
     data->v_int64 = 0;
     return any;
   }
+
+  /*!
+   * \brief Adopt a raw handle the caller hands over whole, with no storage to clear.
+   * \param raw The raw handle to adopt.
+   * \return The owning Any.
+   *
+   * The pointer form stays for moving out of a slot whose destructor will still visit it.
+   */
+  TVM_FFI_INLINE static Any MoveTVMFFIAnyRawToAny(TVMFFIAny raw) { return Any(UnsafeInit{}, raw); }
 
   template <typename T>
   TVM_FFI_INLINE static bool CheckAnyStrict(const Any& ref) {
@@ -756,7 +783,7 @@ struct AnyHash {
           throw details::MoveFromSafeCallRaised();
         }
       }
-      Any result_any = details::AnyUnsafe::MoveTVMFFIAnyToAny(&result);
+      Any result_any = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
       TVM_FFI_ICHECK_EQ(result_any.type_index(), TypeIndex::kTVMFFIInt);
       return static_cast<uint64_t>(result_any.data_.v_int64);
     }
@@ -888,7 +915,7 @@ struct AnyEqual {
           throw details::MoveFromSafeCallRaised();
         }
       }
-      Any result_any = details::AnyUnsafe::MoveTVMFFIAnyToAny(&result);
+      Any result_any = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
       TVM_FFI_ICHECK(result_any.type_index() == TypeIndex::kTVMFFIBool);
       return result_any.data_.v_int64 != 0;
     }

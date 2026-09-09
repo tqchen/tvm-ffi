@@ -1092,7 +1092,11 @@ Structural Walk
 
 :func:`~tvm_ffi.structural_walk` invokes an analysis callback at each matching
 value.  Callback entries are ordered, and only the first matching entry runs.
-A walk is post-order by default.
+A walk is post-order by default.  It is a pure tree traversal with no engine
+state: callbacks fire once per occurrence, a var's type is walked under its
+region at every occurrence, and a shared DAG node is visited once per parent.
+To descend a pattern var once or to deduplicate a graph, compose it in a
+pre-order callback with its own visited set that returns ``SKIP`` on a repeat.
 A callback may return:
 
 - :attr:`~tvm_ffi.WalkResult.ADVANCE` or ``None`` to continue.
@@ -1135,7 +1139,24 @@ callback returns the mapped value: either its input unchanged or a replacement.
 Mapping always visits all structural children; there is no ``SKIP`` or
 ``VisitInterrupt`` result.  A callback exception aborts the mapping and
 is propagated with structural visit context.  Mapping is post-order by default,
-so a callback receives a value whose children have already been mapped.
+so a callback receives a value whose children have already been mapped and is
+selected by the type of what descent produced.
+
+The policy is ``mutate(x) = post(D(pre(x)))``. ``D`` is descent with a var remap
+that keeps the result consistent when a var is rewritten as a cascade effect of
+its fields changing during descent. Callbacks never read or write that remap and
+fire once per occurrence in whichever position they sit.
+
+Var policy in default ``D``: each var is descended at most once in def, at its
+first occurrence in a pattern def or its only occurrence in a simple def, and
+then returns the rewritten result if any at a use. Definitions are assumed to
+precede uses; a var with no definition is treated as a use, so free vars are
+replaced by a pre-callback, which runs at every occurrence.
+
+Canonical use cases: pre for var replacement to another value or var; post for
+rewriting a tree node after its children are mapped. For a DAG node, the
+post-callback fires at every occurrence, so a graph rewrite keeps its own
+node-to-value memo; the engine does not dedup callback rewrites.
 
 Post-order is natural for bottom-up compiler rewrites because children have
 already been mapped when the callback runs:
@@ -1242,17 +1263,17 @@ type defining it must also define ``__s_mutate__``.  If the optional hook is
 absent, the engine uses the default non-in-place mutation; generic reflected
 fields are never mutated in place automatically.
 
-When an object marked ``structural_eq="var"`` or ``structural_eq="dag"`` registers
-either ``__s_mutate__`` or ``__s_maybe_inplace_mutate__`` hooks, it should:
+When an object marked ``structural_eq="var"`` registers either ``__s_mutate__``
+or ``__s_maybe_inplace_mutate__``, its hook owns the same definition-only
+policy as reflected descent: look up first, skip descent and insertion for a
+miss at a use, omit an unchanged simple definition, and record an unchanged
+pattern definition with the unchanged marker, or the var itself.  A hook may
+store either, and TVM's hook stores the var.  A DAG hook similarly looks up
+first and records its descent result.  ``var_remap_set`` itself is a simple
+insertion primitive; the hook decides whether and what to store.
 
-1. call ``var_remap_get`` before recursively mutating the value;
-2. immediately return the mapped value on a hit;
-3. compute the final result on a miss; and
-4. call ``var_remap_set`` with that final result before returning it.
-
-Structural-map callbacks apply the same identity rule automatically: the complete
-callback/default result is recorded on the first occurrence and reused for later
-occurrences of the same FreeVar or DAG node.
+Structural-map callbacks never use this descent remap.  They run at every
+occurrence as described above.
 
 C++ APIs
 ~~~~~~~~

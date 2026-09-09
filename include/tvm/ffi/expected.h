@@ -281,6 +281,8 @@ class Expected {
   template <typename>
   friend class Expected;
   Expected() = default;
+  TVM_FFI_INLINE Expected(UnsafeInit, TVMFFIAny raw) noexcept
+      : data_(details::AnyUnsafe::MoveTVMFFIAnyRawToAny(raw)) {}
 
   friend struct details::ExpectedUnsafe;
 
@@ -368,6 +370,9 @@ class Expected<void> {
   }
 
  private:
+  TVM_FFI_INLINE Expected(UnsafeInit, TVMFFIAny raw) noexcept
+      : data_(details::AnyUnsafe::MoveTVMFFIAnyRawToAny(raw)) {}
+
   friend struct details::ExpectedUnsafe;
 
   Any data_;  // Invariant: holds FFI None on success or an Error.
@@ -390,9 +395,7 @@ struct ExpectedUnsafe {
    */
   template <typename T>
   TVM_FFI_INLINE static Expected<T> MoveFromTVMFFIAny(TVMFFIAny raw) {
-    Expected<T> result;
-    result.data_ = AnyUnsafe::MoveTVMFFIAnyToAny(&raw);
-    return result;
+    return Expected<T>(UnsafeInit{}, raw);
   }
 
   /*!

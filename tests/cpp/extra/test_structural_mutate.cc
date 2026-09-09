@@ -259,9 +259,7 @@ Expected<Any> Increment(int64_t value) { return Any(value + 1); }
 
 struct MutateCount {
   int value = 0;
-  int mutate_raw = 0;
   int mutate_expected = 0;
-  int maybe_inplace_raw = 0;
   int maybe_inplace_expected = 0;
 };
 
@@ -287,16 +285,6 @@ class StructuralMapWithMutateCount : public StructuralMapEngineBase {
   }
 
  protected:
-  TVMFFIAny DefaultMutateRaw(AnyView value) noexcept {
-    ++count_.mutate_raw;
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(DefaultMutateExpected(value));
-  }
-
-  TVMFFIAny DefaultMaybeInplaceMutateRaw(AnyView value) noexcept {
-    ++count_.maybe_inplace_raw;
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(DefaultMaybeInplaceMutateExpected(value));
-  }
-
   StateTupleType StateTuple() const noexcept { return StateTupleType(count_, marker_); }
 
  private:
@@ -344,9 +332,7 @@ TEST(StructuralMap, ParentLayerOwnsBothDescentsAndProvidesState) {
   AnyArray inplace_root{int64_t{1}};
   ASSERT_FALSE(mutator->MaybeInplaceMutateExpected(inplace_root).is_err());
 
-  EXPECT_GT(engine->count().mutate_raw, 0);
   EXPECT_GT(engine->count().mutate_expected, 0);
-  EXPECT_GT(engine->count().maybe_inplace_raw, 0);
   EXPECT_GT(engine->count().maybe_inplace_expected, 0);
   EXPECT_EQ(callback_counts.size(), 2U);
   EXPECT_GT(callback_counts[0], 0);
@@ -356,8 +342,8 @@ TEST(StructuralMap, ParentLayerOwnsBothDescentsAndProvidesState) {
   AnyArray repeated{var, var};
   AnyArray mapped =
       std::move(mutator->Mutate<AnyArray>(repeated)).ValueOrUnchanged(std::move(repeated));
-  EXPECT_EQ(var_callback_count, 1);
-  EXPECT_TRUE(mapped[0].cast<TVar>().same_as(mapped[1].cast<TVar>()));
+  EXPECT_EQ(var_callback_count, 2);
+  EXPECT_FALSE(mapped[0].cast<TVar>().same_as(mapped[1].cast<TVar>()));
 }
 
 TEST(StructuralMutate, CallbackOwnsMutationAndErrorsStayExpected) {
@@ -417,12 +403,12 @@ TEST(StructuralMutate, CallbackControlsRecursion) {
   TPair mapped =
       StructuralMutate(
           root,
-          [](const TPair& pair, StructuralMutatorObj* mutator) -> Expected<Any> {
+          [](const TPair& pair, StructuralMutatorObj* mutator) -> Expected<UnchangedOr<ObjectRef>> {
             TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, lhs_result,
                                               mutator->MutateExpected<ObjectRef>(pair->lhs));
             ObjectRef original_lhs = pair->lhs;
             ObjectRef lhs = std::move(lhs_result).ValueOrUnchanged(std::move(original_lhs));
-            return Any(TPair(std::move(lhs), pair->rhs));
+            return UnchangedOr<ObjectRef>(TPair(std::move(lhs), pair->rhs));
           },
           [](const TInt& value, StructuralMutatorObj*) -> Expected<Any> {
             return Any(TInt(value->value + 100));
@@ -509,33 +495,40 @@ TEST(StructuralMutate, CallbackArityControlsInplaceMutation) {
 }
 
 TEST(StructuralMutate, MatchedVarOwnsRemapConsistency) {
-  TVar var("n");
-  AnyArray root{var, var};
-  int callback_count = 0;
+  TVarWithDep var("n", TVar("type"));
+  TPair root(TDefHolder(TVarWithDep("pattern"), var), var);
+  int type_callback_count = 0;
 
-  AnyArray mapped =
-      StructuralMutate(root,
-                       [&](const TVar& value, StructuralMutatorObj* mutator) -> Expected<Any> {
-                         ++callback_count;
-                         TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, remapped_result,
-                                                           mutator->VarRemapGetExpected(value));
-                         Any remapped = std::move(remapped_result).ValueUnchecked();
-                         if (remapped.type_index() != TypeIndex::kTVMFFINone) {
-                           return remapped;
-                         }
-                         Any replacement(TVar(value->name + "-mapped"));
-                         Expected<void> set_result =
-                             mutator->VarRemapSetExpected(value, replacement);
-                         if (set_result.is_err()) {
-                           return Unexpected(std::move(set_result).error());
-                         }
-                         return replacement;
-                       })
-          .cast<AnyArray>();
+  TPair mapped = StructuralMap<WalkOrder::kPreOrder>(root, [&](const TVar& value) -> Expected<Any> {
+                   if (!value.defined()) return Unchanged();
+                   ++type_callback_count;
+                   return Any(TVar(value->name + "-mapped"));
+                 }).cast<TPair>();
+  TDefHolder mapped_defs = mapped->lhs.as_or_throw<TDefHolder>();
+  TVarWithDep mapped_def = mapped_defs->def_non_recursive;
+  TVarWithDep mapped_use = mapped->rhs.as_or_throw<TVarWithDep>();
 
-  EXPECT_EQ(callback_count, 2);
-  EXPECT_TRUE(mapped[0].cast<TVar>().same_as(mapped[1].cast<TVar>()));
-  EXPECT_EQ(mapped[0].cast<TVar>()->name, "n-mapped");
+  EXPECT_EQ(type_callback_count, 1);
+  EXPECT_FALSE(mapped_def.same_as(var));
+  EXPECT_TRUE(mapped_def.same_as(mapped_use));
+  ASSERT_TRUE(mapped_def->dep.has_value());
+  EXPECT_EQ(mapped_def->dep.value().as_or_throw<TVar>()->name, "type-mapped");
+
+  TVarWithDep unchanged("unchanged", TVar("unchanged-type"));
+  TPair repeated_definition(TDefHolder(TVarWithDep("first-pattern"), unchanged),
+                            TDefHolder(unchanged, TVarWithDep("last-simple")));
+  int unchanged_type_callback_count = 0;
+
+  StructuralMap<WalkOrder::kPostOrder>(repeated_definition,
+                                       [&](const TVar& value) -> Expected<Any> {
+                                         if (!value.defined()) return Unchanged();
+                                         ++unchanged_type_callback_count;
+                                         return Unchanged();
+                                       });
+
+  // The unchanged simple definition leaves no binding, so the later pattern definition descends
+  // the same var once and records the unchanged marker.
+  EXPECT_EQ(unchanged_type_callback_count, 2);
 }
 
 template <WalkOrder order>
@@ -887,7 +880,7 @@ TEST(StructuralMap, ContainerCallbackErrorsStayExpected) {
 }
 
 template <WalkOrder order>
-void CheckRepeatedVarRemap() {
+void CheckRepeatedFreeVarCallbacks() {
   TVar var("n");
   StringMap use{{"use", var}};
   AnyArray root{var, Any(std::move(use))};
@@ -901,15 +894,15 @@ void CheckRepeatedVarRemap() {
   StringMap mapped_uses = mapped[1].cast<StringMap>();
   TVar mapped_use = mapped_uses["use"].cast<TVar>();
 
-  EXPECT_EQ(callback_count, 1);
-  EXPECT_TRUE(mapped_var.same_as(mapped_use));
+  EXPECT_EQ(callback_count, 2);
+  EXPECT_FALSE(mapped_var.same_as(mapped_use));
   EXPECT_EQ(mapped_var->name, "n-mapped");
   EXPECT_EQ(var->name, "n");
 }
 
-TEST(StructuralMap, ReusesFinalCallbackResultForRepeatedVar) {
-  CheckRepeatedVarRemap<WalkOrder::kPreOrder>();
-  CheckRepeatedVarRemap<WalkOrder::kPostOrder>();
+TEST(StructuralMap, InvokesCallbackForEveryFreeVarOccurrence) {
+  CheckRepeatedFreeVarCallbacks<WalkOrder::kPreOrder>();
+  CheckRepeatedFreeVarCallbacks<WalkOrder::kPostOrder>();
 }
 
 AnyArray MakeStringAndBytesLeaves() {
@@ -1007,9 +1000,7 @@ TEST(StructuralMapDyn, PreOrderDescendsOriginalAfterUnchangedCallback) {
   EXPECT_EQ(mapped[0].cast<int64_t>(), 2);
 }
 
-TEST(StructuralMapDyn, ReusesRemapResultForRepeatedVar) {
-  // A FreeVar maps once and every later occurrence reuses that result. Both mutators share this
-  // half of the walk, so it must hold identically here.
+TEST(StructuralMapDyn, InvokesCallbackForEveryFreeVarOccurrence) {
   TVar var("x");
   AnyArray root{Any(var), Any(var)};
   int64_t calls = 0;
@@ -1020,8 +1011,8 @@ TEST(StructuralMapDyn, ReusesRemapResultForRepeatedVar) {
   Any mapped = CallDynStructuralMap(
       root, {Tuple<int32_t, Function>(TVarObj::RuntimeTypeIndex(), remap)}, WalkOrder::kPostOrder);
   auto arr = mapped.cast<AnyArray>();
-  EXPECT_EQ(calls, 1);
-  EXPECT_TRUE(arr[0].cast<TVar>().same_as(arr[1].cast<TVar>()));
+  EXPECT_EQ(calls, 2);
+  EXPECT_FALSE(arr[0].cast<TVar>().same_as(arr[1].cast<TVar>()));
 }
 
 template <WalkOrder order>
