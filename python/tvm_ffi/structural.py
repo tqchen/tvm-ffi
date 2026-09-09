@@ -568,6 +568,10 @@ def structural_walk(
 ) -> VisitInterrupt | None:
     """Walk a value structurally and invoke the first matching typed callback.
 
+    The walk keeps no engine state and visits every occurrence as a tree.
+    Deduplication can be composed with a pre-order callback whose own visited
+    set returns :attr:`WalkResult.SKIP` on repeats.
+
     Parameters
     ----------
     root
@@ -738,7 +742,10 @@ def structural_map(
     """Structurally map a value using typed replacement callbacks.
 
     Each callback must follow map semantics: it returns the unchanged input or
-    a replacement value and must not mutate its input in place.
+    a replacement value and must not mutate its input in place. The policy is
+    ``mutate(x) = post(D(pre(x)))``: callbacks run at every occurrence, while
+    only default descent ``D`` reads or writes the variable-remap cache. A
+    graph rewrite that must preserve sharing keeps its own callback memo.
 
     Parameters
     ----------

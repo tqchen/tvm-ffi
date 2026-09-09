@@ -697,29 +697,52 @@ def test_structural_map_map_value_ownership() -> None:
 def test_structural_map_reuses_var_and_dag_callback_results() -> None:
     @py_class(structural_eq="var")
     class PyMapVar(Object):
-        value: int = field(structural_eq="ignore")
-
-    @py_class(structural_eq="dag")
-    class PyMapDAG(Object):
         value: int
 
+    @py_class(structural_eq="tree")
+    class PyMapRoot(Object):
+        simple_def: PyMapVar = field(structural_eq="def-simple")
+        pattern_defs: tvm_ffi.Array[PyMapVar] = field(structural_eq="def-pattern")
+        uses: tvm_ffi.Array[PyMapVar]
+
+    var = PyMapVar(1)
+    mapped = tvm_ffi.structural_map(
+        PyMapRoot(var, tvm_ffi.Array([]), tvm_ffi.Array([var])),
+        (int, lambda value: value + 1),
+    )
+    assert mapped.simple_def.value == 2
+    assert mapped.simple_def.same_as(mapped.uses[0])
+    assert not mapped.simple_def.same_as(var)
+
+    unchanged_type_callback_count = 0
+
+    def keep_type(value: int) -> int:
+        nonlocal unchanged_type_callback_count
+        unchanged_type_callback_count += 1
+        return value
+
+    tvm_ffi.structural_map(
+        PyMapRoot(var, tvm_ffi.Array([var, var]), tvm_ffi.Array([])),
+        (int, keep_type),
+    )
+    assert unchanged_type_callback_count == 2
+
     for order in (tvm_ffi.WalkOrder.PREORDER, tvm_ffi.WalkOrder.POSTORDER):
-        for node_type in (PyMapVar, PyMapDAG):
-            node = node_type(1)
-            root = tvm_ffi.Array([node, tvm_ffi.Map({"use": node})])
-            callback_count = 0
+        node = PyMapVar(1)
+        root = tvm_ffi.Array([node, tvm_ffi.Map({"use": node})])
+        callback_count = 0
 
-            def replace(value: Any) -> Any:
-                nonlocal callback_count
-                callback_count += 1
-                return node_type(value.value + 1)
+        def replace(value: Any) -> Any:
+            nonlocal callback_count
+            callback_count += 1
+            return PyMapVar(value.value + 1)
 
-            mapped = tvm_ffi.structural_map(root, (node_type, replace), order=order)
+        mapped = tvm_ffi.structural_map(root, (PyMapVar, replace), order=order)
 
-            assert callback_count == 1
-            assert mapped[0].same_as(mapped[1]["use"])
-            assert not mapped[0].same_as(node)
-            assert mapped[0].value == 2
+        assert callback_count == 2
+        assert not mapped[0].same_as(mapped[1]["use"])
+        assert not mapped[0].same_as(node)
+        assert mapped[0].value == 2
 
 
 def test_structural_map_handles_inline_and_heap_strings_and_bytes() -> None:

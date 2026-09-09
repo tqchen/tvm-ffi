@@ -712,31 +712,23 @@ class StructuralWalkEngine : public Parent {
 };
 
 /*!
- * \brief Walk a structured value graph and invoke typed callbacks on selected values.
+ * \brief Structural walk visits every occurrence as a tree.
  *
- * The callbacks are invoked only for values matching the first argument type of
- * one of the callbacks. The first callback argument may be ``AnyView``, ``Any``,
- * an object reference type, an object pointer type, or another FFI-convertible
- * POD type. It may optionally take ``TVMFFIDefRegionKind`` after the value.
- * Callbacks are tested in order, and the first match is used.
+ * The walk keeps no state. A var's type is walked under its region at every
+ * occurrence, a shared DAG node is visited once per parent, and callbacks
+ * fire once per occurrence. Pre may return Skip to prune a subtree or Stop to
+ * end the walk; post sees a node after its children. Dedup can be composed if
+ * descend once on pattern var is desirable, or in graph case: a pre callback
+ * with its own visited set returns Skip on a repeat.
  *
- * Each callback should return ``Expected<WalkResult>``; see ``WalkResult``.
- * - ``WalkResult::Interrupt(...)`` halts traversal.
- * - ``WalkResult::Advance()`` continues traversal.
- * - ``WalkResult::Skip()`` skips children traversal.
- * - ``Error`` indicates traversal failure.
- *
- * \sa WalkOrder, WalkResult
+ * Callbacks are selected the same way as in StructuralMap and return
+ * ``Expected<WalkResult>``.
  *
  * \tparam order Whether to invoke the callback before or after visiting children.
  * \tparam Callbacks Callback types.
  * \param root The root value to visit.
- * \param callbacks Callbacks invoked for matching nodes as ``(value)`` or
- *                  ``(value, TVMFFIDefRegionKind)``.
- * \return ``std::nullopt`` if traversal completed, or the interrupt returned by
- *         a callback.
- *
- * \note Return type of each callback should be ``Expected<WalkResult>``.
+ * \param callbacks Callbacks invoked for matching nodes.
+ * \return ``std::nullopt`` if traversal completed, or the interrupt a callback returned.
  */
 template <WalkOrder order, typename... Callbacks>
 Expected<Optional<VisitInterrupt>> StructuralWalkExpected(AnyView root,
