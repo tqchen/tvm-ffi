@@ -432,6 +432,20 @@ TEST(StructuralMutate, CallbackControlsRecursion) {
   EXPECT_TRUE(mapped->rhs.same_as(original_rhs));
 }
 
+TEST(StructuralMutate, SingleCallbackCanDelegateToDefault) {
+  auto mutate = [](AnyView value, StructuralMutatorObj* mutator) -> Expected<UnchangedOr<Any>> {
+    if (auto integer = value.as<int64_t>()) {
+      return Any(*integer + 1);
+    }
+    return mutator->DefaultMutateExpected(value);
+  };
+  AnyArray root{int64_t{1}, AnyArray{int64_t{2}}};
+  AnyArray result = StructuralMutate(root, mutate).cast<AnyArray>();
+  EXPECT_EQ(result[0].cast<int64_t>(), 2);
+  EXPECT_EQ(result[1].cast<AnyArray>()[0].cast<int64_t>(), 3);
+  EXPECT_EQ(root[0].cast<int64_t>(), 1);
+}
+
 TEST(StructuralMutate, PreservesUniqueContainerIdentity) {
   AnyArray inner{int64_t{1}};
   const Object* inner_address = inner.get();
