@@ -381,8 +381,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def_method("ffi.StructuralMutatorDefaultMutate",
                   [](const StructuralMutator& mutator, AnyView value) -> Any {
                     UnchangedOr<Any> result =
-                        details::AnyUnsafe::MoveFromAnyAfterCheck<UnchangedOr<Any>>(
-                            std::move(mutator->DefaultMutateExpected(value)).value());
+                        std::move(mutator->DefaultMutateExpected(value)).value();
                     return std::move(result).ValueOrUnchanged(value);
                   })
       .def_method("ffi.StructuralMutatorVarRemapGet",
