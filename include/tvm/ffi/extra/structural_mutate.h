@@ -579,14 +579,14 @@ class StructuralMutatorObj : public Object {
       result = DefaultMutateRawTail(value, attr);
     }
     if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
-      return AnnotateDefaultErrorRaw(result, value);
+      return AttachVisitErrorContextRaw(result, value);
     }
     return result;
   }
 
   /*! \brief Keep address-taking for error decoration off the successful raw-result path. */
-  TVM_FFI_COLD_CODE static TVMFFIAny AnnotateDefaultErrorRaw(TVMFFIAny result,
-                                                             AnyView value) noexcept {
+  TVM_FFI_COLD_CODE static TVMFFIAny AttachVisitErrorContextRaw(TVMFFIAny result,
+                                                                AnyView value) noexcept {
     details::UpdateVisitErrorContext(result, value);
     return result;
   }
@@ -661,7 +661,7 @@ class StructuralMutatorObj : public Object {
       // DefaultMutateRaw, which names it there instead -- exactly one frame either way.
       TVMFFIAny result = (*reinterpret_cast<FStructuralMutate>(attr.cast<void*>()))(this, value);
       if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
-        return AnnotateDefaultErrorRaw(result, value);
+        return AttachVisitErrorContextRaw(result, value);
       }
       return result;
     }
@@ -677,7 +677,7 @@ class StructuralMutatorObj : public Object {
       TVMFFIAny result = details::ExpectedUnsafe::MoveToTVMFFIAny(
           attr.cast<Function>().CallExpected<Any>(this, value));
       if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
-        return AnnotateDefaultErrorRaw(result, value);
+        return AttachVisitErrorContextRaw(result, value);
       }
       return result;
     }
