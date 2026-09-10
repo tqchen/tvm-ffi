@@ -452,7 +452,7 @@ class SingleCallbackParent : public StructuralMapEngineBase {
       : StructuralMapEngineBase(vtable) {}
 
   int error_count = 0;
-  int boundary_use_count = 0;
+  uint64_t boundary_use_count = 0;
 
   void UpdateVisitErrorContext(const Expected<Any>& result, AnyView value) noexcept {
     ++error_count;
@@ -464,7 +464,7 @@ class SingleCallbackParent : public StructuralMapEngineBase {
 TEST(StructuralMutate, SingleCallbackOwnershipAndParentContext) {
   TVar root("root");
   auto check = [&](auto callback) {
-    CheckSingleAndMultiCallback<SingleCallbackParent>(callback, [&](auto engine) {
+    CheckSingleAndMultiCallback<SingleCallbackParent>(callback, [&](const auto& engine) {
       EXPECT_EQ(root.use_count(), 1);
       auto result = engine->MutateExpected(AnyView(root));
       ASSERT_TRUE(result.is_err());
@@ -506,7 +506,7 @@ TEST(StructuralMutate, SingleCallbackReturnCarriersAndShortCircuit) {
       ADD_FAILURE() << "The first matching callback must own the result";
       return Any();
     };
-    auto inspect = [&](auto result) {
+    auto inspect = [&](const auto& result) {
       ASSERT_TRUE(result.is_ok());
       EXPECT_TRUE(result.value().same_as(unchanged ? root : replacement));
     };
@@ -535,7 +535,7 @@ TEST(StructuralMutate, SingleCallbackReturnCarriersAndShortCircuit) {
 TEST(StructuralMutate, SingleCallbackArityAndTypedFallback) {
   std::vector<bool> trace;
   auto check = [&](auto callback) {
-    CheckSingleAndMultiCallback<SingleCallbackParent>(callback, [&](auto engine) {
+    CheckSingleAndMultiCallback<SingleCallbackParent>(callback, [&](const auto& engine) {
       trace.clear();
       TVar root("root");
       EXPECT_TRUE(engine->MutateExpected(AnyView(root)).value().IsUnchanged());
@@ -557,7 +557,7 @@ TEST(StructuralMutate, SingleCallbackArityAndTypedFallback) {
   });
 
   auto typed = [](int64_t value, StructuralMutatorObj*) -> Any { return Any(value + 1); };
-  CheckSingleAndMultiCallback<StructuralMapWithMutateCount>(typed, [&](auto engine) {
+  CheckSingleAndMultiCallback<StructuralMapWithMutateCount>(typed, [&](const auto& engine) {
     String miss("unmatched heap string");
     EXPECT_TRUE(engine->MutateExpected(AnyView(miss)).value().IsUnchanged());
     EXPECT_TRUE(engine->MaybeInplaceMutateExpected(AnyView(miss)).value().IsUnchanged());
@@ -583,7 +583,7 @@ TEST(StructuralMutate, SingleCallbackPassthroughKeepsBothErrorContexts) {
     return allow_inplace ? mutator->DefaultMaybeInplaceMutateExpected(value)
                          : mutator->DefaultMutateExpected(value);
   };
-  CheckSingleAndMultiCallback(passthrough, [&](auto engine) {
+  CheckSingleAndMultiCallback(passthrough, [&](const auto& engine) {
     for (bool inplace : {false, true}) {
       auto result = inplace ? engine->MaybeInplaceMutateExpected(AnyView(root))
                             : engine->MutateExpected(AnyView(root));
