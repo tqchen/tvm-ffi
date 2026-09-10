@@ -40,6 +40,14 @@ using namespace tvm::ffi::testing;
 using AnyArray = Array<Any>;
 using StringMap = Map<String, Any>;
 
+static_assert(std::is_same_v<decltype(std::declval<StructuralMutatorObj&>().DefaultMutateExpected(
+                                 std::declval<AnyView>())),
+                             Expected<UnchangedOr<Any>>>);
+static_assert(
+    std::is_same_v<decltype(std::declval<StructuralMutatorObj&>().DefaultMaybeInplaceMutateExpected(
+                       std::declval<AnyView>())),
+                   Expected<UnchangedOr<Any>>>);
+
 // ---------------------------------------------------------------------------
 // Unchanged result protocol.
 // ---------------------------------------------------------------------------
@@ -272,13 +280,13 @@ class StructuralMapWithMutateCount : public StructuralMapEngineBase {
 
   const MutateCount& count() const { return count_; }
 
-  Expected<Any> DefaultMutateExpected(AnyView value) noexcept {
+  Expected<UnchangedOr<Any>> DefaultMutateExpected(AnyView value) noexcept {
     ++count_.value;
     ++count_.mutate_expected;
     return StructuralMapEngineBase::DefaultMutateExpected(value);
   }
 
-  Expected<Any> DefaultMaybeInplaceMutateExpected(AnyView value) noexcept {
+  Expected<UnchangedOr<Any>> DefaultMaybeInplaceMutateExpected(AnyView value) noexcept {
     ++count_.value;
     ++count_.maybe_inplace_expected;
     return StructuralMapEngineBase::DefaultMaybeInplaceMutateExpected(value);

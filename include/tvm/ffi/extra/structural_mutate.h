@@ -430,31 +430,34 @@ class StructuralMutatorObj : public Object {
    * \brief Apply the default structural mutation with copy-on-write behavior.
    *
    * \param value The value to mutate.
-   * \return The mutated value, or an Error if hook dispatch, copying, or field mutation failed.
+   * \return The replacement or unchanged marker, or an Error if hook dispatch, copying, or field
+   *         mutation failed.
    *
    * \note A registered ``__s_mutate__`` hook is dispatched before the reflected fallback. A
    *       FreeVar hook owns the definition-only remap policy for that type; the reflected fallback
    *       applies the same policy automatically.
    */
 
-  TVM_FFI_INLINE Expected<Any> DefaultMutateExpected(AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(DefaultMutateRaw(value));
+  TVM_FFI_INLINE Expected<UnchangedOr<Any>> DefaultMutateExpected(AnyView value) noexcept {
+    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(DefaultMutateRaw(value));
   }
 
   /*!
    * \brief Apply custom maybe-in-place mutation, or fall back to non-in-place mutation.
    *
    * \param value The borrowed value to mutate.
-   * \return The mutated owning value, or an Error if mutation failed. In-place changes
-   *         completed before an Error are not rolled back.
+   * \return The replacement or unchanged marker, or an Error if mutation failed. In-place
+   *         changes completed before an Error are not rolled back.
    *
    * \note In-place mutation is explicitly opt-in. A registered
    *       ``__s_maybe_inplace_mutate__`` hook may rely on its input being safe to mutate and owns
    *       any variable-remap handling. When the hook is absent, this method calls
    *       \ref DefaultMutateExpected.
    */
-  TVM_FFI_INLINE Expected<Any> DefaultMaybeInplaceMutateExpected(AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(DefaultMaybeInplaceMutateRaw(value));
+  TVM_FFI_INLINE Expected<UnchangedOr<Any>> DefaultMaybeInplaceMutateExpected(
+      AnyView value) noexcept {
+    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
+        DefaultMaybeInplaceMutateRaw(value));
   }
 
   /*!
