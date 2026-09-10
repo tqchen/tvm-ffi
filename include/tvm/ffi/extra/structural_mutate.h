@@ -585,8 +585,8 @@ class StructuralMutatorObj : public Object {
   }
 
   /*! \brief Keep address-taking for error decoration off the successful raw-result path. */
-  TVM_FFI_COLD_CODE TVM_FFI_NO_INLINE static TVMFFIAny AnnotateDefaultErrorRaw(
-      TVMFFIAny result, AnyView value) noexcept {
+  TVM_FFI_COLD_CODE static TVMFFIAny AnnotateDefaultErrorRaw(TVMFFIAny result,
+                                                             AnyView value) noexcept {
     details::UpdateVisitErrorContext(result, value);
     return result;
   }
@@ -1608,8 +1608,8 @@ class StructuralMutateEngine : public Parent {
 
   /*! \brief Mutate one value, handing a matched callback ownership of descent. */
   TVMFFIAny MutateImplRaw(AnyView value) noexcept {
-    if (std::optional<Expected<Any>> matched = DispatchCallbacks(value, false)) {
-      Expected<Any> result = *std::move(matched);
+    Expected<Any> result{Any()};
+    if (DispatchCallbacks(value, false, &result)) {
       if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
         // Keep callback-boundary context in addition to the default-descent
         // context: a callback may return a rebuilt value, so the two nodes can differ.
@@ -1622,8 +1622,8 @@ class StructuralMutateEngine : public Parent {
 
   /*! \brief Maybe mutate one value in place, with callback-owned descent. */
   TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
-    if (std::optional<Expected<Any>> matched = DispatchCallbacks(value, true)) {
-      Expected<Any> result = *std::move(matched);
+    Expected<Any> result{Any()};
+    if (DispatchCallbacks(value, true, &result)) {
       if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
         // Keep callback-boundary context in addition to the default-descent
         // context: a callback may return a rebuilt value, so the two nodes can differ.
@@ -1666,8 +1666,7 @@ class StructuralMutateEngine : public Parent {
   }
 
   /*! \brief Materialize the callback result only on the cold Parent error-decoration path. */
-  TVM_FFI_COLD_CODE TVM_FFI_NO_INLINE TVMFFIAny AnnotateCallbackErrorRaw(TVMFFIAny raw,
-                                                                         AnyView value) noexcept {
+  TVM_FFI_COLD_CODE TVMFFIAny AnnotateCallbackErrorRaw(TVMFFIAny raw, AnyView value) noexcept {
     Expected<Any> result = details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(raw);
     Parent::UpdateVisitErrorContext(result, value);
     return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
@@ -1706,35 +1705,37 @@ class StructuralMutateEngine : public Parent {
     return result;
   }
 
-  /*! \brief Try one typed callback and preserve Error as an expected result. */
+  /*! \brief Write a matched callback result, leaving out untouched on a type miss. */
   template <typename Callback>
-  TVM_FFI_INLINE std::optional<Expected<Any>> TryLink(Callback& callback, AnyView value,
-                                                      bool allow_inplace) noexcept {
+  TVM_FFI_INLINE bool TryLink(Callback& callback, AnyView value, bool allow_inplace,
+                              Expected<Any>* out) noexcept {
     using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
     using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
     using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
     if constexpr (std::is_same_v<TSub, AnyView>) {
-      return InvokeCallback(callback, value, allow_inplace);
+      *out = InvokeCallback(callback, value, allow_inplace);
+      return true;
     } else if constexpr (std::is_same_v<TSub, Any>) {
-      return InvokeCallback(callback, Any(value), allow_inplace);
+      *out = InvokeCallback(callback, Any(value), allow_inplace);
+      return true;
     } else if (auto matched = value.template as<TSub>()) {
-      return InvokeCallback(callback, *std::move(matched), allow_inplace);
+      *out = InvokeCallback(callback, *std::move(matched), allow_inplace);
+      return true;
     }
-    return std::nullopt;
+    return false;
   }
 
   /*! \brief Fold callbacks in declaration order, stopping at the first match. */
   template <size_t... Is>
-  TVM_FFI_INLINE std::optional<Expected<Any>> TryLinks(AnyView value, bool allow_inplace,
-                                                       std::index_sequence<Is...>) noexcept {
-    std::optional<Expected<Any>> result;
-    (... || (result = TryLink(std::get<Is>(callbacks_), value, allow_inplace)).has_value());
-    return result;
+  TVM_FFI_INLINE bool TryLinks(AnyView value, bool allow_inplace, Expected<Any>* out,
+                               std::index_sequence<Is...>) noexcept {
+    return (TryLink(std::get<Is>(callbacks_), value, allow_inplace, out) || ...);
   }
 
-  /*! \brief Run the callback chain, or return empty when no callback matched. */
-  std::optional<Expected<Any>> DispatchCallbacks(AnyView value, bool allow_inplace) noexcept {
-    return TryLinks(value, allow_inplace, std::index_sequence_for<Callbacks...>{});
+  /*! \brief Run the callback chain, returning whether a callback matched. */
+  TVM_FFI_INLINE bool DispatchCallbacks(AnyView value, bool allow_inplace,
+                                        Expected<Any>* out) noexcept {
+    return TryLinks(value, allow_inplace, out, std::index_sequence_for<Callbacks...>{});
   }
 
   /*! \brief Typed callbacks tested in declaration order, first match wins. */
