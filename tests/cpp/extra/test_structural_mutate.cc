@@ -432,6 +432,173 @@ TEST(StructuralMutate, CallbackControlsRecursion) {
   EXPECT_TRUE(mapped->rhs.same_as(original_rhs));
 }
 
+// Exercise the single-callback path and the equivalent general callback chain.
+template <typename Parent = StructuralMapEngineBase, typename Callback, typename Check>
+void CheckSingleAndMultiCallback(Callback callback, Check check) {
+  auto never_matches = [](double, typename Parent::MutatorObjType*) -> Expected<Any> {
+    ADD_FAILURE() << "Unexpected callback match";
+    return Unchanged();
+  };
+  using Single = StructuralMutateEngine<Parent, Callback>;
+  using Multi = StructuralMutateEngine<Parent, Callback, decltype(never_matches)>;
+  check(make_object<Single>(callback));
+  check(make_object<Multi>(callback, never_matches));
+}
+
+class SingleCallbackParent : public StructuralMapEngineBase {
+ public:
+  using MutatorObjType = SingleCallbackParent;
+  explicit SingleCallbackParent(const StructuralMutatorVTable* vtable)
+      : StructuralMapEngineBase(vtable) {}
+
+  int error_count = 0;
+  int boundary_use_count = 0;
+
+  void UpdateVisitErrorContext(const Expected<Any>& result, AnyView value) noexcept {
+    ++error_count;
+    boundary_use_count = value.cast<const Object*>()->use_count();
+    StructuralMapEngineBase::UpdateVisitErrorContext(result, value);
+  }
+};
+
+TEST(StructuralMutate, SingleCallbackOwnershipAndParentContext) {
+  TVar root("root");
+  auto check = [&](auto callback) {
+    CheckSingleAndMultiCallback<SingleCallbackParent>(callback, [&](auto engine) {
+      EXPECT_EQ(root.use_count(), 1);
+      auto result = engine->MutateExpected(AnyView(root));
+      ASSERT_TRUE(result.is_err());
+      EXPECT_EQ(result.error().message(), "callback error");
+      EXPECT_EQ(engine->error_count, 1);
+      // An owning match is released before the Parent sees the callback boundary.
+      EXPECT_EQ(engine->boundary_use_count, 1);
+      auto context = VisitErrorContext::TryGetFromError(result.error());
+      ASSERT_TRUE(context.has_value());
+      ASSERT_EQ(context.value()->reverse_visit_pattern.size(), 1U);
+      EXPECT_TRUE(context.value()->reverse_visit_pattern[0].same_as(root));
+    });
+    EXPECT_EQ(root.use_count(), 1);
+  };
+  check([&](AnyView, SingleCallbackParent*) -> Error {
+    EXPECT_EQ(root.use_count(), 1);
+    return Error("ValueError", "callback error", "");
+  });
+  check([&](const Any&, SingleCallbackParent*) -> Error {
+    EXPECT_EQ(root.use_count(), 2);
+    return Error("ValueError", "callback error", "");
+  });
+  check([&](const TVar&, SingleCallbackParent*) -> Expected<TVar> {
+    EXPECT_EQ(root.use_count(), 2);
+    throw Error("ValueError", "callback error", "");
+  });
+  check([&](const TVarObj*, SingleCallbackParent*) -> Expected<Any> {
+    EXPECT_EQ(root.use_count(), 1);
+    return Unexpected(Error("ValueError", "callback error", ""));
+  });
+}
+
+TEST(StructuralMutate, SingleCallbackReturnCarriersAndShortCircuit) {
+  TVar root("root");
+  TVar replacement("replacement");
+  auto check = [&](auto callback, bool unchanged) {
+    // A later matching callback must not run, even for Unchanged or Error.
+    auto later = [](AnyView, StructuralMutatorObj*) -> Any {
+      ADD_FAILURE() << "The first matching callback must own the result";
+      return Any();
+    };
+    auto inspect = [&](auto result) {
+      ASSERT_TRUE(result.is_ok());
+      EXPECT_TRUE(result.value().same_as(unchanged ? root : replacement));
+    };
+    inspect(StructuralMutateExpected(root, callback));
+    inspect(StructuralMutateExpected(root, callback, later));
+  };
+  check([&](AnyView, StructuralMutatorObj*) -> TVar { return replacement; }, false);
+  check([&](const Any&, StructuralMutatorObj*) -> Any { return Any(replacement); }, false);
+  check([&](const TVar&, StructuralMutatorObj*) -> Expected<TVar> { return replacement; }, false);
+  check([&](const TVarObj*, StructuralMutatorObj*) -> Expected<Any> { return replacement; }, false);
+  check([](AnyView, StructuralMutatorObj*) -> Expected<UnchangedOr<TVar>> { return Unchanged(); },
+        true);
+  check([](const Any&, StructuralMutatorObj*) -> UnchangedOr<TVar> { return Unchanged(); }, true);
+
+  auto failure = [](AnyView, StructuralMutatorObj*) -> Any {
+    return Any(Error("ValueError", "first match error", ""));
+  };
+  auto later = [](AnyView, StructuralMutatorObj*) -> Any {
+    ADD_FAILURE() << "Error is a matched result, not a callback miss";
+    return Any();
+  };
+  EXPECT_EQ(StructuralMutateExpected(root, failure).error().message(), "first match error");
+  EXPECT_EQ(StructuralMutateExpected(root, failure, later).error().message(), "first match error");
+}
+
+TEST(StructuralMutate, SingleCallbackArityAndTypedFallback) {
+  std::vector<bool> trace;
+  auto check = [&](auto callback) {
+    CheckSingleAndMultiCallback<SingleCallbackParent>(callback, [&](auto engine) {
+      trace.clear();
+      TVar root("root");
+      EXPECT_TRUE(engine->MutateExpected(AnyView(root)).value().IsUnchanged());
+      EXPECT_TRUE(engine->MaybeInplaceMutateExpected(AnyView(root)).value().IsUnchanged());
+      EXPECT_EQ(trace, (std::vector<bool>{false, true}));
+    });
+  };
+  check([&](AnyView, SingleCallbackParent*, bool allow_inplace) -> Unchanged {
+    trace.push_back(allow_inplace);
+    return Unchanged();
+  });
+  check([&](const Any&, SingleCallbackParent*, bool allow_inplace) -> Expected<Any> {
+    trace.push_back(allow_inplace);
+    return Unchanged();
+  });
+  check([&](const TVar&, SingleCallbackParent*, bool allow_inplace) -> Expected<Any> {
+    trace.push_back(allow_inplace);
+    return Unchanged();
+  });
+
+  auto typed = [](int64_t value, StructuralMutatorObj*) -> Any { return Any(value + 1); };
+  CheckSingleAndMultiCallback<StructuralMapWithMutateCount>(typed, [&](auto engine) {
+    String miss("unmatched heap string");
+    EXPECT_TRUE(engine->MutateExpected(AnyView(miss)).value().IsUnchanged());
+    EXPECT_TRUE(engine->MaybeInplaceMutateExpected(AnyView(miss)).value().IsUnchanged());
+    EXPECT_EQ(engine->count().mutate_expected, 1);
+    EXPECT_EQ(engine->count().maybe_inplace_expected, 1);
+    EXPECT_EQ(engine->MutateExpected(AnyView(int64_t{1}))
+                  .value()
+                  .ValueUnchecked()
+                  .template cast<int64_t>(),
+              2);
+    EXPECT_EQ(engine->count().value, 2);
+  });
+}
+
+TEST(StructuralMutate, SingleCallbackPassthroughKeepsBothErrorContexts) {
+  TVar lhs("lhs");
+  TMutatePair root(lhs, TVar("rhs"));
+  auto passthrough = [](AnyView value, StructuralMutatorObj* mutator,
+                        bool allow_inplace) -> Expected<Any> {
+    if (value.as<const TVarObj*>()) {
+      return Error("ValueError", "hook child error", "");
+    }
+    return allow_inplace ? mutator->DefaultMaybeInplaceMutateExpected(value)
+                         : mutator->DefaultMutateExpected(value);
+  };
+  CheckSingleAndMultiCallback(passthrough, [&](auto engine) {
+    for (bool inplace : {false, true}) {
+      auto result = inplace ? engine->MaybeInplaceMutateExpected(AnyView(root))
+                            : engine->MutateExpected(AnyView(root));
+      ASSERT_TRUE(result.is_err());
+      auto context = VisitErrorContext::TryGetFromError(result.error());
+      ASSERT_TRUE(context.has_value());
+      const auto& pattern = context.value()->reverse_visit_pattern;
+      ASSERT_EQ(pattern.size(), 3U);
+      EXPECT_TRUE(pattern[0].same_as(lhs));
+      EXPECT_TRUE(pattern[1].same_as(root));
+      EXPECT_TRUE(pattern[2].same_as(root));
+    }
+  });
+}
+
 TEST(StructuralMutate, PreservesUniqueContainerIdentity) {
   AnyArray inner{int64_t{1}};
   const Object* inner_address = inner.get();

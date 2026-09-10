@@ -579,8 +579,15 @@ class StructuralMutatorObj : public Object {
       result = DefaultMutateRawTail(value, attr);
     }
     if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
-      details::UpdateVisitErrorContext(result, value);
+      return AnnotateDefaultErrorRaw(result, value);
     }
+    return result;
+  }
+
+  /*! \brief Keep address-taking for error decoration off the successful raw-result path. */
+  TVM_FFI_COLD_CODE TVM_FFI_NO_INLINE static TVMFFIAny AnnotateDefaultErrorRaw(
+      TVMFFIAny result, AnyView value) noexcept {
+    details::UpdateVisitErrorContext(result, value);
     return result;
   }
 
@@ -654,7 +661,7 @@ class StructuralMutatorObj : public Object {
       // DefaultMutateRaw, which names it there instead -- exactly one frame either way.
       TVMFFIAny result = (*reinterpret_cast<FStructuralMutate>(attr.cast<void*>()))(this, value);
       if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
-        details::UpdateVisitErrorContext(result, value);
+        return AnnotateDefaultErrorRaw(result, value);
       }
       return result;
     }
@@ -670,7 +677,7 @@ class StructuralMutatorObj : public Object {
       TVMFFIAny result = details::ExpectedUnsafe::MoveToTVMFFIAny(
           attr.cast<Function>().CallExpected<Any>(this, value));
       if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
-        details::UpdateVisitErrorContext(result, value);
+        return AnnotateDefaultErrorRaw(result, value);
       }
       return result;
     }
@@ -1580,13 +1587,23 @@ class StructuralMutateEngine : public Parent {
 
   /*! \brief Dispatch ordinary mutation from the erased mutator pointer. */
   static TVMFFIAny DispatchMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
-    return static_cast<StructuralMutateEngine*>(mutator)->MutateImplRaw(value);
+    auto* self = static_cast<StructuralMutateEngine*>(mutator);
+    if constexpr (sizeof...(Callbacks) == 1) {
+      return self->template MutateSingleCallbackRaw<false>(value);
+    } else {
+      return self->MutateImplRaw(value);
+    }
   }
 
   /*! \brief Dispatch maybe-in-place mutation from the erased mutator pointer. */
   static TVMFFIAny DispatchMaybeInplaceMutate(StructuralMutatorObj* mutator,
                                               AnyView value) noexcept {
-    return static_cast<StructuralMutateEngine*>(mutator)->MaybeInplaceMutateImplRaw(value);
+    auto* self = static_cast<StructuralMutateEngine*>(mutator);
+    if constexpr (sizeof...(Callbacks) == 1) {
+      return self->template MutateSingleCallbackRaw<true>(value);
+    } else {
+      return self->MaybeInplaceMutateImplRaw(value);
+    }
   }
 
   /*! \brief Mutate one value, handing a matched callback ownership of descent. */
@@ -1618,16 +1635,14 @@ class StructuralMutateEngine : public Parent {
         Parent::DefaultMaybeInplaceMutateExpected(value));
   }
 
-  /*! \brief Try one typed callback and preserve Error as an expected result. */
-  template <typename Callback>
-  TVM_FFI_INLINE std::optional<Expected<Any>> TryLink(Callback& callback, AnyView value,
-                                                      bool allow_inplace) noexcept {
+  /*! \brief Invoke a matched callback with the Parent view and preserve returned/thrown Error. */
+  template <typename Callback, typename Matched>
+  TVM_FFI_INLINE Expected<Any> InvokeCallback(Callback& callback, Matched&& matched,
+                                              bool allow_inplace) noexcept {
     using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
     static_assert(FuncInfo::num_args == 2 || FuncInfo::num_args == 3,
                   "StructuralMutate callback must take (value, mutator) or "
                   "(value, mutator, allow_inplace)");
-    using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
-    using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
     using SecondArg = std::decay_t<std::tuple_element_t<1, typename FuncInfo::ArgType>>;
     using Second = std::remove_pointer_t<SecondArg>;
     static_assert(std::is_same_v<Second, typename Parent::MutatorObjType>,
@@ -1639,23 +1654,71 @@ class StructuralMutateEngine : public Parent {
                     "third StructuralMutate callback argument must be bool");
     }
     auto* mutator = static_cast<typename Parent::MutatorObjType*>(this);
-    auto invoke = [&](auto&& matched) -> Expected<Any> {
-      try {
-        if constexpr (FuncInfo::num_args == 3) {
-          return callback(std::forward<decltype(matched)>(matched), mutator, allow_inplace);
-        } else {
-          return callback(std::forward<decltype(matched)>(matched), mutator);
-        }
-      } catch (Error& err) {
-        return Unexpected(std::move(err));
+    try {
+      if constexpr (FuncInfo::num_args == 3) {
+        return callback(std::forward<Matched>(matched), mutator, allow_inplace);
+      } else {
+        return callback(std::forward<Matched>(matched), mutator);
       }
-    };
+    } catch (Error& err) {
+      return Unexpected(std::move(err));
+    }
+  }
+
+  /*! \brief Materialize the callback result only on the cold Parent error-decoration path. */
+  TVM_FFI_COLD_CODE TVM_FFI_NO_INLINE TVMFFIAny AnnotateCallbackErrorRaw(TVMFFIAny raw,
+                                                                         AnyView value) noexcept {
+    Expected<Any> result = details::ExpectedUnsafe::MoveFromTVMFFIAny<Any>(raw);
+    Parent::UpdateVisitErrorContext(result, value);
+    return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+  }
+
+  // One callback forwards its result directly, without a callback-chain envelope.
+  // AnyView/Any always match; only a typed miss needs the Parent's default descent.
+  template <bool kMaybeInplace>
+  TVM_FFI_INLINE TVMFFIAny MutateSingleCallbackRaw(AnyView value) noexcept {
+    auto& callback = std::get<0>(callbacks_);
+    using FuncInfo = details::FunctionInfo<std::decay_t<decltype(callback)>>;
+    using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
+    using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
+    TVMFFIAny result;
     if constexpr (std::is_same_v<TSub, AnyView>) {
-      return invoke(value);
+      result =
+          details::ExpectedUnsafe::MoveToTVMFFIAny(InvokeCallback(callback, value, kMaybeInplace));
     } else if constexpr (std::is_same_v<TSub, Any>) {
-      return invoke(Any(value));
+      result = details::ExpectedUnsafe::MoveToTVMFFIAny(
+          InvokeCallback(callback, Any(value), kMaybeInplace));
     } else if (auto matched = value.template as<TSub>()) {
-      return invoke(*std::move(matched));
+      result = details::ExpectedUnsafe::MoveToTVMFFIAny(
+          InvokeCallback(callback, *std::move(matched), kMaybeInplace));
+    } else {
+      if constexpr (kMaybeInplace) {
+        return details::ExpectedUnsafe::MoveToTVMFFIAny(
+            Parent::DefaultMaybeInplaceMutateExpected(value));
+      } else {
+        return details::ExpectedUnsafe::MoveToTVMFFIAny(Parent::DefaultMutateExpected(value));
+      }
+    }
+    // Release any owning match before naming the callback boundary, as in the general path.
+    if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
+      return AnnotateCallbackErrorRaw(result, value);
+    }
+    return result;
+  }
+
+  /*! \brief Try one typed callback and preserve Error as an expected result. */
+  template <typename Callback>
+  TVM_FFI_INLINE std::optional<Expected<Any>> TryLink(Callback& callback, AnyView value,
+                                                      bool allow_inplace) noexcept {
+    using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
+    using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
+    using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
+    if constexpr (std::is_same_v<TSub, AnyView>) {
+      return InvokeCallback(callback, value, allow_inplace);
+    } else if constexpr (std::is_same_v<TSub, Any>) {
+      return InvokeCallback(callback, Any(value), allow_inplace);
+    } else if (auto matched = value.template as<TSub>()) {
+      return InvokeCallback(callback, *std::move(matched), allow_inplace);
     }
     return std::nullopt;
   }
