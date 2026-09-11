@@ -406,21 +406,24 @@ class StructuralMutatorObj : public Object {
   }
 
   /*!
-   * \brief Mutate a value, using in-place mutation only for a uniquely owned object.
+   * \brief Mutate a value, using in-place mutation only for a uniquely owned object
+   *        and \p allow_inplace set to true.
    * \tparam T The declared replacement type.
    * \param value The borrowed value to mutate.
+   * \param allow_inplace Whether in-place mutation is permitted. Defaults to true.
+   *        If false, use ordinary mutation without checking uniqueness.
    * \return The replacement or unchanged marker, or an Error if mutation failed.
    *
-   * \note The caller must already know the entire path from the root is uniquely
-   *       owned, either through an owning moved-in root or while handling a
-   *       ``__s_maybe_inplace_mutate__`` hook. This method checks only \p value
-   *       itself, not its ancestors.
+   * \note When \p allow_inplace is true, the caller must already know the entire
+   *       path from the root is uniquely owned, either through an owning moved-in
+   *       root or while handling a ``__s_maybe_inplace_mutate__`` hook. This method
+   *       checks only \p value itself, not its ancestors.
    */
   template <typename T = Any>
   TVM_FFI_INLINE Expected<UnchangedOr<T>> MaybeInplaceMutateIfUniqueExpected(
-      AnyView value) noexcept {
+      AnyView value, bool allow_inplace = true) noexcept {
     const Object* obj = value.as<Object>();
-    if (obj != nullptr && obj->unique()) {
+    if (allow_inplace && obj != nullptr && obj->unique()) {
       return MaybeInplaceMutateExpected<T>(value);
     }
     return MutateExpected<T>(value);
