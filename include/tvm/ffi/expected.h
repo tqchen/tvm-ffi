@@ -76,9 +76,11 @@ Unexpected(E) -> Unexpected<E>;
 template <typename T>
 class Expected;
 
+/// \cond Doxygen_Suppress
 /*! \brief Whether an Expected success value can reuse another success value's storage. */
 template <typename T, typename U>
 inline constexpr bool type_subsumes_v<Expected<T>, Expected<U>> = type_subsumes_v<T, U>;
+/// \endcond
 
 namespace details {
 

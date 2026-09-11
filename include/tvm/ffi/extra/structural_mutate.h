@@ -53,9 +53,11 @@ class StructuralMutatorObj;
 template <typename T>
 class UnchangedOr;
 
+/// \cond Doxygen_Suppress
 /*! \brief Whether an UnchangedOr replacement can reuse another replacement's storage. */
 template <typename T, typename U>
 inline constexpr bool type_subsumes_v<UnchangedOr<T>, UnchangedOr<U>> = type_subsumes_v<T, U>;
+/// \endcond
 
 template <typename Parent, WalkOrder order, typename... Callbacks>
 class StructuralMapEngine;

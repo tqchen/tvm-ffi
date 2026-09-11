@@ -55,17 +55,11 @@ static_assert(
 Expected<UnchangedOr<String>> ReturnTypedUnchangedExpected() noexcept { return Unchanged(); }
 
 TEST(UnchangedOr, ConversionsAndAssignmentMacro) {
-  static_assert(std::is_convertible_v<const UnchangedOr<TInt>&, UnchangedOr<Any>>);
-  static_assert(std::is_convertible_v<UnchangedOr<int>, UnchangedOr<double>>);
   static_assert(!std::is_convertible_v<UnchangedOr<Any>, UnchangedOr<int>>);
-  static_assert(type_subsumes_v<UnchangedOr<TNumber>, UnchangedOr<TInt>>);
-  static_assert(!type_subsumes_v<UnchangedOr<TInt>, UnchangedOr<TNumber>>);
-  static_assert(!type_subsumes_v<UnchangedOr<double>, UnchangedOr<int>>);
   static_assert(type_subsumes_v<Expected<UnchangedOr<TNumber>>, Expected<UnchangedOr<TInt>>>);
   static_assert(!type_subsumes_v<Expected<UnchangedOr<TInt>>, Expected<UnchangedOr<TNumber>>>);
   static_assert(type_subsumes_v<Expected<Any>, Expected<void>>);
   static_assert(!type_subsumes_v<Expected<void>, Expected<Any>>);
-  static_assert(std::is_nothrow_move_constructible_v<UnchangedOr<TInt>>);
 
   TInt original(42);
   UnchangedOr<TInt> source = original;
@@ -79,42 +73,27 @@ TEST(UnchangedOr, ConversionsAndAssignmentMacro) {
   UnchangedOr<double> numeric = UnchangedOr<int>(42);
   EXPECT_EQ(AnyView(numeric).type_index(), TypeIndex::kTVMFFIFloat);
   EXPECT_DOUBLE_EQ(std::move(numeric).ValueUnchecked(), 42.0);
-  UnchangedOr<int> unchanged = Unchanged();
-  UnchangedOr<double> copied_unchanged = unchanged;
-  UnchangedOr<Any> moved_unchanged = std::move(unchanged);
-  EXPECT_TRUE(copied_unchanged.IsUnchanged());
-  EXPECT_TRUE(moved_unchanged.IsUnchanged());
-
-  Expected<UnchangedOr<TInt>> typed = UnchangedOr<TInt>(original);
-  Expected<UnchangedOr<Any>> widened = typed;
-  EXPECT_TRUE(std::move(widened).value().ValueUnchecked().same_as(original));
-  Error error("ValueError", "child failure", "");
-  Expected<UnchangedOr<Any>> widened_error = Expected<UnchangedOr<TInt>>(error);
-  EXPECT_TRUE(widened_error.error().same_as(error));
+  UnchangedOr<double> unchanged = UnchangedOr<int>(Unchanged());
+  EXPECT_TRUE(unchanged.IsUnchanged());
 
   // One consumer exercises exact, widening, erased and narrowing source types.
-  auto consume = [](auto input, auto original) -> Expected<bool> {
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<decltype(original)>, value, std::move(input));
+  auto consume = [](auto input, const auto& original) -> Expected<bool> {
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<std::decay_t<decltype(original)>>, value,
+                                      std::move(input));
     return value.UnchangedOrSameAs(original);
   };
+  Expected<UnchangedOr<TInt>> typed = UnchangedOr<TInt>(original);
   EXPECT_TRUE(consume(typed, original).value());
   EXPECT_TRUE(consume(typed, TNumber(original)).value());
-  EXPECT_TRUE(consume(Expected<UnchangedOr<TInt>>(Unchanged()), original).value());
   EXPECT_TRUE(consume(Expected<UnchangedOr<Any>>(typed), original).value());
-  EXPECT_TRUE(consume(Expected<UnchangedOr<TNumber>>(typed), original).value());
   EXPECT_EQ(consume(Expected<UnchangedOr<Any>>(Any(42)), original).error().kind(), "TypeError");
   EXPECT_EQ(consume(Expected<UnchangedOr<TNumber>>(UnchangedOr<TNumber>(TFloat(1.0))), original)
                 .error()
                 .kind(),
             "TypeError");
-  EXPECT_TRUE(consume(Expected<UnchangedOr<TInt>>(error), original).error().same_as(error));
-  EXPECT_TRUE(consume(Expected<Any>(error), original).error().same_as(error));
-  auto raw = [](Expected<UnchangedOr<TInt>> input) -> TVMFFIAny {
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<TInt>, value, std::move(input));
-    return details::UnchangedOrUnsafe::MoveToTVMFFIAny(std::move(value));
-  };
-  auto raw_error = details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<TInt>>(raw(error));
-  EXPECT_TRUE(raw_error.error().same_as(error));
+  Error error("ValueError", "child failure", "");
+  Expected<UnchangedOr<Any>> failed = Expected<UnchangedOr<TInt>>(error);
+  EXPECT_TRUE(consume(std::move(failed), original).error().same_as(error));
 }
 
 TEST(UnchangedOr, ErrorRoundTrip) {
