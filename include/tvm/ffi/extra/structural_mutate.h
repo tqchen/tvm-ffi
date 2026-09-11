@@ -52,6 +52,11 @@ namespace ffi {
 class StructuralMutatorObj;
 template <typename T>
 class UnchangedOr;
+
+/*! \brief Whether an UnchangedOr replacement can reuse another replacement's storage. */
+template <typename T, typename U>
+inline constexpr bool type_subsumes_v<UnchangedOr<T>, UnchangedOr<U>> = type_subsumes_v<T, U>;
+
 template <typename Parent, WalkOrder order, typename... Callbacks>
 class StructuralMapEngine;
 template <typename Parent, WalkOrder order>
@@ -213,6 +218,24 @@ class UnchangedOr {
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
   TVM_FFI_INLINE UnchangedOr(T value) : data_(Any(std::move(value))) {}
 
+  /*!
+   * \brief Implicit converting constructor from another replacement type.
+   * \tparam U Source replacement type whose storage is subsumed by or implicitly convertible to T.
+   * \param other The result to convert, copied from an lvalue or moved from an rvalue.
+   */
+  template <typename U,
+            typename = std::enable_if_t<type_subsumes_v<T, U> || std::is_convertible_v<U, T>>>
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE UnchangedOr(UnchangedOr<U> other) {
+    if constexpr (type_subsumes_v<T, U>) {
+      // Reuse materialized storage, including the unchanged marker.
+      data_ = std::move(other.data_);
+    } else {
+      data_ =
+          other.IsUnchanged() ? std::move(other.data_) : Any(T(std::move(other).ValueUnchecked()));
+    }
+  }
+
   /// \cond Doxygen_Suppress
   TVM_FFI_INLINE UnchangedOr(const UnchangedOr&) = default;
   TVM_FFI_INLINE UnchangedOr(UnchangedOr&&) noexcept = default;
@@ -282,6 +305,8 @@ class UnchangedOr {
   }
 
  private:
+  template <typename>
+  friend class UnchangedOr;
   friend struct details::UnchangedOrUnsafe;
   template <typename, typename>
   friend struct TypeTraits;
@@ -1876,7 +1901,7 @@ inline constexpr bool use_default_type_traits_v<UnchangedOr<T>> = false;
 template <typename T>
 struct TypeTraits<UnchangedOr<T>> : public TypeTraitsBase {
   TVM_FFI_INLINE static void CopyToAnyView(const UnchangedOr<T>& src, TVMFFIAny* result) {
-    *result = src.data_.CopyToTVMFFIAny();
+    *result = AnyView(src.data_).CopyToTVMFFIAny();
   }
 
   TVM_FFI_INLINE static void MoveToAny(UnchangedOr<T> src, TVMFFIAny* result) {
