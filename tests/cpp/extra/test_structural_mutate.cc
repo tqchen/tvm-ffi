@@ -54,6 +54,48 @@ static_assert(
 
 Expected<UnchangedOr<String>> ReturnTypedUnchangedExpected() noexcept { return Unchanged(); }
 
+TEST(UnchangedOr, ConversionsAndAssignmentMacro) {
+  static_assert(!std::is_convertible_v<UnchangedOr<Any>, UnchangedOr<int>>);
+  static_assert(type_subsumes_v<Expected<UnchangedOr<TNumber>>, Expected<UnchangedOr<TInt>>>);
+  static_assert(!type_subsumes_v<Expected<UnchangedOr<TInt>>, Expected<UnchangedOr<TNumber>>>);
+  static_assert(type_subsumes_v<Expected<Any>, Expected<void>>);
+  static_assert(!type_subsumes_v<Expected<void>, Expected<Any>>);
+
+  TInt original(42);
+  UnchangedOr<TInt> source = original;
+  UnchangedOr<Any> copied = std::as_const(source);
+  UnchangedOr<TNumber> moved = std::move(source);
+  EXPECT_EQ(original.use_count(), 3);
+  EXPECT_TRUE(std::move(copied).ValueUnchecked().same_as(original));
+  EXPECT_TRUE(std::move(moved).ValueUnchecked().same_as(original));
+  EXPECT_EQ(original.use_count(), 1);
+
+  UnchangedOr<double> numeric = UnchangedOr<int>(42);
+  EXPECT_EQ(AnyView(numeric).type_index(), TypeIndex::kTVMFFIFloat);
+  EXPECT_DOUBLE_EQ(std::move(numeric).ValueUnchecked(), 42.0);
+  UnchangedOr<double> unchanged = UnchangedOr<int>(Unchanged());
+  EXPECT_TRUE(unchanged.IsUnchanged());
+
+  // One consumer exercises exact, widening, erased and narrowing source types.
+  auto consume = [](auto input, const auto& original) -> Expected<bool> {
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<std::decay_t<decltype(original)>>, value,
+                                      std::move(input));
+    return value.UnchangedOrSameAs(original);
+  };
+  Expected<UnchangedOr<TInt>> typed = UnchangedOr<TInt>(original);
+  EXPECT_TRUE(consume(typed, original).value());
+  EXPECT_TRUE(consume(typed, TNumber(original)).value());
+  EXPECT_TRUE(consume(Expected<UnchangedOr<Any>>(typed), original).value());
+  EXPECT_EQ(consume(Expected<UnchangedOr<Any>>(Any(42)), original).error().kind(), "TypeError");
+  EXPECT_EQ(consume(Expected<UnchangedOr<TNumber>>(UnchangedOr<TNumber>(TFloat(1.0))), original)
+                .error()
+                .kind(),
+            "TypeError");
+  Error error("ValueError", "child failure", "");
+  Expected<UnchangedOr<Any>> failed = Expected<UnchangedOr<TInt>>(error);
+  EXPECT_TRUE(consume(std::move(failed), original).error().same_as(error));
+}
+
 TEST(UnchangedOr, ErrorRoundTrip) {
   static_assert(std::is_copy_constructible_v<UnchangedOr<String>>);
 

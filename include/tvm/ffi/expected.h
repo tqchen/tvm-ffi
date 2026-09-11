@@ -76,6 +76,12 @@ Unexpected(E) -> Unexpected<E>;
 template <typename T>
 class Expected;
 
+/// \cond Doxygen_Suppress
+/*! \brief Whether an Expected success value can reuse another success value's storage. */
+template <typename T, typename U>
+inline constexpr bool type_subsumes_v<Expected<T>, Expected<U>> = type_subsumes_v<T, U>;
+/// \endcond
+
 namespace details {
 
 struct ExpectedUnsafe;
@@ -178,17 +184,19 @@ class Expected {
             typename = std::enable_if_t<!std::is_void_v<U> &&
                                         (type_subsumes_v<T, U> || std::is_convertible_v<U, T>)>>
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  TVM_FFI_INLINE Expected(Expected<U> other) {
-    if constexpr (type_subsumes_v<T, U>) {
-      // data_ holds a T or an Error. Subsumption proves the source representation already
-      // satisfies that invariant, so the Any moves without inspecting its state. Do not make
-      // this unconditional: value() reads back through MoveFromAnyAfterCheck<T>, whose check is
-      // the success/error state, not the type.
-      data_ = std::move(other.data_);
-    } else {
-      data_ = other.is_err() ? Any(std::move(other).error()) : Any(T(std::move(other).value()));
-    }
-  }
+  TVM_FFI_INLINE Expected(Expected<U> other)
+      : data_([&other]() {
+          if constexpr (type_subsumes_v<T, U>) {
+            // data_ holds a T or an Error. Subsumption proves the source representation already
+            // satisfies that invariant, so adopt the raw storage without inspecting its state.
+            // Do not make this unconditional: value() checks the success/error state, not the type.
+            return details::AnyUnsafe::MoveTVMFFIAnyRawToAny(
+                details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(other.data_)));
+          } else {
+            return other.is_err() ? Any(std::move(other).error())
+                                  : Any(T(std::move(other).value()));
+          }
+        }()) {}
 
   /*!
    * \brief Implicit constructor from an error.

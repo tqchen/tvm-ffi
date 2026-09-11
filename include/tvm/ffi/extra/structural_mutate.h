@@ -52,6 +52,13 @@ namespace ffi {
 class StructuralMutatorObj;
 template <typename T>
 class UnchangedOr;
+
+/// \cond Doxygen_Suppress
+/*! \brief Whether an UnchangedOr replacement can reuse another replacement's storage. */
+template <typename T, typename U>
+inline constexpr bool type_subsumes_v<UnchangedOr<T>, UnchangedOr<U>> = type_subsumes_v<T, U>;
+/// \endcond
+
 template <typename Parent, WalkOrder order, typename... Callbacks>
 class StructuralMapEngine;
 template <typename Parent, WalkOrder order>
@@ -213,6 +220,26 @@ class UnchangedOr {
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
   TVM_FFI_INLINE UnchangedOr(T value) : data_(Any(std::move(value))) {}
 
+  /*!
+   * \brief Implicit converting constructor from another replacement type.
+   * \tparam U Source replacement type whose storage is subsumed by or implicitly convertible to T.
+   * \param other The result to convert, copied from an lvalue or moved from an rvalue.
+   */
+  template <typename U,
+            typename = std::enable_if_t<type_subsumes_v<T, U> || std::is_convertible_v<U, T>>>
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE UnchangedOr(UnchangedOr<U> other)
+      : data_([&other]() {
+          if constexpr (type_subsumes_v<T, U>) {
+            // Reuse materialized storage, including the unchanged marker.
+            return details::AnyUnsafe::MoveTVMFFIAnyRawToAny(
+                details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(other.data_)));
+          } else {
+            return other.IsUnchanged() ? std::move(other.data_)
+                                       : Any(T(std::move(other).ValueUnchecked()));
+          }
+        }()) {}
+
   /// \cond Doxygen_Suppress
   TVM_FFI_INLINE UnchangedOr(const UnchangedOr&) = default;
   TVM_FFI_INLINE UnchangedOr(UnchangedOr&&) noexcept = default;
@@ -282,6 +309,8 @@ class UnchangedOr {
   }
 
  private:
+  template <typename>
+  friend class UnchangedOr;
   friend struct details::UnchangedOrUnsafe;
   template <typename, typename>
   friend struct TypeTraits;
@@ -850,28 +879,31 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
 
 namespace details {
 /// \cond Doxygen_Suppress
-// Return from the current raw or same-T Expected mutation function if Result is an Error.
+// Return an error from the current raw or Expected mutation function.
 // The rvalue-only helper lets the enclosing return type select the representation.
-#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result)                                \
-  do {                                                                             \
-    auto&& tvm_ffi_res_ = (Result);                                                \
-    if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.is_err())) {                            \
-      return ::tvm::ffi::details::ExpectedReturnHelper(::std::move(tvm_ffi_res_)); \
-    }                                                                              \
+#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result)                   \
+  do {                                                                \
+    auto&& tvm_ffi_res_ = (Result);                                   \
+    if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.is_err())) {               \
+      return ::tvm::ffi::details::UnexpectedReturnHelper(             \
+          ::tvm::ffi::Unexpected(::std::move(tvm_ffi_res_).error())); \
+    }                                                                 \
   } while (0)
 
 /// \endcond
 
 /// \cond Doxygen_Suppress
-#define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Type, Name, ResultExpr)    \
-  auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */             \
-  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result);                                     \
-  if (TVM_FFI_PREDICT_FALSE(!::tvm::ffi::details::AnyUnsafe::CheckAnyStrict<Type>( \
-          ::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))) {                \
-    return ::tvm::ffi::details::SMutateDeclaredTypeError();                        \
-  }                                                                                \
-  Type Name = /* NOLINT(bugprone-macro-parentheses) */                             \
-      ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                 \
+#define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Type, Name, ResultExpr)               \
+  auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */                        \
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result);                                                \
+  if constexpr (!::tvm::ffi::type_subsumes_v<::tvm::ffi::Expected<Type>, decltype(Result)>) { \
+    if (TVM_FFI_PREDICT_FALSE(!::tvm::ffi::details::AnyUnsafe::CheckAnyStrict<Type>(          \
+            ::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))) {                         \
+      return ::tvm::ffi::details::SMutateDeclaredTypeError();                                 \
+    }                                                                                         \
+  }                                                                                           \
+  Type Name = /* NOLINT(bugprone-macro-parentheses) */                                        \
+      ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                            \
           ::std::move(::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))
 /// \endcond
 
@@ -880,10 +912,11 @@ namespace details {
  *
  * ``Type`` must be concrete; use a type alias when it contains a top-level comma. A type mismatch
  * returns ``TypeError`` through the surrounding raw or ``Expected`` function without throwing,
- * reported with a fixed string so a correct hook pays only one predicted-not-taken branch per
- * field. Its early returns work from either a raw ``TVMFFIAny`` hook or an
- * ``Expected<UnchangedOr<Any>>`` helper. This macro declares ``Name`` into the enclosing scope and
- * must be used in a braced block, never as an unbraced control-flow body.
+ * reported with a fixed string. The check is omitted when the declared type subsumes the result's
+ * success type. Its early returns work from either a raw ``TVMFFIAny`` hook or an
+ * ``Expected<T>`` helper, including one with a different success type. This macro declares ``Name``
+ * into the enclosing scope and must be used in a braced block, never as an unbraced control-flow
+ * body.
  *
  * Example:
  * \code{.cpp}
@@ -1876,7 +1909,7 @@ inline constexpr bool use_default_type_traits_v<UnchangedOr<T>> = false;
 template <typename T>
 struct TypeTraits<UnchangedOr<T>> : public TypeTraitsBase {
   TVM_FFI_INLINE static void CopyToAnyView(const UnchangedOr<T>& src, TVMFFIAny* result) {
-    *result = src.data_.CopyToTVMFFIAny();
+    *result = AnyView(src.data_).CopyToTVMFFIAny();
   }
 
   TVM_FFI_INLINE static void MoveToAny(UnchangedOr<T> src, TVMFFIAny* result) {
