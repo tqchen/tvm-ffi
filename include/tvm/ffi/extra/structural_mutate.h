@@ -228,15 +228,17 @@ class UnchangedOr {
   template <typename U,
             typename = std::enable_if_t<type_subsumes_v<T, U> || std::is_convertible_v<U, T>>>
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  TVM_FFI_INLINE UnchangedOr(UnchangedOr<U> other) {
-    if constexpr (type_subsumes_v<T, U>) {
-      // Reuse materialized storage, including the unchanged marker.
-      data_ = std::move(other.data_);
-    } else {
-      data_ =
-          other.IsUnchanged() ? std::move(other.data_) : Any(T(std::move(other).ValueUnchecked()));
-    }
-  }
+  TVM_FFI_INLINE UnchangedOr(UnchangedOr<U> other)
+      : data_([&other]() {
+          if constexpr (type_subsumes_v<T, U>) {
+            // Reuse materialized storage, including the unchanged marker.
+            return details::AnyUnsafe::MoveTVMFFIAnyRawToAny(
+                details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(other.data_)));
+          } else {
+            return other.IsUnchanged() ? std::move(other.data_)
+                                       : Any(T(std::move(other).ValueUnchecked()));
+          }
+        }()) {}
 
   /// \cond Doxygen_Suppress
   TVM_FFI_INLINE UnchangedOr(const UnchangedOr&) = default;
