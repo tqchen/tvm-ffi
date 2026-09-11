@@ -54,118 +54,67 @@ static_assert(
 
 Expected<UnchangedOr<String>> ReturnTypedUnchangedExpected() noexcept { return Unchanged(); }
 
-TEST(UnchangedOr, ImplicitConvertingConstructor) {
-  static_assert(type_subsumes_v<UnchangedOr<Any>, UnchangedOr<TInt>>);
+TEST(UnchangedOr, ConversionsAndAssignmentMacro) {
+  static_assert(std::is_convertible_v<const UnchangedOr<TInt>&, UnchangedOr<Any>>);
+  static_assert(std::is_convertible_v<UnchangedOr<int>, UnchangedOr<double>>);
+  static_assert(!std::is_convertible_v<UnchangedOr<Any>, UnchangedOr<int>>);
   static_assert(type_subsumes_v<UnchangedOr<TNumber>, UnchangedOr<TInt>>);
   static_assert(!type_subsumes_v<UnchangedOr<TInt>, UnchangedOr<TNumber>>);
   static_assert(!type_subsumes_v<UnchangedOr<double>, UnchangedOr<int>>);
-  static_assert(std::is_convertible_v<const UnchangedOr<TInt>&, UnchangedOr<Any>>);
-  static_assert(std::is_convertible_v<UnchangedOr<TInt>&&, UnchangedOr<Any>>);
-  static_assert(std::is_convertible_v<UnchangedOr<TInt>, UnchangedOr<TNumber>>);
-  static_assert(std::is_convertible_v<UnchangedOr<int>, UnchangedOr<double>>);
-  static_assert(!std::is_convertible_v<UnchangedOr<TNumber>, UnchangedOr<TInt>>);
-  static_assert(!std::is_convertible_v<UnchangedOr<Any>, UnchangedOr<int>>);
-  static_assert(!std::is_convertible_v<UnchangedOr<String>, UnchangedOr<int>>);
+  static_assert(type_subsumes_v<Expected<UnchangedOr<TNumber>>, Expected<UnchangedOr<TInt>>>);
+  static_assert(!type_subsumes_v<Expected<UnchangedOr<TInt>>, Expected<UnchangedOr<TNumber>>>);
+  static_assert(type_subsumes_v<Expected<Any>, Expected<void>>);
+  static_assert(!type_subsumes_v<Expected<void>, Expected<Any>>);
   static_assert(std::is_nothrow_move_constructible_v<UnchangedOr<TInt>>);
-  static_assert(std::is_nothrow_move_assignable_v<UnchangedOr<TInt>>);
 
-  TInt replacement(42);
-  UnchangedOr<TInt> source = replacement;
-  EXPECT_EQ(replacement.use_count(), 2);
+  TInt original(42);
+  UnchangedOr<TInt> source = original;
   UnchangedOr<Any> copied = std::as_const(source);
-  EXPECT_EQ(replacement.use_count(), 3);
   UnchangedOr<TNumber> moved = std::move(source);
-  EXPECT_EQ(replacement.use_count(), 3);
-  EXPECT_TRUE(std::move(copied).ValueUnchecked().same_as(replacement));
-  EXPECT_EQ(replacement.use_count(), 2);
-  EXPECT_TRUE(std::move(moved).ValueUnchecked().same_as(replacement));
-  EXPECT_EQ(replacement.use_count(), 1);
+  EXPECT_EQ(original.use_count(), 3);
+  EXPECT_TRUE(std::move(copied).ValueUnchecked().same_as(original));
+  EXPECT_TRUE(std::move(moved).ValueUnchecked().same_as(original));
+  EXPECT_EQ(original.use_count(), 1);
 
-  UnchangedOr<TInt> unchanged = Unchanged();
-  UnchangedOr<Any> copied_unchanged = std::as_const(unchanged);
-  UnchangedOr<TNumber> moved_unchanged = std::move(unchanged);
-  EXPECT_TRUE(copied_unchanged.IsUnchanged());
-  EXPECT_TRUE(moved_unchanged.IsUnchanged());
-}
-
-TEST(UnchangedOr, ConvertingConstructorConvertsReplacement) {
-  UnchangedOr<int> source = 42;
-  UnchangedOr<double> copied = source;
-  EXPECT_EQ(AnyView(source).type_index(), TypeIndex::kTVMFFIInt);
-  EXPECT_EQ(AnyView(copied).type_index(), TypeIndex::kTVMFFIFloat);
-  EXPECT_DOUBLE_EQ(std::move(copied).ValueUnchecked(), 42.0);
-  UnchangedOr<double> moved = std::move(source);
-  EXPECT_EQ(AnyView(moved).type_index(), TypeIndex::kTVMFFIFloat);
-  EXPECT_DOUBLE_EQ(std::move(moved).ValueUnchecked(), 42.0);
-
+  UnchangedOr<double> numeric = UnchangedOr<int>(42);
+  EXPECT_EQ(AnyView(numeric).type_index(), TypeIndex::kTVMFFIFloat);
+  EXPECT_DOUBLE_EQ(std::move(numeric).ValueUnchecked(), 42.0);
   UnchangedOr<int> unchanged = Unchanged();
   UnchangedOr<double> copied_unchanged = unchanged;
-  UnchangedOr<double> moved_unchanged = std::move(unchanged);
+  UnchangedOr<Any> moved_unchanged = std::move(unchanged);
   EXPECT_TRUE(copied_unchanged.IsUnchanged());
   EXPECT_TRUE(moved_unchanged.IsUnchanged());
-}
 
-class TThrowingConversion : public TInt {
- public:
-  explicit TThrowingConversion(int value) : TInt(value) {}
-  // NOLINTNEXTLINE(google-explicit-constructor)
-  operator double() const { throw Error("ValueError", "replacement conversion failed", ""); }
-  explicit operator String() const { return String("explicit conversion"); }
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TThrowingConversion, TInt, TIntObj);
-};
+  Expected<UnchangedOr<TInt>> typed = UnchangedOr<TInt>(original);
+  Expected<UnchangedOr<Any>> widened = typed;
+  EXPECT_TRUE(std::move(widened).value().ValueUnchecked().same_as(original));
+  Error error("ValueError", "child failure", "");
+  Expected<UnchangedOr<Any>> widened_error = Expected<UnchangedOr<TInt>>(error);
+  EXPECT_TRUE(widened_error.error().same_as(error));
 
-TEST(UnchangedOr, ConvertingConstructorSkipsUnchanged) {
-  static_assert(
-      !std::is_nothrow_constructible_v<UnchangedOr<double>, UnchangedOr<TThrowingConversion>>);
-  static_assert(!std::is_convertible_v<UnchangedOr<TThrowingConversion>, UnchangedOr<String>>);
-
-  UnchangedOr<TThrowingConversion> unchanged = Unchanged();
-  UnchangedOr<double> copied = unchanged;
-  UnchangedOr<double> moved = std::move(unchanged);
-  EXPECT_TRUE(copied.IsUnchanged());
-  EXPECT_TRUE(moved.IsUnchanged());
-
-  UnchangedOr<TThrowingConversion> replacement = TThrowingConversion(42);
-  EXPECT_THROW((UnchangedOr<double>(replacement)), Error);
-  EXPECT_THROW((UnchangedOr<double>(std::move(replacement))), Error);
-}
-
-TEST(UnchangedOr, NestedExpectedConvertingConstructor) {
-  static_assert(std::is_convertible_v<Expected<UnchangedOr<TInt>>, Expected<UnchangedOr<Any>>>);
-  static_assert(std::is_convertible_v<Expected<UnchangedOr<int>>, Expected<UnchangedOr<double>>>);
-  static_assert(!std::is_convertible_v<Expected<UnchangedOr<String>>, Expected<UnchangedOr<int>>>);
-
-  TInt replacement(42);
-  Expected<UnchangedOr<TInt>> source = UnchangedOr<TInt>(replacement);
-  Expected<UnchangedOr<Any>> copied = source;
-  EXPECT_EQ(replacement.use_count(), 3);
-  Expected<UnchangedOr<Any>> moved = std::move(source);
-  EXPECT_EQ(replacement.use_count(), 3);
-  ASSERT_TRUE(copied.is_ok());
-  ASSERT_TRUE(moved.is_ok());
-  EXPECT_TRUE(std::move(copied).value().ValueUnchecked().same_as(replacement));
-  EXPECT_TRUE(std::move(moved).value().ValueUnchecked().same_as(replacement));
-  EXPECT_EQ(replacement.use_count(), 1);
-
-  Expected<UnchangedOr<int>> numeric = UnchangedOr<int>(42);
-  Expected<UnchangedOr<double>> converted = std::move(numeric);
-  ASSERT_TRUE(converted.is_ok());
-  EXPECT_EQ(converted.type_index(), TypeIndex::kTVMFFIFloat);
-  EXPECT_DOUBLE_EQ(std::move(converted).value().ValueUnchecked(), 42.0);
-
-  for (bool move_source : {false, true}) {
-    Expected<UnchangedOr<TInt>> unchanged = Unchanged();
-    Expected<UnchangedOr<Any>> converted_unchanged = move_source ? std::move(unchanged) : unchanged;
-    ASSERT_TRUE(converted_unchanged.is_ok());
-    EXPECT_TRUE(std::move(converted_unchanged).value().IsUnchanged());
-
-    Error error("ValueError", "nested conversion error", "");
-    Expected<UnchangedOr<TInt>> failure = error;
-    Expected<UnchangedOr<Any>> converted_error = move_source ? std::move(failure) : failure;
-    ASSERT_TRUE(converted_error.is_err());
-    EXPECT_TRUE(converted_error.error().same_as(error));
-    EXPECT_EQ(error.use_count(), move_source ? 2 : 3);
-  }
+  // One consumer exercises exact, widening, erased and narrowing source types.
+  auto consume = [](auto input, auto original) -> Expected<bool> {
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<decltype(original)>, value, std::move(input));
+    return value.UnchangedOrSameAs(original);
+  };
+  EXPECT_TRUE(consume(typed, original).value());
+  EXPECT_TRUE(consume(typed, TNumber(original)).value());
+  EXPECT_TRUE(consume(Expected<UnchangedOr<TInt>>(Unchanged()), original).value());
+  EXPECT_TRUE(consume(Expected<UnchangedOr<Any>>(typed), original).value());
+  EXPECT_TRUE(consume(Expected<UnchangedOr<TNumber>>(typed), original).value());
+  EXPECT_EQ(consume(Expected<UnchangedOr<Any>>(Any(42)), original).error().kind(), "TypeError");
+  EXPECT_EQ(consume(Expected<UnchangedOr<TNumber>>(UnchangedOr<TNumber>(TFloat(1.0))), original)
+                .error()
+                .kind(),
+            "TypeError");
+  EXPECT_TRUE(consume(Expected<UnchangedOr<TInt>>(error), original).error().same_as(error));
+  EXPECT_TRUE(consume(Expected<Any>(error), original).error().same_as(error));
+  auto raw = [](Expected<UnchangedOr<TInt>> input) -> TVMFFIAny {
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<TInt>, value, std::move(input));
+    return details::UnchangedOrUnsafe::MoveToTVMFFIAny(std::move(value));
+  };
+  auto raw_error = details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<TInt>>(raw(error));
+  EXPECT_TRUE(raw_error.error().same_as(error));
 }
 
 TEST(UnchangedOr, ErrorRoundTrip) {

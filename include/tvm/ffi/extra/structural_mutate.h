@@ -875,28 +875,31 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
 
 namespace details {
 /// \cond Doxygen_Suppress
-// Return from the current raw or same-T Expected mutation function if Result is an Error.
+// Return an error from the current raw or Expected mutation function.
 // The rvalue-only helper lets the enclosing return type select the representation.
-#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result)                                \
-  do {                                                                             \
-    auto&& tvm_ffi_res_ = (Result);                                                \
-    if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.is_err())) {                            \
-      return ::tvm::ffi::details::ExpectedReturnHelper(::std::move(tvm_ffi_res_)); \
-    }                                                                              \
+#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result)                   \
+  do {                                                                \
+    auto&& tvm_ffi_res_ = (Result);                                   \
+    if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.is_err())) {               \
+      return ::tvm::ffi::details::UnexpectedReturnHelper(             \
+          ::tvm::ffi::Unexpected(::std::move(tvm_ffi_res_).error())); \
+    }                                                                 \
   } while (0)
 
 /// \endcond
 
 /// \cond Doxygen_Suppress
-#define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Type, Name, ResultExpr)    \
-  auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */             \
-  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result);                                     \
-  if (TVM_FFI_PREDICT_FALSE(!::tvm::ffi::details::AnyUnsafe::CheckAnyStrict<Type>( \
-          ::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))) {                \
-    return ::tvm::ffi::details::SMutateDeclaredTypeError();                        \
-  }                                                                                \
-  Type Name = /* NOLINT(bugprone-macro-parentheses) */                             \
-      ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                 \
+#define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Type, Name, ResultExpr)               \
+  auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */                        \
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result);                                                \
+  if constexpr (!::tvm::ffi::type_subsumes_v<::tvm::ffi::Expected<Type>, decltype(Result)>) { \
+    if (TVM_FFI_PREDICT_FALSE(!::tvm::ffi::details::AnyUnsafe::CheckAnyStrict<Type>(          \
+            ::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))) {                         \
+      return ::tvm::ffi::details::SMutateDeclaredTypeError();                                 \
+    }                                                                                         \
+  }                                                                                           \
+  Type Name = /* NOLINT(bugprone-macro-parentheses) */                                        \
+      ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                            \
           ::std::move(::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))
 /// \endcond
 
@@ -905,10 +908,11 @@ namespace details {
  *
  * ``Type`` must be concrete; use a type alias when it contains a top-level comma. A type mismatch
  * returns ``TypeError`` through the surrounding raw or ``Expected`` function without throwing,
- * reported with a fixed string so a correct hook pays only one predicted-not-taken branch per
- * field. Its early returns work from either a raw ``TVMFFIAny`` hook or an
- * ``Expected<UnchangedOr<Any>>`` helper. This macro declares ``Name`` into the enclosing scope and
- * must be used in a braced block, never as an unbraced control-flow body.
+ * reported with a fixed string. The check is omitted when the declared type subsumes the result's
+ * success type. Its early returns work from either a raw ``TVMFFIAny`` hook or an
+ * ``Expected<T>`` helper, including one with a different success type. This macro declares ``Name``
+ * into the enclosing scope and must be used in a braced block, never as an unbraced control-flow
+ * body.
  *
  * Example:
  * \code{.cpp}
