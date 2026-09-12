@@ -1031,7 +1031,6 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
   /*! \brief Return the empty state tuple exposed to typed map callbacks. */
   TVM_FFI_INLINE StateTupleType StateTuple() const noexcept { return {}; }
 
- private:
   /// \cond Doxygen_Suppress
   // Out of line so its strings stay out of the per-node dispatch function, which TryLink inlines
   // into. Shared by the typed and dynamic engines below.
@@ -1069,7 +1068,6 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
     return details::ExpectedUnsafe::MoveToTVMFFIAny(self->VarRemapSetImpl(var, mapped_value));
   }
 
- protected:
   /*!
    * \brief Append \p node to a failed result's mutate error context.
    * \param result The failed result whose Error is annotated.
@@ -1084,9 +1082,6 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
       ::tvm::ffi::details::UpdateVisitErrorContext(err, node.cast<ObjectRef>());
     }
   }
-
-  /*! \brief Whether the variable-remap environment is empty. */
-  TVM_FFI_INLINE bool VarRemapEmpty() const noexcept { return var_remap_.empty(); }
 
   /*!
    * \brief Look up a replacement in the identity-substitution environment.
@@ -1127,7 +1122,6 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
     return Expected<void>();
   }
 
- private:
   template <typename Parent, WalkOrder order, typename... Callbacks>
   friend class StructuralMapEngine;
   template <typename Parent, WalkOrder order>

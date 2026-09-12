@@ -315,7 +315,6 @@ struct MutateCount {
 
 class StructuralMapWithMutateCount : public StructuralMapEngineBase {
  public:
-  using StructuralMapEngineBase::VarRemapEmpty;
   using StateTupleType = std::tuple<const MutateCount&, const int&>;
 
   explicit StructuralMapWithMutateCount(const StructuralMutatorVTable* vtable)
@@ -375,12 +374,10 @@ TEST(StructuralMap, ParentLayerOwnsBothDescentsAndProvidesState) {
   auto engine = make_object<Mutator>(std::move(identity), std::move(map_var));
   StructuralMutator mutator(engine);
   TVar key("key");
-  EXPECT_TRUE(engine->VarRemapEmpty());
   EXPECT_EQ(mutator->VarRemapGetExpected(key).value(), nullptr);
   EXPECT_EQ(mutator->VarRemapGetExpected(nullptr).error().kind(), "TypeError");
   EXPECT_EQ(mutator->VarRemapGetExpected(1).error().kind(), "TypeError");
   mutator->VarRemapSetExpected(key, Any(Unchanged())).value();
-  EXPECT_FALSE(engine->VarRemapEmpty());
 
   ASSERT_FALSE(mutator->MutateExpected(String("unmatched")).is_err());
   AnyArray rebuild_root{int64_t{1}};
