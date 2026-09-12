@@ -98,10 +98,6 @@ class StructuralWalkWithVisitCount : public Parent {
   }
 
  protected:
-  TVM_FFI_INLINE TVMFFIAny DefaultVisitRaw(AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(DefaultVisitExpected(value));
-  }
-
   TVM_FFI_INLINE StateTupleType StateTuple() const noexcept {
     return std::tie(visit_count_, visit_tag_);
   }
