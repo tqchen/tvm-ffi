@@ -1085,6 +1085,9 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
     }
   }
 
+  /*! \brief Whether the variable-remap environment is empty. */
+  TVM_FFI_INLINE bool VarRemapEmpty() const noexcept { return var_remap_.empty(); }
+
   /*!
    * \brief Look up a replacement in the identity-substitution environment.
    * \param var The borrowed variable identity to look up.
@@ -1094,6 +1097,7 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
     if (TVM_FFI_PREDICT_FALSE(var.type_index() < TypeIndex::kTVMFFIStaticObjectBegin)) {
       return VarRemapKeyTypeError();
     }
+    if (var_remap_.empty()) return Any(nullptr);
     const Object* var_ptr =
         details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const Object>(var);
     auto it = var_remap_.find(var_ptr);
