@@ -1131,6 +1131,7 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
   template <typename Parent>
   friend class details::StructuralMutateDynEngine;
 
+  /*! \brief Identity-substitution environment keyed by object identity. */
   // Raw-pointer key: IncRef once on first insert, DecRef all keys in the destructor.
   std::unordered_map<const Object*, Any> var_remap_;
 };
