@@ -1031,7 +1031,6 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
   /*! \brief Return the empty state tuple exposed to typed map callbacks. */
   TVM_FFI_INLINE StateTupleType StateTuple() const noexcept { return {}; }
 
- private:
   /// \cond Doxygen_Suppress
   // Out of line so its strings stay out of the per-node dispatch function, which TryLink inlines
   // into. Shared by the typed and dynamic engines below.
@@ -1069,7 +1068,6 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
     return details::ExpectedUnsafe::MoveToTVMFFIAny(self->VarRemapSetImpl(var, mapped_value));
   }
 
- protected:
   /*!
    * \brief Append \p node to a failed result's mutate error context.
    * \param result The failed result whose Error is annotated.
@@ -1094,6 +1092,7 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
     if (TVM_FFI_PREDICT_FALSE(var.type_index() < TypeIndex::kTVMFFIStaticObjectBegin)) {
       return VarRemapKeyTypeError();
     }
+    if (var_remap_.empty()) return Any(nullptr);
     const Object* var_ptr =
         details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const Object>(var);
     auto it = var_remap_.find(var_ptr);
@@ -1123,7 +1122,6 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
     return Expected<void>();
   }
 
- private:
   template <typename Parent, WalkOrder order, typename... Callbacks>
   friend class StructuralMapEngine;
   template <typename Parent, WalkOrder order>
@@ -1133,6 +1131,7 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
   template <typename Parent>
   friend class details::StructuralMutateDynEngine;
 
+  /*! \brief Identity-substitution environment keyed by object identity. */
   // Raw-pointer key: IncRef once on first insert, DecRef all keys in the destructor.
   std::unordered_map<const Object*, Any> var_remap_;
 };

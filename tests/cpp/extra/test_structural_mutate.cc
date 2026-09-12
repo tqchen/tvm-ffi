@@ -373,6 +373,11 @@ TEST(StructuralMap, ParentLayerOwnsBothDescentsAndProvidesState) {
                                       decltype(identity), decltype(map_var)>;
   auto engine = make_object<Mutator>(std::move(identity), std::move(map_var));
   StructuralMutator mutator(engine);
+  TVar key("key");
+  EXPECT_EQ(mutator->VarRemapGetExpected(key).value(), nullptr);
+  EXPECT_EQ(mutator->VarRemapGetExpected(nullptr).error().kind(), "TypeError");
+  EXPECT_EQ(mutator->VarRemapGetExpected(1).error().kind(), "TypeError");
+  mutator->VarRemapSetExpected(key, Any(Unchanged())).value();
 
   ASSERT_FALSE(mutator->MutateExpected(String("unmatched")).is_err());
   AnyArray rebuild_root{int64_t{1}};
