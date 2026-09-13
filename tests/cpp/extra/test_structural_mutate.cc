@@ -54,6 +54,15 @@ static_assert(
 
 Expected<UnchangedOr<String>> ReturnTypedUnchangedExpected() noexcept { return Unchanged(); }
 
+TEST(UnchangedOr, BareValueForwarding) {
+  TInt value(42);
+  auto convert = [](TInt& value) -> Expected<UnchangedOr<Any>> { return value; };
+  EXPECT_TRUE(std::move(convert(value)).value().ValueUnchecked().same_as(value));
+  UnchangedOr<double> numeric = 42;
+  EXPECT_EQ(AnyView(numeric).type_index(), TypeIndex::kTVMFFIFloat);
+  EXPECT_DOUBLE_EQ(std::move(numeric).ValueUnchecked(), 42.0);
+}
+
 TEST(UnchangedOr, ConversionsAndAssignmentMacro) {
   static_assert(!std::is_convertible_v<UnchangedOr<Any>, UnchangedOr<int>>);
   static_assert(type_subsumes_v<Expected<UnchangedOr<TNumber>>, Expected<UnchangedOr<TInt>>>);
