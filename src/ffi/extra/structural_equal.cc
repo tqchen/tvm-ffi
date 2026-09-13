@@ -21,6 +21,7 @@
  *
  * \brief Structural equal implementation.
  */
+#include <tvm/ffi/big_int.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/dict.h>
 #include <tvm/ffi/container/list.h>
@@ -94,6 +95,10 @@ class StructEqualHandler {
              lhs_data->v_int64 == rhs_data->v_int64;
     }
     switch (lhs_data->type_index) {
+      case TypeIndex::kTVMFFIBigInt: {
+        return details::int_ops::EqualFallback(details::BigIntUnsafe::GetArrayView(lhs_data),
+                                               details::BigIntUnsafe::GetArrayView(rhs_data));
+      }
       case TypeIndex::kTVMFFIStr:
       case TypeIndex::kTVMFFIBytes: {
         // compare bytes

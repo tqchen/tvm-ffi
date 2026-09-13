@@ -62,6 +62,12 @@ cdef inline object make_ret_small_bytes(TVMFFIAny result):
     return bytearray_to_bytes(&bytes)
 
 
+cdef object bigint_to_pyint(const TVMFFIAny* value):
+    """Convert a borrowed BigInt to a Python integer."""
+    cdef TVMFFIByteArray data = TVMFFIBigIntGetContentByteArray(value)
+    return TVMFFIPyLongFromBytes(data.data, data.size)
+
+
 cdef inline object make_ret(TVMFFIAny result, const DLPackExchangeAPI* c_ctx_dlpack_api = NULL):
     """convert result to return value."""
     cdef int32_t type_index
@@ -71,6 +77,11 @@ cdef inline object make_ret(TVMFFIAny result, const DLPackExchangeAPI* c_ctx_dlp
         return make_tensor_from_any(result, c_ctx_dlpack_api)
     elif type_index == kTVMFFIOpaquePyObject:
         return make_ret_opaque_object(result)
+    elif type_index == kTVMFFIBigInt:
+        try:
+            return bigint_to_pyint(&result)
+        finally:
+            TVMFFIObjectDecRef(result.v_ptr)
     elif type_index >= kTVMFFIStaticObjectBegin:
         obj = make_ret_object(result)
         if c_ctx_dlpack_api != NULL and isinstance(obj, CContainerBase):
@@ -319,17 +330,26 @@ cdef int TVMFFIPyArgSetterDLPack_(
     return 0
 
 
+cdef public int TVMFFICyArgSetterBigInt(
+    TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
+    PyObject* py_arg, TVMFFIAny* out
+) except -1:
+    """Overflow fallback for the native Python integer setter."""
+    CHECK_CALL(TVMFFIPyLongToBigInt(py_arg, out))
+    if out.type_index >= kTVMFFIStaticObjectBegin:
+        TVMFFIPyPushTempFFIObject(ctx, out.v_ptr)
+    return 0
+
+
 cdef int TVMFFIPyArgSetterIntegral_(
     TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
     PyObject* py_arg, TVMFFIAny* out
 ) except -1:
     """Setter for Integral"""
     cdef object arg = <object>py_arg
-    out.type_index = kTVMFFIInt
-    # keep it in cython so it will also check for fallback cases
-    # where the arg is not exactly the int class
-    out.v_int64 = <long long>arg
-    return 0
+    if not isinstance(arg, int):
+        arg = int(arg)
+    return TVMFFIPyArgSetterInt_(handle, ctx, <PyObject*>arg, out)
 
 
 cdef int TVMFFIPyArgSetterReal_(
@@ -737,9 +757,10 @@ cdef int TVMFFIPyArgSetterIntProtocol_(
 ) except -1:
     """Setter for class with __tvm_ffi_int__() method"""
     cdef object arg = <object>py_arg
-    out.type_index = kTVMFFIInt
-    out.v_int64 = <long long>(arg.__tvm_ffi_int__())
-    return 0
+    cdef object value = arg.__tvm_ffi_int__()
+    if not isinstance(value, int):
+        value = int(value)
+    return TVMFFIPyArgSetterInt_(handle, ctx, <PyObject*>value, out)
 
 
 cdef int TVMFFIPyArgSetterFloatProtocol_(

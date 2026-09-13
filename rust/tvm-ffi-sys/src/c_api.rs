@@ -89,8 +89,10 @@ pub enum TVMFFITypeIndex {
     kTVMFFIDict = 76,
     /// Structural visit interrupt object.
     kTVMFFIVisitInterrupt = 77,
+    /// Arbitrary-precision integer object.
+    kTVMFFIBigInt = 78,
     /// End of the statically allocated object type-index range.
-    kTVMFFIStaticObjectEnd = 78,
+    kTVMFFIStaticObjectEnd = 79,
     /// Start of dynamically allocated object type indices.
     kTVMFFIDynObjectBegin = 128,
 }

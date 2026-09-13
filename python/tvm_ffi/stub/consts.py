@@ -116,6 +116,7 @@ DOC_URL = "https://tvm.apache.org/ffi/packaging/stubgen.html"
 FN_NAME_MAP: dict[str, str] = {}
 
 BUILTIN_TYPE_KEYS = {
+    "ffi.BigInt",
     "ffi.Bytes",
     "ffi.Error",
     "ffi.Function",

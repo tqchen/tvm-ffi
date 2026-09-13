@@ -21,6 +21,7 @@
  * \brief Registry to record dynamic types
  */
 #include <tvm/ffi/any.h>
+#include <tvm/ffi/big_int.h>
 #include <tvm/ffi/c_api.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/dict.h>
@@ -417,6 +418,7 @@ class TypeTable {
     ReserveBuiltinTypeIndex(StaticTypeKey::kTVMFFIUnchanged, TypeIndex::kTVMFFIUnchanged);
     // reserved static type indices for depth 1 object types
     ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIStr, TypeIndex::kTVMFFIStr);
+    ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIBigInt, TypeIndex::kTVMFFIBigInt);
     ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIBytes, TypeIndex::kTVMFFIBytes);
     ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIError, TypeIndex::kTVMFFIError);
     ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIFunction, TypeIndex::kTVMFFIFunction);
@@ -619,6 +621,32 @@ int TVMFFIBytesFromByteArray(const TVMFFIByteArray* input, TVMFFIAny* out) {
   out->type_index = kTVMFFINone;
   tvm::ffi::TypeTraits<tvm::ffi::Bytes>::MoveToAny(tvm::ffi::Bytes(input->data, input->size), out);
   TVM_FFI_SAFE_CALL_END();
+}
+
+int TVMFFIBigIntFromByteArray(const TVMFFIByteArray* input, TVMFFIAny* out) {
+  TVM_FFI_SAFE_CALL_BEGIN();
+  namespace ffi = tvm::ffi;
+  *out = TVMFFIAny{};
+  if (input->size % sizeof(int64_t) != 0) {
+    TVM_FFI_THROW(ValueError) << "BigInt content must contain whole 64-bit words";
+  }
+  size_t size = input->size / sizeof(int64_t);
+  if (size <= 1) {
+    int64_t value = 0;
+    if (size) std::memcpy(&value, input->data, sizeof(value));
+    ffi::TypeTraits<ffi::BigInt>::MoveToAny(ffi::BigInt(value), out);
+  } else {
+    auto ptr = ffi::make_inplace_array_object<ffi::details::BigIntObj, int64_t>(size, size);
+    std::memcpy(ffi::details::BigIntUnsafe::GetMutableData(ptr), input->data, input->size);
+    ffi::TypeTraits<ffi::BigInt>::MoveToAny(ffi::details::BigIntUnsafe::Normalize(std::move(ptr)),
+                                            out);
+  }
+  TVM_FFI_SAFE_CALL_END();
+}
+
+TVMFFIByteArray TVMFFIBigIntGetContentByteArray(const TVMFFIAny* value) {
+  auto view = tvm::ffi::details::BigIntUnsafe::GetArrayView(value);
+  return {reinterpret_cast<const char*>(&view[0]), view.size() * sizeof(int64_t)};
 }
 
 namespace {

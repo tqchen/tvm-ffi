@@ -62,8 +62,10 @@
 #include <cstring>
 #include <exception>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 ///--------------------------------------------------------------------------------
@@ -257,6 +259,94 @@ struct TVMFFIPyArgSetter {
   }
 };
 
+#if PY_BIG_ENDIAN
+// Keep the least-significant word first; only byte order within each word changes.
+inline void TVMFFIPySwapBigIntWordBytes(char* data, size_t size) noexcept {
+  for (size_t i = 0; i < size; i += 8) {
+    std::swap(data[i], data[i + 7]);
+    std::swap(data[i + 1], data[i + 6]);
+    std::swap(data[i + 2], data[i + 5]);
+    std::swap(data[i + 3], data[i + 4]);
+  }
+}
+#endif
+
+// BigInt content is whole signed 64-bit words, least-significant first, with
+// native byte order within each word. Python's byte APIs provide sign padding.
+// The private CPython branches can be removed when support for Python 3.12 and older ends.
+// Return -1 with PyErr set for Python failures: Cython's except? -1 propagates it.
+// FFI import failures leave PyErr clear; CHECK_CALL translates their returned status.
+int TVMFFIPyLongToBigInt(PyObject* value, TVMFFIAny* out) noexcept {
+#if PY_VERSION_HEX >= 0x030D0000
+  Py_ssize_t size = PyLong_AsNativeBytes(value, nullptr, 0, Py_ASNATIVEBYTES_LITTLE_ENDIAN);
+  if (size < 0) return -1;
+  if (size > std::numeric_limits<Py_ssize_t>::max() - 7) {
+    PyErr_NoMemory();
+    return -1;
+  }
+  size = (size + 7) / 8 * 8;
+  PyObject* bytes = PyBytes_FromStringAndSize(nullptr, size);
+  if (bytes == nullptr) return -1;
+  Py_ssize_t written =
+      PyLong_AsNativeBytes(value, PyBytes_AS_STRING(bytes), size, Py_ASNATIVEBYTES_LITTLE_ENDIAN);
+  if (written > size) {
+    PyErr_SetString(PyExc_OverflowError, "Python integer byte conversion truncated");
+  }
+  if (written < 0 || written > size) {
+    Py_DecRef(bytes);
+    return -1;
+  }
+#else
+  size_t bits = _PyLong_NumBits(value);
+  if (bits == std::numeric_limits<size_t>::max() && PyErr_Occurred()) return -1;
+  size_t size_unsigned = bits / 8 + 1;  // Reserve a sign bit, including for positive values.
+  if (size_unsigned > static_cast<size_t>(std::numeric_limits<Py_ssize_t>::max() - 7)) {
+    PyErr_NoMemory();
+    return -1;
+  }
+  Py_ssize_t size = (static_cast<Py_ssize_t>(size_unsigned) + 7) / 8 * 8;
+  PyObject* bytes = PyBytes_FromStringAndSize(nullptr, size);
+  if (bytes == nullptr) return -1;
+  if (_PyLong_AsByteArray(reinterpret_cast<PyLongObject*>(value),
+                          reinterpret_cast<unsigned char*>(PyBytes_AS_STRING(bytes)),
+                          static_cast<size_t>(size), 1, 1) < 0) {
+    Py_DecRef(bytes);
+    return -1;
+  }
+#endif
+#if PY_BIG_ENDIAN
+  TVMFFIPySwapBigIntWordBytes(PyBytes_AS_STRING(bytes), static_cast<size_t>(size));
+#endif
+  TVMFFIByteArray byte_array{PyBytes_AS_STRING(bytes), static_cast<size_t>(size)};
+  int result = TVMFFIBigIntFromByteArray(&byte_array, out);
+  Py_DecRef(bytes);
+  return result;
+}
+
+PyObject* TVMFFIPyLongFromBytes(const char* data, size_t size) noexcept {
+#if PY_BIG_ENDIAN
+  // The content view is borrowed and immutable; swap a binding-owned copy.
+  if (size > static_cast<size_t>(std::numeric_limits<Py_ssize_t>::max())) return PyErr_NoMemory();
+  PyObject* bytes = PyBytes_FromStringAndSize(data, static_cast<Py_ssize_t>(size));
+  if (bytes == nullptr) return nullptr;
+  TVMFFIPySwapBigIntWordBytes(PyBytes_AS_STRING(bytes), size);
+  data = PyBytes_AS_STRING(bytes);
+#endif
+#if PY_VERSION_HEX >= 0x030D0000
+  PyObject* result = PyLong_FromNativeBytes(data, size, Py_ASNATIVEBYTES_LITTLE_ENDIAN);
+#else
+  PyObject* result =
+      _PyLong_FromByteArray(reinterpret_cast<const unsigned char*>(data), size, 1, 1);
+#endif
+#if PY_BIG_ENDIAN
+  Py_DecRef(bytes);
+#endif
+  return result;
+}
+
+__PYX_EXTERN_C int TVMFFICyArgSetterBigInt(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject*,
+                                           TVMFFIAny*);
+
 //---------------------------------------------------------------------------------------------
 // The following section contains predefined setters for common POD types
 // They ar not meant to be used directly, but instead being registered to TVMFFIPyCallManager
@@ -269,15 +359,14 @@ int TVMFFIPyArgSetterFloat_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* 
   return 0;
 }
 
-int TVMFFIPyArgSetterInt_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* arg,
+int TVMFFIPyArgSetterInt_(TVMFFIPyArgSetter* setter, TVMFFIPyCallContext* ctx, PyObject* arg,
                           TVMFFIAny* out) noexcept {
   int overflow = 0;
   out->type_index = kTVMFFIInt;
   out->v_int64 = PyLong_AsLongLongAndOverflow(arg, &overflow);
 
   if (TVM_FFI_PREDICT_FALSE(overflow != 0)) {
-    PyErr_SetString(PyExc_OverflowError, "Python int too large to convert to int64_t");
-    return -1;
+    return TVMFFICyArgSetterBigInt(setter, ctx, arg, out);
   }
   return 0;
 }
@@ -743,14 +832,8 @@ class TVMFFIPyCallManager {
       // a RAII guard so its +1 is released on every exit path, including
       // the C++ exception path (e.g., bad_alloc from ret_ctx construction
       // or SetArgument's emplace).
-#if PY_VERSION_HEX >= 0x03090000
       PyObject* py_result_raw = PyObject_Vectorcall(closure->callable, cb_ctx.py_args,
                                                     static_cast<size_t>(num_args), nullptr);
-#else
-      // backward compatibility for Python 3.8
-      PyObject* py_result_raw = _PyObject_Vectorcall(closure->callable, cb_ctx.py_args,
-                                                     static_cast<size_t>(num_args), nullptr);
-#endif
       struct PyResultGuard {
         PyObject* p;
         ~PyResultGuard() {

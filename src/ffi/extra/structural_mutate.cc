@@ -20,6 +20,7 @@
  * \file src/ffi/extra/structural_mutate.cc
  * \brief Structural mutator and structural map registration.
  */
+#include <tvm/ffi/big_int.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/dict.h>
 #include <tvm/ffi/container/list.h>
@@ -416,6 +417,11 @@ TVM_FFI_STATIC_INIT_BLOCK() {
            });
   refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMutate);
   refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMaybeInplaceMutate);
+  refl::TypeAttrDef<details::BigIntObj>()
+      .attr(refl::type_attr::kStructuralMutate,
+            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateImmutableLeaf)))
+      .attr(refl::type_attr::kStructuralMaybeInplaceMutate,
+            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateImmutableLeaf)));
   refl::TypeAttrDef<details::StringObj>()
       .attr(refl::type_attr::kStructuralMutate,
             reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateImmutableLeaf)))

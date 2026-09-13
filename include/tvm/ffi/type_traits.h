@@ -85,6 +85,8 @@ struct StaticTypeKey {
   static constexpr const char* kTVMFFIBytes = "ffi.Bytes";
   /*! \brief The type key for String */
   static constexpr const char* kTVMFFIStr = "ffi.String";
+  /*! \brief The type key for BigInt */
+  static constexpr const char* kTVMFFIBigInt = "ffi.BigInt";
   /*! \brief The type key for Shape */
   static constexpr const char* kTVMFFIShape = "ffi.Shape";
   /*! \brief The type key for Tensor */

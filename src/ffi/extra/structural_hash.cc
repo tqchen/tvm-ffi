@@ -21,6 +21,7 @@
  *
  * \brief Structural equal implementation.
  */
+#include <tvm/ffi/big_int.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/dict.h>
 #include <tvm/ffi/container/list.h>
@@ -69,6 +70,12 @@ class StructuralHashHandler {
     }
 
     switch (src_data->type_index) {
+      case TypeIndex::kTVMFFIBigInt: {
+        auto words = details::BigIntUnsafe::GetArrayView(src_data);
+        return details::StableHashCombine(
+            src_data->type_index, details::StableHashBytes(reinterpret_cast<const char*>(&words[0]),
+                                                           words.size() * sizeof(int64_t)));
+      }
       case TypeIndex::kTVMFFIStr:
       case TypeIndex::kTVMFFIBytes: {
         // return same hash as AnyHash
@@ -276,7 +283,15 @@ class StructuralHashHandler {
         return details::StableHashCombine(src_data->type_index,
                                           details::StableHashBytes(src_str->data, src_str->size));
       } else {
-        // if the hash of the object is already computed, return it
+        // Canonical integer words give the same value hash before or after visiting an alias.
+        if (src_data->type_index == TypeIndex::kTVMFFIBigInt) {
+          auto words = details::BigIntUnsafe::GetArrayView(src_data);
+          return details::StableHashCombine(
+              src_data->type_index,
+              details::StableHashBytes(reinterpret_cast<const char*>(&words[0]),
+                                       words.size() * sizeof(int64_t)));
+        }
+        // Identity-mapped keys retain their traversal-context hash.
         auto it = hash_memo_.find(src.cast<ObjectRef>());
         if (it != hash_memo_.end()) {
           return it->second;
