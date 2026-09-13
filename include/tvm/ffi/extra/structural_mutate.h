@@ -475,19 +475,28 @@ class StructuralMutatorObj : public Object {
   }
 
   /*!
-   * \brief Apply custom maybe-in-place mutation, or fall back to non-in-place mutation.
+   * \brief Apply default structural mutation with optional in-place permission.
    *
    * \param value The borrowed value to mutate.
+   * \param allow_inplace Whether in-place mutation is permitted. Defaults to true.
+   *        If false, call \ref DefaultMutateExpected.
    * \return The replacement or unchanged marker, or an Error if mutation failed. In-place
    *         changes completed before an Error are not rolled back.
    *
    * \note In-place mutation is explicitly opt-in. A registered
    *       ``__s_maybe_inplace_mutate__`` hook may rely on its input being safe to mutate and owns
    *       any variable-remap handling. When the hook is absent, this method calls
-   *       \ref DefaultMutateExpected.
+   *       \ref DefaultMutateExpected. This method does not check uniqueness. When
+   *       \p allow_inplace is true, the caller must already know that mutating
+   *       \p value in place is safe, including ownership of the path from the root.
+   *
+   * \code
+   * return mutator->DefaultMaybeInplaceMutateExpected(value, allow_inplace);
+   * \endcode
    */
   TVM_FFI_INLINE Expected<UnchangedOr<Any>> DefaultMaybeInplaceMutateExpected(
-      AnyView value) noexcept {
+      AnyView value, bool allow_inplace = true) noexcept {
+    if (!allow_inplace) return DefaultMutateExpected(value);
     return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
         DefaultMaybeInplaceMutateRaw(value));
   }

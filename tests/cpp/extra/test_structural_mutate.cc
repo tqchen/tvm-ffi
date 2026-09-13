@@ -48,6 +48,11 @@ static_assert(
                        std::declval<AnyView>())),
                    Expected<UnchangedOr<Any>>>);
 
+static_assert(
+    std::is_same_v<decltype(std::declval<StructuralMutatorObj&>().DefaultMaybeInplaceMutateExpected(
+                       std::declval<AnyView>(), false)),
+                   Expected<UnchangedOr<Any>>>);
+
 // ---------------------------------------------------------------------------
 // Unchanged result protocol.
 // ---------------------------------------------------------------------------
@@ -538,8 +543,7 @@ TEST(StructuralMutate, CallbackArityControlsInplaceMutation) {
           [&](const AnyArray& value, StructuralMutatorObj* mutator,
               bool allow_inplace) -> Expected<Any> {
             allow_inplace_trace.push_back(allow_inplace);
-            return allow_inplace ? mutator->DefaultMaybeInplaceMutateExpected(value)
-                                 : mutator->DefaultMutateExpected(value);
+            return mutator->DefaultMaybeInplaceMutateExpected(value, allow_inplace);
           },
           [&](int64_t value, StructuralMutatorObj*, bool allow_inplace) -> Expected<Any> {
             allow_inplace_trace.push_back(allow_inplace);
@@ -561,6 +565,92 @@ TEST(StructuralMutate, CallbackArityControlsInplaceMutation) {
   EXPECT_EQ(inplace_mapped[0].cast<int64_t>(), 2);
   EXPECT_EQ(copy_on_write_mapped[0].cast<int64_t>(), 2);
   EXPECT_EQ(allow_inplace_trace, (std::vector<bool>{true, false}));
+}
+
+TEST(StructuralMutate, DefaultDescentInplacePermission) {
+  // Explicit false forces copying even when the callback receives in-place permission.
+  // Explicit true and the one-argument form preserve unique nested container identities.
+  for (int mode : {0, 1, 2}) {
+    SCOPED_TRACE(mode);
+    AnyArray child{int64_t{1}};
+    const Object* child_address = child.get();
+    AnyArray root{Any(std::move(child))};
+    const Object* root_address = root.get();
+    std::vector<bool> permissions;
+    auto mutate = [&](AnyView value, StructuralMutatorObj* mutator,
+                      bool allow_inplace) -> Expected<UnchangedOr<Any>> {
+      if (auto integer = value.as<int64_t>()) return Any(*integer + 1);
+      permissions.push_back(allow_inplace);
+      if (mode == 0) return mutator->DefaultMaybeInplaceMutateExpected(value, false);
+      EXPECT_TRUE(allow_inplace);
+      if (mode == 1) return mutator->DefaultMaybeInplaceMutateExpected(value, true);
+      return mutator->DefaultMaybeInplaceMutateExpected(value);
+    };
+    AnyArray mapped = StructuralMutate(std::move(root), mutate).cast<AnyArray>();
+    AnyArray mapped_child = mapped[0].cast<AnyArray>();
+    EXPECT_EQ(mapped.get() == root_address, mode != 0);
+    EXPECT_EQ(mapped_child.get() == child_address, mode != 0);
+    EXPECT_EQ(mapped_child[0].cast<int64_t>(), 2);
+    EXPECT_EQ(permissions, (std::vector<bool>{true, mode != 0}));
+  }
+}
+
+TEST(StructuralMutate, DefaultDescentForwardsPermissionAndPreservesRecursionControl) {
+  for (bool shared_root : {false, true}) {
+    SCOPED_TRACE(shared_root);
+    AnyArray child{int64_t{1}};
+    AnyArray skipped{int64_t{2}};
+    AnyArray root{child, skipped};
+    Any root_alias = shared_root ? Any(root) : Any();
+    const Object* root_address = root.get();
+    std::vector<bool> permissions;
+    std::vector<int64_t> visited;
+    auto mutate = [&](AnyView value, StructuralMutatorObj* mutator,
+                      bool allow_inplace) -> Expected<UnchangedOr<Any>> {
+      if (auto integer = value.as<int64_t>()) {
+        visited.push_back(*integer);
+        return Any(*integer + 1);
+      }
+      permissions.push_back(allow_inplace);
+      if (value.same_as(skipped)) return Unchanged();
+      return mutator->DefaultMaybeInplaceMutateExpected(value, allow_inplace);
+    };
+    AnyArray mapped = StructuralMutate(std::move(root), mutate).cast<AnyArray>();
+    EXPECT_EQ(mapped.get() == root_address, !shared_root);
+    EXPECT_FALSE(mapped[0].cast<AnyArray>().same_as(child));
+    EXPECT_EQ(mapped[0].cast<AnyArray>()[0].cast<int64_t>(), 2);
+    EXPECT_TRUE(mapped[1].same_as(skipped));
+    EXPECT_EQ(child[0].cast<int64_t>(), 1);
+    EXPECT_EQ(skipped[0].cast<int64_t>(), 2);
+    if (shared_root) {
+      EXPECT_TRUE(root_alias.cast<AnyArray>()[0].same_as(child));
+    }
+    EXPECT_EQ(permissions, (std::vector<bool>{!shared_root, false, false}));
+    EXPECT_EQ(visited, (std::vector<int64_t>{1}));
+  }
+}
+
+TEST(StructuralMutate, DefaultDescentPermissionPreservesUnchangedAndErrors) {
+  for (bool allow_inplace : {false, true}) {
+    SCOPED_TRACE(allow_inplace);
+    bool fail = false;
+    Error error("ValueError", "default descent child failure", "");
+    auto mutate = [&](int64_t, StructuralMutatorObj*) -> Expected<UnchangedOr<Any>> {
+      if (fail) return Unexpected(error);
+      return Unchanged();
+    };
+    using Mutator = StructuralMutateEngine<StructuralMapEngineBase, decltype(mutate)>;
+    StructuralMutator mutator(make_object<Mutator>(std::move(mutate)));
+    AnyArray root{int64_t{1}};
+    auto unchanged = mutator->DefaultMaybeInplaceMutateExpected(root, allow_inplace);
+    ASSERT_TRUE(unchanged.is_ok());
+    EXPECT_TRUE(unchanged.value().IsUnchanged());
+    fail = true;
+    auto failure = mutator->DefaultMaybeInplaceMutateExpected(root, allow_inplace);
+    ASSERT_TRUE(failure.is_err());
+    EXPECT_TRUE(failure.error().same_as(error));
+    EXPECT_EQ(root[0].cast<int64_t>(), 1);
+  }
 }
 
 TEST(StructuralMutate, MatchedVarOwnsRemapConsistency) {
