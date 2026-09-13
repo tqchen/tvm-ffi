@@ -156,6 +156,12 @@ template <typename Parent>
 class StructuralMutateDynEngine;
 
 struct UnchangedOrUnsafe;
+
+template <typename T>
+inline constexpr bool is_unchanged_or_v = false;
+
+template <typename T>
+inline constexpr bool is_unchanged_or_v<UnchangedOr<T>> = true;
 }  // namespace details
 
 /*! \brief Tag for a mutation result that produced no new value. */
@@ -219,6 +225,22 @@ class UnchangedOr {
    */
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
   TVM_FFI_INLINE UnchangedOr(T value) : data_(Any(std::move(value))) {}
+
+  /*!
+   * \brief Construct a changed result from an implicitly convertible replacement value.
+   * \tparam U Source value type, implicitly convertible to T.
+   * \param value The replacement value to copy or move.
+   */
+  // Preserve the dedicated tag and wrapper routes. Subsumption applies only to materialized
+  // wrapper storage; a bare value must first be implicitly convertible to T.
+  template <typename U, typename = std::enable_if_t<!std::is_same_v<std::decay_t<U>, Unchanged> &&
+                                                    !details::is_unchanged_or_v<std::decay_t<U>> &&
+                                                    !details::is_expected_v<std::decay_t<U>> &&
+                                                    !details::is_unexpected_v<std::decay_t<U>> &&
+                                                    !std::is_base_of_v<Error, std::decay_t<U>> &&
+                                                    std::is_convertible_v<U, T>>>
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE UnchangedOr(U&& value) : data_(Any(T(std::forward<U>(value)))) {}
 
   /*!
    * \brief Implicit converting constructor from another replacement type.

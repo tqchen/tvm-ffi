@@ -54,6 +54,128 @@ static_assert(
 
 Expected<UnchangedOr<String>> ReturnTypedUnchangedExpected() noexcept { return Unchanged(); }
 
+struct UnsupportedReplacement {};
+
+struct ExplicitReplacement {
+  explicit operator TInt() const { return TInt(1); }
+};
+
+struct MoveOnlyReplacement {
+  TInt value;
+  int* conversions;
+
+  MoveOnlyReplacement(TInt value, int* conversions)
+      : value(std::move(value)), conversions(conversions) {}
+  MoveOnlyReplacement(const MoveOnlyReplacement&) = delete;
+  MoveOnlyReplacement(MoveOnlyReplacement&&) = default;
+
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  operator TInt() && {
+    ++*conversions;
+    return std::move(value);
+  }
+};
+
+TEST(UnchangedOr, BareValueForwarding) {
+  static_assert(std::is_convertible_v<TInt&, UnchangedOr<Any>>);
+  static_assert(std::is_convertible_v<const TInt&, UnchangedOr<Any>>);
+  static_assert(std::is_convertible_v<TInt&&, UnchangedOr<Any>>);
+  static_assert(std::is_convertible_v<TInt&, UnchangedOr<TNumber>>);
+  static_assert(std::is_convertible_v<const TInt&, UnchangedOr<TNumber>>);
+  static_assert(std::is_convertible_v<TInt&&, UnchangedOr<TNumber>>);
+  static_assert(std::is_convertible_v<TInt&, Expected<UnchangedOr<Any>>>);
+  static_assert(std::is_convertible_v<const TInt&, Expected<UnchangedOr<Any>>>);
+  static_assert(std::is_convertible_v<TInt&&, Expected<UnchangedOr<Any>>>);
+  static_assert(!std::is_constructible_v<UnchangedOr<Any>, UnsupportedReplacement>);
+  static_assert(!std::is_convertible_v<ExplicitReplacement, UnchangedOr<TInt>>);
+  static_assert(!std::is_constructible_v<UnchangedOr<TInt>, ExplicitReplacement>);
+  static_assert(!std::is_convertible_v<int, UnchangedOr<TInt>>);
+  static_assert(!std::is_convertible_v<MoveOnlyReplacement&, UnchangedOr<TInt>>);
+  static_assert(std::is_convertible_v<MoveOnlyReplacement, UnchangedOr<TInt>>);
+
+  TInt original(42);
+  auto check = [&](auto result) {
+    EXPECT_FALSE(result.IsUnchanged());
+    EXPECT_TRUE(std::move(result).ValueUnchecked().same_as(original));
+  };
+  {
+    UnchangedOr<Any> mutable_copy = original;
+    UnchangedOr<Any> const_copy = std::as_const(original);
+    UnchangedOr<TNumber> typed_copy = original;
+    UnchangedOr<TNumber> typed_const_copy = std::as_const(original);
+    EXPECT_EQ(original.use_count(), 5);
+    check(std::move(mutable_copy));
+    check(std::move(const_copy));
+    check(std::move(typed_copy));
+    check(std::move(typed_const_copy));
+    EXPECT_EQ(original.use_count(), 1);
+  }
+  {
+    TInt move_source = original;
+    UnchangedOr<Any> moved = std::move(move_source);
+    EXPECT_EQ(original.use_count(), 2);
+    check(std::move(moved));
+    EXPECT_EQ(original.use_count(), 1);
+    TInt typed_move_source = original;
+    UnchangedOr<TNumber> typed_moved = std::move(typed_move_source);
+    EXPECT_EQ(original.use_count(), 2);
+    check(std::move(typed_moved));
+    EXPECT_EQ(original.use_count(), 1);
+  }
+  auto from_mutable = [](TInt& value) -> Expected<UnchangedOr<Any>> { return value; };
+  auto from_const = [](const TInt& value) -> Expected<UnchangedOr<Any>> { return value; };
+  auto from_rvalue = [](TInt value) -> Expected<UnchangedOr<Any>> { return value; };
+  check(std::move(from_mutable(original)).value());
+  check(std::move(from_const(original)).value());
+  check(std::move(from_rvalue(original)).value());
+  EXPECT_EQ(original.use_count(), 1);
+
+  int conversions = 0;
+  UnchangedOr<TInt> converted = MoveOnlyReplacement(original, &conversions);
+  EXPECT_EQ(conversions, 1);
+  EXPECT_EQ(original.use_count(), 2);
+  check(std::move(converted));
+  EXPECT_EQ(original.use_count(), 1);
+
+  // Materialize the destination type before erasing it into Any storage.
+  UnchangedOr<double> numeric = 42;
+  EXPECT_EQ(AnyView(numeric).type_index(), TypeIndex::kTVMFFIFloat);
+  EXPECT_DOUBLE_EQ(std::move(numeric).ValueUnchecked(), 42.0);
+}
+
+TEST(UnchangedOr, ForwardingPreservesDedicatedRoutes) {
+  static_assert(!std::is_convertible_v<Error, UnchangedOr<Any>>);
+  static_assert(!std::is_convertible_v<Unexpected<Error>, UnchangedOr<Any>>);
+  static_assert(!std::is_convertible_v<Expected<TInt>, UnchangedOr<Any>>);
+  static_assert(std::is_convertible_v<UnchangedOr<TInt>, UnchangedOr<Any>>);
+
+  Unchanged unchanged;
+  UnchangedOr<Any> unchanged_copy = unchanged;
+  UnchangedOr<Any> unchanged_const_copy = std::as_const(unchanged);
+  EXPECT_TRUE(unchanged_copy.IsUnchanged());
+  EXPECT_TRUE(unchanged_const_copy.IsUnchanged());
+  Expected<UnchangedOr<Any>> unchanged_result = Unchanged();
+  ASSERT_TRUE(unchanged_result.is_ok());
+  EXPECT_TRUE(unchanged_result.value().IsUnchanged());
+
+  TInt original(42);
+  Expected<TInt> wrapped = original;
+  Expected<UnchangedOr<Any>> converted = std::as_const(wrapped);
+  ASSERT_TRUE(converted.is_ok());
+  EXPECT_TRUE(std::move(converted).value().ValueUnchecked().same_as(original));
+
+  Error error("ValueError", "replacement failed", "");
+  Expected<UnchangedOr<Any>> direct_error = error;
+  Expected<UnchangedOr<Any>> unexpected_error = Unexpected(error);
+  Expected<UnchangedOr<Any>> wrapped_error = Expected<TInt>(error);
+  EXPECT_TRUE(direct_error.is_err());
+  EXPECT_TRUE(unexpected_error.is_err());
+  EXPECT_TRUE(wrapped_error.is_err());
+  EXPECT_TRUE(direct_error.error().same_as(error));
+  EXPECT_TRUE(unexpected_error.error().same_as(error));
+  EXPECT_TRUE(wrapped_error.error().same_as(error));
+}
+
 TEST(UnchangedOr, ConversionsAndAssignmentMacro) {
   static_assert(!std::is_convertible_v<UnchangedOr<Any>, UnchangedOr<int>>);
   static_assert(type_subsumes_v<Expected<UnchangedOr<TNumber>>, Expected<UnchangedOr<TInt>>>);
