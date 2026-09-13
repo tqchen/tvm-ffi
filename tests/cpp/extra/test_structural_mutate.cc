@@ -547,8 +547,7 @@ TEST(StructuralMutate, CallbackArityControlsInplaceMutation) {
           [&](const AnyArray& value, StructuralMutatorObj* mutator,
               bool allow_inplace) -> Expected<Any> {
             allow_inplace_trace.push_back(allow_inplace);
-            return allow_inplace ? mutator->DefaultMaybeInplaceMutateExpected(value)
-                                 : mutator->DefaultMutateExpected(value);
+            return mutator->DefaultMaybeInplaceMutateExpected(value, allow_inplace);
           },
           [&](int64_t value, StructuralMutatorObj*, bool allow_inplace) -> Expected<Any> {
             allow_inplace_trace.push_back(allow_inplace);
