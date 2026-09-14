@@ -252,7 +252,8 @@ class Expected {
                             std::is_same_v<U, std::decay_t<U>> && !std::is_base_of_v<Error, U> &&
                             (TypeTraits<U>::storage_enabled || std::is_same_v<U, Any>)>>
   TVM_FFI_INLINE Expected<U> as_or_error() const& {
-    if (!is_err() && !details::AnyUnsafe::CheckAnyStrict<U>(data_)) {
+    if (TVM_FFI_PREDICT_FALSE(data_.type_index() != TypeIndex::kTVMFFIError &&
+                              !details::AnyUnsafe::CheckAnyStrict<U>(data_))) {
       // Conversion-failure diagnostics may try fallback conversions, so use the stored type key.
       return Error("TypeError",
                    "Cannot treat type `" + data_.GetTypeKey() + "` as type `" +
@@ -272,7 +273,8 @@ class Expected {
                             std::is_same_v<U, std::decay_t<U>> && !std::is_base_of_v<Error, U> &&
                             (TypeTraits<U>::storage_enabled || std::is_same_v<U, Any>)>>
   TVM_FFI_INLINE Expected<U> as_or_error() && {
-    if (!is_err() && !details::AnyUnsafe::CheckAnyStrict<U>(data_)) {
+    if (TVM_FFI_PREDICT_FALSE(data_.type_index() != TypeIndex::kTVMFFIError &&
+                              !details::AnyUnsafe::CheckAnyStrict<U>(data_))) {
       // Conversion-failure diagnostics may try fallback conversions, so use the stored type key.
       return Error("TypeError",
                    "Cannot treat type `" + data_.GetTypeKey() + "` as type `" +
