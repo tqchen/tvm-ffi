@@ -249,7 +249,6 @@ cdef extern from "tvm/ffi/c_api.h":
         kTVMFFISEqHashKindTreeNode = 1
         kTVMFFISEqHashKindFreeVar = 2
         kTVMFFISEqHashKindDAGNode = 3
-        kTVMFFISEqHashKindConstTreeNode = 4
         kTVMFFISEqHashKindUniqueInstance = 5
 
     cdef enum TVMFFIDefRegionKind:

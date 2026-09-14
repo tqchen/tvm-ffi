@@ -1131,15 +1131,7 @@ typedef enum {
    * \brief The field should be compared as a DAG node.
    */
   kTVMFFISEqHashKindDAGNode = 3,
-  /*!
-   * \brief The object is treated as a constant tree node.
-   *
-   * Same as tree node, but the object does not contain free var
-   * as any of its nested children.
-   *
-   * That means we can use pointer equality for equality.
-   */
-  kTVMFFISEqHashKindConstTreeNode = 4,
+  // Value 4 is reserved.
   /*!
    * \brief One can simply use pointer equality for equality.
    *

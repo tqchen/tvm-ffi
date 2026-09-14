@@ -46,7 +46,6 @@ _STRUCTURE_KIND_MAP: dict[str | None, int] = {
     "tree": 1,  # kTVMFFISEqHashKindTreeNode (default)
     "var": 2,  # kTVMFFISEqHashKindFreeVar
     "dag": 3,  # kTVMFFISEqHashKindDAGNode
-    "const-tree": 4,  # kTVMFFISEqHashKindConstTreeNode
     "singleton": 5,  # kTVMFFISEqHashKindUniqueInstance
 }
 
@@ -545,9 +544,6 @@ def py_class(  # noqa: PLR0913
         - ``"var"``: compared by binding position, for variable types.
         - ``"dag"``: content + sharing-aware comparison, for dataflow
           graph nodes.
-        - ``"const-tree"``: like ``"tree"`` with a pointer-equality
-          fast path (only safe for types with no transitive ``"var"``
-          children).
         - ``"singleton"``: pointer equality only, for singleton types.
 
         This parameter is **independent** of ``eq`` / ``unsafe_hash``:

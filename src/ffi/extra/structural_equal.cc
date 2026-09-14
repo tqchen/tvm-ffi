@@ -158,11 +158,6 @@ class StructEqualHandler {
       // use pointer comparison
       return lhs.same_as(rhs);
     }
-    if (structural_eq_hash_kind == kTVMFFISEqHashKindConstTreeNode) {
-      // fast path: constant tree node, pointer equality indicate equality and avoid content
-      // comparison if false, we should still run content comparison
-      if (lhs.same_as(rhs)) return true;
-    }
     // check recorded mapping for DAG and fre var
     if (structural_eq_hash_kind == kTVMFFISEqHashKindDAGNode ||
         structural_eq_hash_kind == kTVMFFISEqHashKindFreeVar) {

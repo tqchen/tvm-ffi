@@ -90,6 +90,11 @@ TEST(BigIntExtra, NumericValueAndImmutableCopy) {
   BigInt a = BigInt(1) << 255;
   BigInt b = BigInt(2) << 254;
   BigInt c = BigInt(1) << 256;
+  ASSERT_FALSE(Any(a).same_as(Any(b)));
+  const TVMFFITypeInfo* type_info = TVMFFIGetTypeInfo(TypeIndex::kTVMFFIBigInt);
+  ASSERT_NE(type_info->metadata, nullptr);
+  EXPECT_EQ(type_info->metadata->structural_eq_hash_kind, kTVMFFISEqHashKindUnsupported);
+  EXPECT_TRUE(StructuralEqual()(a, a));
   EXPECT_TRUE(StructuralEqual()(a, b));
   EXPECT_FALSE(StructuralEqual()(a, c));
   EXPECT_EQ(StructuralHash()(a), StructuralHash()(b));
