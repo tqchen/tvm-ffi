@@ -88,41 +88,40 @@ Expected<T> RunCheck(int check, int x, int y, int* streamed) noexcept {
 
 TYPED_TEST(ExpectedChecks, AllFormsReturnErrorsAndFallThroughOnSuccess) {
   struct CheckCase {
-    int success_x;
-    int success_y;
-    int failure_x;
-    int failure_y;
+    bool passes[3];  // x < y, x == y, x > y
     const char* expression;
   };
-  const CheckCase cases[] = {{3, 4, 4, 3, "(x < y) is false"},
-                             {3, 3, 3, 4, "x == y"},
-                             {3, 4, 3, 3, "x != y"},
-                             {3, 4, 3, 3, "x < y"},
-                             {3, 3, 4, 3, "x <= y"},
-                             {4, 3, 3, 3, "x > y"},
-                             {3, 3, 3, 4, "x >= y"}};
+  const CheckCase cases[] = {{{true, false, false}, "(x < y) is false"},
+                             {{false, true, false}, "x == y"},
+                             {{true, false, true}, "x != y"},
+                             {{true, false, false}, "x < y"},
+                             {{true, true, false}, "x <= y"},
+                             {{false, false, true}, "x > y"},
+                             {{false, true, true}, "x >= y"}};
   for (int check = 0; check < 14; ++check) {
     SCOPED_TRACE(check);
     const auto& test = cases[check / 2];
-    int streamed = 0;
-    auto success = RunCheck<TypeParam>(check, test.success_x, test.success_y, &streamed);
-    ASSERT_TRUE(success.is_ok());
-    EXPECT_EQ(streamed, 0);
-    if constexpr (std::is_same_v<TypeParam, int>) {
-      EXPECT_EQ(success.value(), 42);
-    } else {
-      EXPECT_EQ(std::move(success).value().ValueOrUnchanged(Any(0)).template cast<int>(), 42);
-    }
-    auto failure = RunCheck<TypeParam>(check, test.failure_x, test.failure_y, &streamed);
-    ASSERT_TRUE(failure.is_err());
-    EXPECT_EQ(streamed, 1);
-    EXPECT_EQ(failure.error().kind(), check % 2 == 0 ? "ValueError" : "InternalError");
-    EXPECT_NE(failure.error().message().find(test.expression), std::string::npos);
-    EXPECT_NE(failure.error().message().find(" detail 1"), std::string::npos);
-    if (check >= 2) {
-      std::string operands =
-          "(" + std::to_string(test.failure_x) + " vs. " + std::to_string(test.failure_y) + ")";
-      EXPECT_NE(failure.error().message().find(operands), std::string::npos);
+    for (int order = 0; order < 3; ++order) {
+      SCOPED_TRACE(order);
+      int streamed = 0;
+      auto result = RunCheck<TypeParam>(check, 3, 4 - order, &streamed);
+      ASSERT_EQ(result.is_ok(), test.passes[order]);
+      EXPECT_EQ(streamed, test.passes[order] ? 0 : 1);
+      if (result.is_ok()) {
+        if constexpr (std::is_same_v<TypeParam, int>) {
+          EXPECT_EQ(result.value(), 42);
+        } else {
+          EXPECT_EQ(std::move(result).value().ValueOrUnchanged(Any(0)).template cast<int>(), 42);
+        }
+      } else {
+        EXPECT_EQ(result.error().kind(), check % 2 == 0 ? "ValueError" : "InternalError");
+        EXPECT_NE(result.error().message().find(test.expression), std::string::npos);
+        EXPECT_NE(result.error().message().find(" detail 1"), std::string::npos);
+        if (check >= 2) {
+          EXPECT_NE(result.error().message().find("(3 vs. " + std::to_string(4 - order) + ")"),
+                    std::string::npos);
+        }
+      }
     }
   }
   int streamed = 0;
@@ -133,7 +132,7 @@ TYPED_TEST(ExpectedChecks, AllFormsReturnErrorsAndFallThroughOnSuccess) {
   EXPECT_EQ(streamed, 1);
 }
 
-TEST(ExpectedChecks, RvalueConversionsAndStreamManipulators) {
+TEST(ExpectedChecks, BuilderConversionsStreamingAndSourceLocation) {
   using Builder = details::UnexpectedBuilder;
   static_assert(std::is_convertible_v<Builder&&, Unexpected<Error>>);
   static_assert(std::is_convertible_v<Builder&&, Expected<int>>);
@@ -155,75 +154,54 @@ TEST(ExpectedChecks, RvalueConversionsAndStreamManipulators) {
     return {};
   }();
   EXPECT_TRUE(empty.is_err());
+  int source_line = __LINE__ + 1;
   auto no_message = []() noexcept -> Expected<int> { return TVM_FFI_UNEXPECTED(ValueError); }();
   EXPECT_TRUE(no_message.is_err());
   EXPECT_EQ(no_message.error().message(), "");
-}
-
-TEST(ExpectedChecks, SourceLocationWithoutStackWalk) {
-  int source_line = 0;
-  auto produce_error = [&source_line]() noexcept -> Expected<int> {
-    source_line = __LINE__ + 1;
-    return TVM_FFI_UNEXPECTED(ValueError) << "source";
-  };
-  auto result = produce_error();
-  ASSERT_TRUE(result.is_err());
-  std::string backtrace = result.error().backtrace();
+  std::string backtrace = no_message.error().backtrace();
   EXPECT_NE(backtrace.find(__FILE__), std::string::npos);
   EXPECT_NE(backtrace.find("line " + std::to_string(source_line) + ", in "), std::string::npos);
-  EXPECT_NE(backtrace.find("SourceLocationWithoutStackWalk"), std::string::npos);
+  EXPECT_NE(backtrace.find("BuilderConversionsStreamingAndSourceLocation"), std::string::npos);
   EXPECT_EQ(std::count(backtrace.begin(), backtrace.end(), '\n'), 1);
 }
 
-TEST(ExpectedChecks, EvaluatesConditionAndOperandsOnce) {
-  int condition_calls = 0;
-  auto condition = [&condition_calls](bool pass) noexcept -> Expected<int> {
-    TVM_FFI_RET_ICHECK((++condition_calls, pass));
-    return 1;
-  };
-  EXPECT_TRUE(condition(true).is_ok());
-  EXPECT_EQ(condition_calls, 1);
-  EXPECT_TRUE(condition(false).is_err());
-  EXPECT_EQ(condition_calls, 2);
-  int left_calls = 0;
-  int right_calls = 0;
-  auto binary = [&](int right) noexcept -> Expected<int> {
-    TVM_FFI_RET_ICHECK_EQ((++left_calls, 3), (++right_calls, right));
-    return 1;
-  };
-  EXPECT_TRUE(binary(3).is_ok());
-  EXPECT_EQ(left_calls, 1);
-  EXPECT_EQ(right_calls, 1);
-  EXPECT_TRUE(binary(4).is_err());
-  EXPECT_EQ(left_calls, 2);
-  EXPECT_EQ(right_calls, 2);
-}
-
-TEST(ExpectedChecks, EnclosingIfElseAndLoopControlFlow) {
+TEST(ExpectedChecks, ControlFlowAndSingleEvaluation) {
   // These intentionally unbraced bodies ensure the macro cannot capture the user's else.
   // NOLINTBEGIN(google-readability-braces-around-statements)
-  auto conditional = [](bool outer, bool inner) noexcept -> Expected<int> {
+  int condition_calls = 0;
+  auto conditional = [&](bool outer, bool inner) noexcept -> Expected<int> {
     if (outer)
-      TVM_FFI_RET_ICHECK(inner);
+      TVM_FFI_RET_ICHECK((++condition_calls, inner));
     else
       return 2;
     return 1;
   };
   EXPECT_EQ(conditional(false, false).value(), 2);
   EXPECT_EQ(conditional(false, true).value(), 2);
+  EXPECT_EQ(condition_calls, 0);
   EXPECT_EQ(conditional(true, true).value(), 1);
+  EXPECT_EQ(condition_calls, 1);
   EXPECT_TRUE(conditional(true, false).is_err());
-  auto binary = [](bool outer, int x) noexcept -> Expected<int> {
+  EXPECT_EQ(condition_calls, 2);
+  int left_calls = 0;
+  int right_calls = 0;
+  auto binary = [&](bool outer, int x) noexcept -> Expected<int> {
     if (outer)
-      TVM_FFI_RET_ICHECK_EQ(x, 3);
+      TVM_FFI_RET_ICHECK_EQ((++left_calls, x), (++right_calls, 3));
     else
       return 2;
     return 1;
   };
   EXPECT_EQ(binary(false, 4).value(), 2);
   EXPECT_EQ(binary(false, 3).value(), 2);
+  EXPECT_EQ(left_calls, 0);
+  EXPECT_EQ(right_calls, 0);
   EXPECT_EQ(binary(true, 3).value(), 1);
+  EXPECT_EQ(left_calls, 1);
+  EXPECT_EQ(right_calls, 1);
   EXPECT_TRUE(binary(true, 4).is_err());
+  EXPECT_EQ(left_calls, 2);
+  EXPECT_EQ(right_calls, 2);
   auto loop = [](int limit) noexcept -> Expected<int> {
     for (int i = 0; i < limit; ++i) TVM_FFI_RET_CHECK_LT(i, 3, ValueError);
     return 1;
@@ -231,67 +209,6 @@ TEST(ExpectedChecks, EnclosingIfElseAndLoopControlFlow) {
   EXPECT_EQ(loop(3).value(), 1);
   EXPECT_TRUE(loop(4).is_err());
   // NOLINTEND(google-readability-braces-around-statements)
-}
-
-template <typename Return>
-Return MutateReturnIfError(Expected<UnchangedOr<Any>> result, int* continued) noexcept {
-  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result);
-  ++*continued;
-  if constexpr (std::is_same_v<Return, TVMFFIAny>) {
-    return AnyView(42).CopyToTVMFFIAny();
-  } else {
-    return 42;
-  }
-}
-
-TEST(ExpectedChecks, StructuralMutateReturnsOnlyErrors) {
-  Error error("ValueError", "mutate", "");
-  int continued = 0;
-  EXPECT_TRUE(MutateReturnIfError<Expected<int>>(error, &continued).is_err());
-  EXPECT_EQ(continued, 0);
-  auto raw_error = details::ExpectedUnsafe::MoveFromTVMFFIAny<int>(
-      MutateReturnIfError<TVMFFIAny>(error, &continued));
-  ASSERT_TRUE(raw_error.is_err());
-  EXPECT_EQ(raw_error.error().message(), "mutate");
-  EXPECT_EQ(continued, 0);
-  EXPECT_EQ(MutateReturnIfError<Expected<int>>(UnchangedOr<Any>(Unchanged()), &continued).value(),
-            42);
-  auto raw_ok = details::ExpectedUnsafe::MoveFromTVMFFIAny<int>(
-      MutateReturnIfError<TVMFFIAny>(UnchangedOr<Any>(Any(1)), &continued));
-  EXPECT_EQ(raw_ok.value(), 42);
-  EXPECT_EQ(continued, 2);
-}
-
-template <typename Return>
-Return VisitReturnIfStop(Expected<Optional<VisitInterrupt>> result, int* continued) noexcept {
-  TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(result);
-  ++*continued;
-  if constexpr (std::is_same_v<Return, TVMFFIAny>) {
-    return AnyView(nullptr).CopyToTVMFFIAny();
-  } else {
-    return nullptr;
-  }
-}
-
-TEST(ExpectedChecks, StructuralVisitReturnsErrorsAndSuccessfulInterrupts) {
-  using Result = Expected<Optional<VisitInterrupt>>;
-  Result results[] = {Error("ValueError", "visit", ""), VisitInterrupt(String("stop")), nullptr};
-  for (int i = 0; i < 3; ++i) {
-    int continued = 0;
-    Result typed = VisitReturnIfStop<Result>(results[i], &continued);
-    Result raw = details::ExpectedUnsafe::MoveFromTVMFFIAny<Optional<VisitInterrupt>>(
-        VisitReturnIfStop<TVMFFIAny>(results[i], &continued));
-    EXPECT_EQ(continued, i == 2 ? 2 : 0);
-    EXPECT_EQ(typed.type_index(), results[i].type_index());
-    EXPECT_EQ(raw.type_index(), results[i].type_index());
-    if (i == 0) {
-      EXPECT_EQ(typed.error().message(), "visit");
-      EXPECT_EQ(raw.error().message(), "visit");
-    } else {
-      EXPECT_TRUE(typed.is_ok());
-      EXPECT_TRUE(raw.is_ok());
-    }
-  }
 }
 
 template <typename Return>

@@ -732,32 +732,73 @@ class UnexpectedBuilder {
 
 }  // namespace details
 
+/*!
+ * \brief Build a streamed error for an Unexpected or Expected return value.
+ *
+ * Records file, line, and function without walking the stack. The caller writes the return;
+ * the builder's streaming and conversions are rvalue-only. Allocations and user-defined
+ * streaming may still throw.
+ *
+ * \code{.cpp}
+ * Expected<int> Fail() {
+ *   return TVM_FFI_UNEXPECTED(ValueError) << "invalid input";
+ * }
+ * \endcode
+ */
 #define TVM_FFI_UNEXPECTED(ErrorKind) \
   ::tvm::ffi::details::UnexpectedBuilder(#ErrorKind, __FILE__, __LINE__, TVM_FFI_FUNC_SIG)
 
+/*!
+ * \brief Return a streamed error when the condition is false.
+ *
+ * RET_ macros contain the return. The condition is evaluated once; streaming is evaluated only
+ * on failure. The while guard preserves an enclosing if/else. \sa TVM_FFI_UNEXPECTED
+ *
+ * \code{.cpp}
+ * Expected<int> Divide(int x, int y) {
+ *   TVM_FFI_RET_CHECK(y != 0, ValueError) << "zero divisor";
+ *   return x / y;
+ * }
+ * \endcode
+ */
 #define TVM_FFI_RET_CHECK(cond, ErrorKind) \
   while (TVM_FFI_PREDICT_FALSE(!(cond)))   \
   return TVM_FFI_UNEXPECTED(ErrorKind) << "Check failed: (" #cond ") is false: "
 
+/// \cond Doxygen_Suppress
 #define TVM_FFI_RET_CHECK_BINARY_OP(name, op, x, y, ErrorKind)               \
   while (auto __tvm_ffi_log_err = /* NOLINT(bugprone-reserved-identifier) */ \
          ::tvm::ffi::details::LogCheck##name(x, y))                          \
   return TVM_FFI_UNEXPECTED(ErrorKind)                                       \
          << "Check failed: " << #x " " #op " " #y << (*__tvm_ffi_log_err) << ": "
+/// \endcond
 
+/*! \brief Return an error if x < y is false, evaluating each operand once. */
 #define TVM_FFI_RET_CHECK_LT(x, y, ErrorKind) TVM_FFI_RET_CHECK_BINARY_OP(_LT, <, x, y, ErrorKind)
+/*! \brief Return an error if x > y is false, evaluating each operand once. */
 #define TVM_FFI_RET_CHECK_GT(x, y, ErrorKind) TVM_FFI_RET_CHECK_BINARY_OP(_GT, >, x, y, ErrorKind)
+/*! \brief Return an error if x <= y is false, evaluating each operand once. */
 #define TVM_FFI_RET_CHECK_LE(x, y, ErrorKind) TVM_FFI_RET_CHECK_BINARY_OP(_LE, <=, x, y, ErrorKind)
+/*! \brief Return an error if x >= y is false, evaluating each operand once. */
 #define TVM_FFI_RET_CHECK_GE(x, y, ErrorKind) TVM_FFI_RET_CHECK_BINARY_OP(_GE, >=, x, y, ErrorKind)
+/*! \brief Return an error if x == y is false, evaluating each operand once. */
 #define TVM_FFI_RET_CHECK_EQ(x, y, ErrorKind) TVM_FFI_RET_CHECK_BINARY_OP(_EQ, ==, x, y, ErrorKind)
+/*! \brief Return an error if x != y is false, evaluating each operand once. */
 #define TVM_FFI_RET_CHECK_NE(x, y, ErrorKind) TVM_FFI_RET_CHECK_BINARY_OP(_NE, !=, x, y, ErrorKind)
 
+/*! \brief Check a condition with TVM_FFI_RET_CHECK, returning InternalError on failure. */
 #define TVM_FFI_RET_ICHECK(x) TVM_FFI_RET_CHECK(x, InternalError)
+/*! \brief Check x < y, returning InternalError on failure. */
 #define TVM_FFI_RET_ICHECK_LT(x, y) TVM_FFI_RET_CHECK_LT(x, y, InternalError)
+/*! \brief Check x > y, returning InternalError on failure. */
 #define TVM_FFI_RET_ICHECK_GT(x, y) TVM_FFI_RET_CHECK_GT(x, y, InternalError)
+/*! \brief Check x <= y, returning InternalError on failure. */
 #define TVM_FFI_RET_ICHECK_LE(x, y) TVM_FFI_RET_CHECK_LE(x, y, InternalError)
+/*! \brief Check x >= y, returning InternalError on failure. */
 #define TVM_FFI_RET_ICHECK_GE(x, y) TVM_FFI_RET_CHECK_GE(x, y, InternalError)
+/*! \brief Check x == y, returning InternalError on failure. */
 #define TVM_FFI_RET_ICHECK_EQ(x, y) TVM_FFI_RET_CHECK_EQ(x, y, InternalError)
+/*! \brief Check x != y, returning InternalError on failure. */
 #define TVM_FFI_RET_ICHECK_NE(x, y) TVM_FFI_RET_CHECK_NE(x, y, InternalError)
 
 }  // namespace ffi
