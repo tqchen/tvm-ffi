@@ -383,26 +383,25 @@ class StructuralMutatorObj : public Object {
   /*! \brief Callback-facing mutator type used by composed callback-driven engines. */
   using MutatorObjType = StructuralMutatorObj;
 
-  ///
-  /// \brief Throwing form of \ref MutateExpected.
-  /// \param value The borrowed value to mutate.
-  /// \param allow_inplace Whether the caller permits mutation along this ownership path.
-  /// \return The replacement or unchanged marker.
-  /// \throws Error if mutation fails.
-  ///
-  /// \note Omitting allow_inplace defaults to copy-on-write. In-place mutation is permitted
-  ///       only when allow_inplace is true and the current value is uniquely owned. True requires
-  ///       permission along the entire ownership path from the root; recursive calls must forward
-  ///       their established permission explicitly. Uniqueness is checked before callback arguments
-  ///       acquire ownership. This permits in-place dispatch but does not guarantee reuse: a hook
-  ///       may return a replacement. In-place changes completed before an Error are not rolled
-  ///       back.
-  ///
-  /// \code{.cpp}
-  /// Expr new_node = mutator->Mutate(node, /* allow_inplace= */ false)
-  ///                     .ValueOrUnchanged(AnyView(node)).cast<Expr>();
-  /// \endcode
-  ///
+  /*!
+   * \brief Throwing form of \ref MutateExpected.
+   * \param value The borrowed value to mutate.
+   * \param allow_inplace Whether the caller permits mutation along this ownership path.
+   * \return The replacement or unchanged marker.
+   * \throws Error if mutation fails.
+   *
+   * \note Omitting allow_inplace defaults to copy-on-write. In-place mutation is permitted
+   *       only when allow_inplace is true and the current value is uniquely owned. True requires
+   *       permission along the entire ownership path from the root; recursive calls must forward
+   *       their established permission explicitly. Uniqueness is checked before callback arguments
+   *       acquire ownership. This permits in-place dispatch but does not guarantee reuse: a hook
+   *       may return a replacement. In-place changes completed before an Error are not rolled
+   *       back.
+   *
+   * \code{.cpp}
+   * Expr new_node = mutator->Mutate(node).ValueOrUnchanged(AnyView(node)).cast<Expr>();
+   * \endcode
+   */
   TVM_FFI_INLINE UnchangedOr<Any> Mutate(AnyView value, bool allow_inplace = false) {
     return std::move(MutateExpected(value, allow_inplace)).value();
   }
@@ -867,46 +866,45 @@ namespace details {
           ::std::move(::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))
 /// \endcond
 
-///
-/// \brief Unwrap a successful mutation result into a newly declared value or return its error.
-///
-/// ``Type`` must be concrete; use a type alias when it contains a top-level comma. A type mismatch
-/// returns ``TypeError`` through the surrounding raw or ``Expected`` function without throwing,
-/// reported with a fixed string. The check is omitted when the declared type subsumes the result's
-/// success type. Its early returns work from either a raw ``TVMFFIAny`` hook or an
-/// ``Expected<T>`` helper, including one with a different success type. This macro declares
-/// ``Name`` into the enclosing scope and must be used in a braced block, never as an unbraced
-/// control-flow body.
-///
-/// Example:
-/// \code{.cpp}
-/// TVMFFIAny FooMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
-///   const FooNode* self =
-///       details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const FooNode>(value);
-///   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Expr>, a,
-///                                     mutator->MutateExpected(
-///                                         self->a, /* allow_inplace= */ false));
-///   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Expr>, b,
-///                                     mutator->MutateExpected(
-///                                         self->b, /* allow_inplace= */ false));
-///   if (a.UnchangedOrSameAs(self->a) && b.UnchangedOrSameAs(self->b)) {
-///     return Unchanged().CopyToTVMFFIAny();
-///   }
-///   ObjectPtr<FooNode> copy = make_object<FooNode>(*self);
-///   copy->a = std::move(a).ValueOrUnchanged(std::move(copy->a));
-///   copy->b = std::move(b).ValueOrUnchanged(std::move(copy->b));
-///   return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
-/// }
-/// \endcode
-///
-/// Keep one statement per traversed field. A field skipped intentionally must be guarded and carry
-/// a ``// skips:`` note.
-///
-/// \param Type The concrete successful value type.
-/// \param Name The name of the value declared in the enclosing scope.
-/// \param ResultExpr An expression producing the ``Expected`` value to unwrap.
-/// \sa Unchanged::CopyToTVMFFIAny
-///
+/*!
+ * \brief Unwrap a successful mutation result into a newly declared value or return its error.
+ *
+ * ``Type`` must be concrete; use a type alias when it contains a top-level comma. A type mismatch
+ * returns ``TypeError`` through the surrounding raw or ``Expected`` function without throwing,
+ * reported with a fixed string. The check is omitted when the declared type subsumes the result's
+ * success type. Its early returns work from either a raw ``TVMFFIAny`` hook or an
+ * ``Expected<T>`` helper, including one with a different success type. This macro declares
+ * ``Name`` into the enclosing scope and must be used in a braced block, never as an unbraced
+ * control-flow body.
+ *
+ * Example:
+ * \code{.cpp}
+ * TVMFFIAny FooMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
+ *   const FooNode* self =
+ *       details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const FooNode>(value);
+ *   constexpr bool allow_inplace = false;
+ *   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Expr>, a,
+ *                                     mutator->MutateExpected(self->a, allow_inplace));
+ *   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Expr>, b,
+ *                                     mutator->MutateExpected(self->b, allow_inplace));
+ *   if (a.UnchangedOrSameAs(self->a) && b.UnchangedOrSameAs(self->b)) {
+ *     return Unchanged().CopyToTVMFFIAny();
+ *   }
+ *   ObjectPtr<FooNode> copy = make_object<FooNode>(*self);
+ *   copy->a = std::move(a).ValueOrUnchanged(std::move(copy->a));
+ *   copy->b = std::move(b).ValueOrUnchanged(std::move(copy->b));
+ *   return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
+ * }
+ * \endcode
+ *
+ * Keep one statement per traversed field. A field skipped intentionally must be guarded and carry
+ * a ``// skips:`` note.
+ *
+ * \param Type The concrete successful value type.
+ * \param Name The name of the value declared in the enclosing scope.
+ * \param ResultExpr An expression producing the ``Expected`` value to unwrap.
+ * \sa Unchanged::CopyToTVMFFIAny
+ */
 #define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Type, Name, ResultExpr)                                  \
   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(TVM_FFI_STR_CONCAT(tvm_ffi_mutate_result_, __COUNTER__), \
                                           Type, Name, ResultExpr)
@@ -1817,33 +1815,33 @@ Any StructuralMap(Any root,
       .value();
 }
 
-///
-/// \brief Mutate a structured value with callbacks that own recursion.
-///
-/// A callback takes one of two forms, where ``R`` is a supported return type:
-///
-/// - ``R(const T& value, StructuralMutatorObj* mutator)``
-/// - ``R(const T& value, StructuralMutatorObj* mutator, bool allow_inplace)``
-///
-/// A callback returns a replacement, ``Unchanged``, or ``Expected<Any>``. The first argument
-/// selects by FFI type; callbacks are tried in declaration order and the first match owns mutation
-/// -- it drives its own recursion through the mutator and sets any variable remapping. An unmatched
-/// value takes registered or reflected default mutation.
-///
-/// \param root The owning root value to mutate.
-/// \param callbacks Callbacks tested in declaration order.
-/// \return The mutated owning value, or an Error if mutation or a callback fails.
-///
-/// \note A two-argument callback descends with
-///       ``MutateExpected(value, /* allow_inplace= */ false)``.
-///       A three-argument callback receives ``allow_inplace=true`` only when its value is on a
-///       uniquely owned path. Forward this permission to ``MutateExpected`` for child values
-///       or to ``DefaultMutateExpected`` for the current value's default descent.
-/// \note Pass an owned root with ``std::move(root)`` to permit root reuse. In a
-///       ``__s_maybe_inplace_mutate__`` hook, the corresponding nested idiom is
-///       ``self->field = StructuralMap(std::move(self->field), callback)``; const-correctness
-///       rejects that ownership transfer outside a mutable maybe-in-place hook.
-///
+/*!
+ * \brief Mutate a structured value with callbacks that own recursion.
+ *
+ * A callback takes one of two forms, where ``R`` is a supported return type:
+ *
+ * - ``R(const T& value, StructuralMutatorObj* mutator)``
+ * - ``R(const T& value, StructuralMutatorObj* mutator, bool allow_inplace)``
+ *
+ * A callback returns a replacement, ``Unchanged``, or ``Expected<Any>``. The first argument
+ * selects by FFI type; callbacks are tried in declaration order and the first match owns mutation
+ * -- it drives its own recursion through the mutator and sets any variable remapping. An unmatched
+ * value takes registered or reflected default mutation.
+ *
+ * \param root The owning root value to mutate.
+ * \param callbacks Callbacks tested in declaration order.
+ * \return The mutated owning value, or an Error if mutation or a callback fails.
+ *
+ * \note A two-argument callback descends with ``MutateExpected(value)``, using the default
+ *       copy-on-write permission.
+ *       A three-argument callback receives ``allow_inplace=true`` only when its value is on a
+ *       uniquely owned path. Forward this permission to ``MutateExpected`` for child values
+ *       or to ``DefaultMutateExpected`` for the current value's default descent.
+ * \note Pass an owned root with ``std::move(root)`` to permit root reuse. In a
+ *       ``__s_maybe_inplace_mutate__`` hook, the corresponding nested idiom is
+ *       ``self->field = StructuralMap(std::move(self->field), callback)``; const-correctness
+ *       rejects that ownership transfer outside a mutable maybe-in-place hook.
+ */
 template <typename... Callbacks>
 // The owning parameter makes caller ownership visible to the uniqueness check.
 Expected<Any> StructuralMutateExpected(

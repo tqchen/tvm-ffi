@@ -518,27 +518,27 @@ inline constexpr const char* kStructuralVisit = "__s_visit__";
  * ``kStructuralMaybeInplaceMutate`` must also define this attribute.
  */
 inline constexpr const char* kStructuralMutate = "__s_mutate__";
-///
-/// \brief Optional custom mutation hook that may reuse its input object.
-///
-/// The hook receives the active mutator and a borrowed input value that is safe to mutate in place.
-/// Callers must route shared objects through non-in-place mutation instead. The hook may mutate and
-/// return the source object, delegate to non-in-place mutation, or return another replacement.
-///
-/// Value type: either an opaque function pointer to a C++ structural mutation hook
-///
-/// ``TVMFFIAny (*)(StructuralMutatorObj* mutator, AnyView value) noexcept``
-///
-/// returning raw ``Expected<Any>`` storage, or an
-/// ``ffi::Function`` with signature
-///
-/// ``(StructuralMutator mutator, Any value) -> Any``.
-///
-/// This hook is optional. When it is absent,
-/// ``DefaultMutateExpected(value, /* allow_inplace= */ true)`` falls back to non-in-place mutation
-/// through ``kStructuralMutate`` or reflected structural fields. In-place mutation is therefore
-/// explicitly opt-in and is never inferred from ownership by the reflected fallback.
-///
+/*!
+ * \brief Optional custom mutation hook that may reuse its input object.
+ *
+ * The hook receives the active mutator and a borrowed input value that is safe to mutate in place.
+ * Callers must route shared objects through non-in-place mutation instead. The hook may mutate and
+ * return the source object, delegate to non-in-place mutation, or return another replacement.
+ *
+ * Value type: either an opaque function pointer to a C++ structural mutation hook
+ *
+ * ``TVMFFIAny (*)(StructuralMutatorObj* mutator, AnyView value) noexcept``
+ *
+ * returning raw ``Expected<Any>`` storage, or an
+ * ``ffi::Function`` with signature
+ *
+ * ``(StructuralMutator mutator, Any value) -> Any``.
+ *
+ * This hook is optional. When it is absent, ``DefaultMutateExpected`` with ``allow_inplace=true``
+ * falls back to non-in-place mutation through ``kStructuralMutate`` or reflected structural fields.
+ * In-place mutation is therefore explicitly opt-in and is never inferred from ownership by the
+ * reflected fallback.
+ */
 inline constexpr const char* kStructuralMaybeInplaceMutate = "__s_maybe_inplace_mutate__";
 
 /*!
