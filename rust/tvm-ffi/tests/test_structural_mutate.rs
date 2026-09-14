@@ -25,7 +25,8 @@ use tvm_ffi::{
     dispatch, structural_map, structural_mutate, Any, AnyView, Array, CallbackMutator,
     DefRegionKind, Error, FieldGetter, Function, InplaceValue, Map, MapDispatch, MapValue,
     MutateCallbacks, Mutator, Object, ObjectArc, ObjectRefCore, Result, String as FfiString,
-    StructuralMutator, StructuralVarRemap, TypeIndex, WalkOrder, RUNTIME_ERROR,
+    StructuralMutator, StructuralVarRemap, TypeIndex, Unchanged, UnchangedOr, WalkOrder,
+    RUNTIME_ERROR,
 };
 
 struct IncrementIntegers;
@@ -814,6 +815,81 @@ fn callbacks_return_values_convertible_into_any() {
     .and_then(Array::<i64>::try_from)
     .unwrap();
     assert_eq!(mutated.iter().collect::<Vec<_>>(), vec![2, 4]);
+}
+
+#[test]
+fn recursive_mutate_returns_unchanged_or_a_replacement() {
+    fn clamp_negative_integers(
+        value: &MapValue,
+        mutator: &mut CallbackMutator,
+    ) -> Result<UnchangedOr<Any>> {
+        if let Some(integer) = value.cast::<i64>() {
+            if integer >= 0 {
+                // Keep this input without constructing an owning return value.
+                return Ok(UnchangedOr::unchanged());
+            }
+            return Ok(UnchangedOr::changed(Any::from(0i64)));
+        }
+
+        // Recurse into containers. Keep the unchanged marker if no child changed.
+        mutator.default_mutate_result()
+    }
+
+    // No rewrite: the public entry resolves unchanged to the original array.
+    let source = Array::new(vec![1i64, 2]);
+    let result = structural_mutate(source.clone(), clamp_negative_integers)
+        .and_then(Array::<i64>::try_from)
+        .unwrap();
+    assert_eq!(result.iter().collect::<Vec<_>>(), vec![1, 2]);
+    assert_eq!(array_pointer(&result), array_pointer(&source));
+
+    // One rewrite: replace only the negative integer and keep the source intact.
+    let source = Array::new(vec![-1i64, 2]);
+    let result = structural_mutate(source.clone(), clamp_negative_integers)
+        .and_then(Array::<i64>::try_from)
+        .unwrap();
+    assert_eq!(result.iter().collect::<Vec<_>>(), vec![0, 2]);
+    assert_ne!(array_pointer(&result), array_pointer(&source));
+    assert_eq!(source.iter().collect::<Vec<_>>(), vec![-1, 2]);
+}
+
+#[test]
+fn pre_order_unchanged_reuses_unmodified_subtrees() {
+    let unchanged = Array::new(vec![1i64, 2]);
+    let changed = Array::new(vec![-1i64, 2]);
+    let source = Array::new(vec![unchanged.clone(), changed.clone()]);
+
+    let mapped = structural_map(
+        source.clone(),
+        (
+            |integer: i64| -> UnchangedOr<i64> {
+                if integer < 0 {
+                    UnchangedOr::changed(0)
+                } else {
+                    UnchangedOr::unchanged()
+                }
+            },
+            // Keeping an array still lets pre-order map transform its children.
+            |_value: &MapValue| Unchanged,
+        ),
+        WalkOrder::PreOrder,
+    )
+    .and_then(Array::<Array<i64>>::try_from)
+    .unwrap();
+
+    let mapped_unchanged = mapped.get(0).unwrap();
+    let mapped_changed = mapped.get(1).unwrap();
+    assert_eq!(mapped_unchanged.iter().collect::<Vec<_>>(), vec![1, 2]);
+    assert_eq!(mapped_changed.iter().collect::<Vec<_>>(), vec![0, 2]);
+
+    // Reuse the untouched subtree and copy the shared containers that changed.
+    assert_eq!(array_pointer(&mapped_unchanged), array_pointer(&unchanged));
+    assert_ne!(array_pointer(&mapped_changed), array_pointer(&changed));
+    assert_ne!(array_pointer(&mapped), array_pointer(&source));
+    assert_eq!(
+        source.get(1).unwrap().iter().collect::<Vec<_>>(),
+        vec![-1, 2]
+    );
 }
 
 #[test]

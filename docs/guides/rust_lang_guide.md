@@ -495,6 +495,13 @@ example, an integer handler can return `Result<i64>` to report failures and use
 completed before a later error are not rolled back, and the consumed root is
 not returned on error.
 
+Callbacks can also return `Unchanged` or `UnchangedOr<T>`, optionally wrapped
+in `Result`. A pre-order map still maps the original value's children when
+a callback returns `Unchanged`. Use `mutate_result` and
+`default_mutate_result` to preserve unchanged during recursion; existing
+owning-value helpers and top-level functions resolve the marker to the
+original value.
+
 `structural_mutate` accepts typed callback chains in addition to a
 `StructuralMutator`. Closure callbacks receive a `CallbackMutator`;
 `MutateCallbacks` adds state shared by that callback chain:
