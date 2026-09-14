@@ -82,6 +82,9 @@ Quick reference
    * - ``"tree"``
      - A regular IR node
      - Default for ``@py_class`` and most IR nodes
+   * - ``"const-tree"``
+     - An immutable value node (with pointer shortcut)
+     - The type has no transitive ``"var"`` children
    * - ``"dag"``
      - A node in a dataflow graph
      - Pointer sharing is semantically meaningful
@@ -164,26 +167,119 @@ every node has the same content:
 If sharing needs to matter, use ``"dag"`` instead.
 
 
-Shared trees and variable mappings
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``"const-tree"`` — Tree with a Fast Path
+-----------------------------------------
 
-Even when both sides reference the same tree object, comparison visits its
-fields. Variable children must be checked against the current binding context,
-and their occurrences may establish mappings used later in the comparison.
+.. code-block:: python
+
+   @py_class(structural_eq="const-tree")
+   class DeviceMesh(Object):
+       shape: list[int]
+       device_ids: list[int]
+
+**Meaning**: "Same as ``"tree"``, but if two references point to the same
+object, they are guaranteed equal — skip the field comparison."
+
+This is purely a **performance optimization**. The only behavioral difference
+from ``"tree"`` is that pointer identity short-circuits to ``True``.
+
+When is this safe (and worth it)?
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Three conditions decide whether ``"const-tree"`` is the right choice:
+
+1. **Immutable** — content doesn't change after construction, so same-pointer
+   always implies same-content.
+2. **No transitive** ``"var"`` **children** — skipping field traversal won't
+   cause variable mappings to be missed (see :ref:`var-kind` for why this
+   matters).
+3. **Sharing is common** — instances are interned or canonicalized, so the
+   same pointer actually appears on both sides of real comparisons. Without
+   interning, the shortcut never fires and ``"const-tree"`` behaves like
+   ``"tree"`` with a dead branch.
+
+Conditions 1 and 2 are correctness requirements: violating them is a bug,
+not a performance regression. Condition 3 is the payoff — ``"const-tree"``
+is worth reaching for only when it will actually save work.
+
+A useful rule of thumb: *does the system go out of its way to make two
+equal instances of this type share a pointer?* Canonical types, interned
+constants, cached shapes, and op metadata usually do. General expression
+and statement nodes usually don't — and also fail condition 2. Prefer
+``"const-tree"`` for the type / attribute / metadata layer of the IR, not
+the expression / statement layer.
+
+Note also that condition 2 is a *whole-subgraph* property: once a field
+holds an ``Expr`` (which may one day contain a ``Var``), the annotation
+silently commits the type to that invariant — a later refactor embedding
+a ``Var`` becomes a correctness break rather than a local change.
+
+Why not use it everywhere?
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Most IR nodes are immutable, but many transitively contain variables
+(e.g., ``x + 1`` contains the ``"var"`` node ``x``). The pointer shortcut
+fires only when both sides of a comparison reference the **same object** —
+but when that sharing exists, skipping traversal also skips the variable
+occurrences inside, and mappings that should have been recorded are
+silently missed.
+
+Suppose the ``+`` node were incorrectly annotated as ``"const-tree"``, and
+consider comparing two tuples that share the ``+`` subtree via pointer
+identity:
 
 .. code-block:: text
 
-   shared = x + 1
-   lhs = (shared, x)
-   rhs = (shared, y)
+   shared = x + 1                     # pointer P, contains var x
 
-   structural_equal(lhs, rhs, map_free_vars=True)  # False
+   lhs = (shared, x)                  # .0 = P, .1 = var x
+   rhs = (shared, y)                  # .0 = P, .1 = var y  (different Var)
 
-Comparing ``shared`` with itself records ``x ↔ x``. The next pair, ``x`` and
-``y``, conflicts with that mapping. Skipping the shared subtree would miss the
-first occurrence and incorrectly allow ``x ↔ y`` instead. The same traversal
-is needed when a definition region has already bound variables before a shared
-subtree is visited.
+   structural_equal(lhs, rhs, map_free_vars=True)
+
+With the ``+`` annotated as plain ``"tree"`` (correct):
+
+- ``.0``: traverse into ``shared`` on both sides, visit ``x`` at ``.lhs``,
+  record the mapping ``x ↔ x``.
+- ``.1``: look up ``x`` → maps to ``x``, but rhs is ``y``. **NOT EQUAL** ✓
+
+With the ``+`` annotated as ``"const-tree"`` (the bug):
+
+- ``.0``: pointer shortcut fires on ``shared`` (both sides reference P).
+  Fields are skipped, ``x`` inside is never visited, no mapping is recorded.
+- ``.1``: compare ``x`` vs ``y``. No existing mapping, and
+  ``map_free_vars=True`` lets a new one be recorded as ``x ↔ y``.
+  **EQUAL** ✗ (wrong)
+
+The following diagram illustrates the shared structure. The ``+`` node
+(``shared``) has two incoming ``.0`` edges — one from each side — which
+is exactly the situation in which the pointer shortcut fires:
+
+.. mermaid::
+
+   graph TD
+       LT["lhs: (_, _)"]
+       RT["rhs: (_, _)"]
+       ADD["shared = x + 1<br/>const-tree<br/><i>same pointer on both sides</i>"]
+       X["x : var"]
+       ONE["1"]
+       Y["y : var"]
+
+       LT -->|".0"| ADD
+       RT -->|".0"| ADD
+       LT -->|".1"| X
+       RT -->|".1"| Y
+       ADD -->|".lhs"| X
+       ADD -->|".rhs"| ONE
+
+       style ADD fill:#fff3cd
+       style X fill:#f8d7da
+       style Y fill:#f8d7da
+
+The same failure mode arises whenever a shared subtree containing a
+``"var"`` is compared inside any definition region (e.g., the body of a
+``Lambda`` whose params field is ``structural_eq="def"``), not only under
+``map_free_vars=True``.
 
 
 ``"dag"`` — Sharing-Aware Comparison
@@ -610,9 +706,9 @@ These are the *only* supported way to override structural comparison.
 (``==`` and ``hash()``, which default to pointer identity).
 
 When either hook is registered, it replaces the default field iteration
-for that type. All kind-specific machinery, including ``"dag"`` memoization
-and ``"var"`` mapping, is still managed by the framework. The custom callback
-only controls
+for that type.  All kind-specific machinery (``"dag"`` memoization,
+``"var"`` mapping, the pointer shortcut of ``"const-tree"``, etc.) is
+still managed by the framework — the custom callback only controls
 *which* sub-values are compared or hashed, *in what order*, and *with
 what* ``def_region`` flag.
 
@@ -727,7 +823,7 @@ See :cpp:var:`tvm::ffi::reflection::type_attr::kSEqual` and
 All Kinds at a Glance
 ---------------------
 
-The following diagram visualizes the four comparable kinds, arranged by how
+The following diagram visualizes the five comparable kinds, arranged by how
 much structural information they track:
 
 .. mermaid::
@@ -735,15 +831,18 @@ much structural information they track:
    graph LR
        UI["singleton<br/><i>pointer only</i>"]
        TN["tree<br/><i>content only</i>"]
+       CTN["const-tree<br/><i>content + pointer shortcut</i>"]
        DN["dag<br/><i>content + sharing</i>"]
        FV["var<br/><i>content + binding position</i>"]
 
        UI --- TN
+       TN --- CTN
        TN --- DN
        TN --- FV
 
        style UI fill:#e2e3e5
        style TN fill:#d4edda
+       style CTN fill:#d4edda
        style DN fill:#cce5ff
        style FV fill:#fff3cd
 
@@ -764,6 +863,11 @@ much structural information they track:
    * - ``"tree"``
      - Yes
      - No
+     - No
+     - No
+   * - ``"const-tree"``
+     - Yes
+     - Yes (fast path)
      - No
      - No
    * - ``"dag"``
@@ -792,11 +896,14 @@ When defining a new type:
        Q2 -->|Yes| FV["structural_eq=&quot;var&quot;"]
        Q2 -->|No| Q3{"Pointer sharing<br/>semantically<br/>meaningful?"}
        Q3 -->|Yes| DN["structural_eq=&quot;dag&quot;"]
-       Q3 -->|No| TN["structural_eq=&quot;tree&quot;"]
+       Q3 -->|No| Q4{"Immutable AND<br/>no transitive<br/>var children?"}
+       Q4 -->|Yes| CTN["structural_eq=&quot;const-tree&quot;"]
+       Q4 -->|No| TN["structural_eq=&quot;tree&quot;"]
 
        style UI fill:#e2e3e5
        style FV fill:#fff3cd
        style DN fill:#cce5ff
+       style CTN fill:#d4edda
        style TN fill:#d4edda
 
 Enum types do not need this decision process: :class:`~tvm_ffi.dataclasses.Enum`

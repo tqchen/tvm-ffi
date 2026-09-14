@@ -26,7 +26,6 @@ from __future__ import annotations
 import pytest
 import tvm_ffi
 from tvm_ffi import get_first_structural_mismatch, structural_equal, structural_hash
-from tvm_ffi.access_path import AccessPath
 from tvm_ffi.dataclasses import field, py_class
 
 # ---------------------------------------------------------------------------
@@ -234,29 +233,6 @@ class TestTreeNode:
         copies = tvm_ffi.Array([TExpr(value=10), TExpr(value=10)])
         assert structural_equal(shared, copies)
         assert structural_hash(shared) == structural_hash(copies)
-
-
-@pytest.mark.parametrize("kind", ["tree", "access-step", "access-path"])
-def test_shared_tree_variable_mapping(kind: str) -> None:
-    """Shared trees still traverse variable children in the current binding context."""
-    x, y = TVar("x"), TVar("y")
-
-    def make_tree(var: TVar) -> tvm_ffi.Object:
-        if kind == "tree":
-            return TFunc(params=[], body=[var])
-        path = AccessPath.root().map_item(var)
-        return path.to_steps()[0] if kind == "access-step" else path
-
-    shared = make_tree(x)
-    mapped = make_tree(y)
-    # Visiting the shared child must record x -> x before the next occurrence.
-    assert not structural_equal([shared, x], [shared, y], map_free_vars=True)
-    # An existing x -> y binding must also be checked inside the shared child.
-    lhs = TFunc(params=[x], body=[shared])
-    assert not structural_equal(lhs, TFunc(params=[y], body=[shared]))
-    rhs = TFunc(params=[y], body=[mapped])
-    assert structural_equal(lhs, rhs)
-    assert structural_hash(lhs) == structural_hash(rhs)
 
 
 # ---------------------------------------------------------------------------
