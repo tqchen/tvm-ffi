@@ -534,10 +534,10 @@ inline constexpr const char* kStructuralMutate = "__s_mutate__";
  *
  * ``(StructuralMutator mutator, Any value) -> Any``.
  *
- * This hook is optional. When it is absent, ``DefaultMaybeInplaceMutateExpected`` falls back to
- * non-in-place mutation through ``kStructuralMutate`` or reflected structural fields. In-place
- * mutation is therefore explicitly opt-in and is never inferred from ownership by the reflected
- * fallback.
+ * This hook is optional. When it is absent, ``DefaultMutateExpected`` with
+ * ``inplace_mode=InplaceMode::kAllow`` falls back to non-in-place mutation through
+ * ``kStructuralMutate`` or reflected structural fields. In-place mutation is therefore explicitly
+ * opt-in and is never inferred from ownership by the reflected fallback.
  */
 inline constexpr const char* kStructuralMaybeInplaceMutate = "__s_maybe_inplace_mutate__";
 

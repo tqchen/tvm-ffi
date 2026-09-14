@@ -33,6 +33,7 @@ from .registry import register_object
 
 __all__ = [
     "DefRegionKind",
+    "InplaceMode",
     "StructuralKey",
     "StructuralMutator",
     "StructuralVisitor",
@@ -82,6 +83,25 @@ class WalkResult(IntEnum):
 
     ADVANCE = 0
     SKIP = 1
+
+
+class InplaceMode(IntEnum):
+    """Permission to mutate a value in place along its ownership path.
+
+    DISALLOW preserves the source through copy-on-write. ALLOW permits in-place
+    mutation only when the current value is uniquely owned; it does not require
+    a callback to reuse the value. Structural mutation callbacks receive the
+    corresponding integer, which compares directly with these enum members.
+
+    See Also
+    --------
+    :py:func:`tvm_ffi.structural_mutate`
+        Mutate a value with callbacks that own recursive mutation.
+
+    """
+
+    DISALLOW = 0
+    ALLOW = 1
 
 
 class DefRegionKind(IntEnum):
@@ -697,9 +717,10 @@ def structural_mutate(
     """Mutate a value with callbacks that own recursive mutation.
 
     Each callback receives ``(value, mutator)`` and may optionally receive a
-    third ``allow_inplace`` boolean, which is true only when the callback's
-    value is on a uniquely owned path. The flag lets a callback choose an
-    ownership-aware implementation; recursive descent still uses
+    third ``inplace_mode`` integer corresponding to :class:`InplaceMode`.
+    It equals ``InplaceMode.ALLOW`` only when the callback's value is on a
+    uniquely owned path, and ``InplaceMode.DISALLOW`` otherwise. The mode lets
+    a callback choose an ownership-aware implementation; recursive descent uses
     :meth:`StructuralMutator.mutate` for selected children or
     :meth:`StructuralMutator.default_mutate` for the matched value's default
     mutation. Its returned value is final and is not traversed again. Entries
@@ -726,7 +747,7 @@ def structural_mutate(
         (
             _callback_type_to_type_index(t, api_name="structural_mutate"),
             fn,
-            _callback_accepts_allow_inplace(fn),
+            _callback_accepts_inplace_mode(fn),
         )
         for t, fn in callback_entries
     ]
@@ -860,8 +881,8 @@ def _normalize_callbacks(
     return callback_entries
 
 
-def _callback_accepts_allow_inplace(callback: Callable[..., Any]) -> bool:
-    """Return whether a StructuralMutate callback accepts its optional flag."""
+def _callback_accepts_inplace_mode(callback: Callable[..., Any]) -> bool:
+    """Return whether a StructuralMutate callback accepts its optional mode."""
     try:
         signature = inspect.signature(callback)
     except (TypeError, ValueError):
@@ -870,14 +891,14 @@ def _callback_accepts_allow_inplace(callback: Callable[..., Any]) -> bool:
         return False
 
     try:
-        signature.bind(None, None, False)
+        signature.bind(None, None, InplaceMode.DISALLOW)
     except TypeError:
         try:
             signature.bind(None, None)
         except TypeError as err:
             raise TypeError(
                 "structural_mutate callback must accept (value, mutator) or "
-                "(value, mutator, allow_inplace)"
+                "(value, mutator, inplace_mode)"
             ) from err
         return False
     return True

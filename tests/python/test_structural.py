@@ -329,6 +329,41 @@ def test_structural_visit_default_visit_binding() -> None:
     assert nested_trace == ["array", 1, 2]
 
 
+def test_structural_mutate_inplace_mode() -> None:
+    assert tvm_ffi.InplaceMode.DISALLOW == 0
+    assert tvm_ffi.InplaceMode.ALLOW == 1
+    assert not tvm_ffi.InplaceMode.DISALLOW
+    assert tvm_ffi.InplaceMode.ALLOW
+    inplace_trace: list[int] = []
+
+    def mutate_with_mode(value: int, mutator: tvm_ffi.StructuralMutator, inplace_mode: int) -> int:
+        assert isinstance(mutator, tvm_ffi.StructuralMutator)
+        assert type(inplace_mode) is int
+        inplace_trace.append(inplace_mode)
+        return value + 1
+
+    mode_root = tvm_ffi.Array([1])
+    mode_mapped = tvm_ffi.structural_mutate(mode_root, (int, mutate_with_mode))
+    assert inplace_trace == [tvm_ffi.InplaceMode.DISALLOW]
+    assert not mode_mapped.same_as(mode_root)
+    assert list(mode_root) == [1]
+    assert list(mode_mapped) == [2]
+
+    def mutate_array_with_mode(
+        value: tvm_ffi.Array, mutator: tvm_ffi.StructuralMutator, inplace_mode: int
+    ) -> object:
+        assert type(inplace_mode) is int
+        inplace_trace.append(inplace_mode)
+        return mutator.default_mutate(value)
+
+    owned_root = tvm_ffi.Array([1])
+    owned_mapped = tvm_ffi.structural_mutate(
+        owned_root._move(), (tvm_ffi.Array, mutate_array_with_mode)
+    )
+    assert inplace_trace == [tvm_ffi.InplaceMode.DISALLOW, tvm_ffi.InplaceMode.ALLOW]
+    assert list(owned_mapped) == [1]
+
+
 def test_structural_mutate_callback_owned_recursion_and_errors() -> None:
     trace: list[int | str] = []
 
@@ -371,22 +406,6 @@ def test_structural_mutate_callback_owned_recursion_and_errors() -> None:
     assert not default_mapped.same_as(default_root)
     assert list(default_root) == [3, 4]
     assert list(default_mapped) == [4, 5]
-
-    inplace_trace: list[bool] = []
-
-    def mutate_with_flag(
-        value: int, mutator: tvm_ffi.StructuralMutator, allow_inplace: bool
-    ) -> int:
-        assert isinstance(mutator, tvm_ffi.StructuralMutator)
-        inplace_trace.append(allow_inplace)
-        return value + 1
-
-    flagged_root = tvm_ffi.Array([1])
-    flagged_mapped = tvm_ffi.structural_mutate(flagged_root, (int, mutate_with_flag))
-    assert inplace_trace == [False]
-    assert not flagged_mapped.same_as(flagged_root)
-    assert list(flagged_root) == [1]
-    assert list(flagged_mapped) == [2]
 
     direct_trace: list[int] = []
 
