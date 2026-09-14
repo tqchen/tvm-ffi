@@ -857,7 +857,7 @@ namespace details {
 /// \cond Doxygen_Suppress
 // Return an error from the current raw or Expected mutation function.
 // The rvalue-only helper lets the enclosing return type select the representation.
-#define TVM_FFI_S_MUTATE_RET_IF_ERROR(Result)                         \
+#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result)                   \
   do {                                                                \
     auto&& tvm_ffi_res_ = (Result);                                   \
     if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.is_err())) {               \
@@ -871,7 +871,7 @@ namespace details {
 /// \cond Doxygen_Suppress
 #define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Type, Name, ResultExpr)               \
   auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */                        \
-  TVM_FFI_S_MUTATE_RET_IF_ERROR(Result);                                                      \
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result);                                                \
   if constexpr (!::tvm::ffi::type_subsumes_v<::tvm::ffi::Expected<Type>, decltype(Result)>) { \
     if (TVM_FFI_PREDICT_FALSE(!::tvm::ffi::details::AnyUnsafe::CheckAnyStrict<Type>(          \
             ::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))) {                         \
@@ -929,7 +929,7 @@ namespace details {
 /// \cond Doxygen_Suppress
 #define TVM_FFI_UNSAFE_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Type, Name, ResultExpr) \
   auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */                 \
-  TVM_FFI_S_MUTATE_RET_IF_ERROR(Result);                                               \
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result);                                         \
   Type Name = /* NOLINT(bugprone-macro-parentheses) */                                 \
       ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                     \
           ::std::move(::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))

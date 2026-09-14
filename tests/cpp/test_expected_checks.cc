@@ -235,7 +235,7 @@ TEST(ExpectedChecks, EnclosingIfElseAndLoopControlFlow) {
 
 template <typename Return>
 Return MutateReturnIfError(Expected<UnchangedOr<Any>> result, int* continued) noexcept {
-  TVM_FFI_S_MUTATE_RET_IF_ERROR(result);
+  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(result);
   ++*continued;
   if constexpr (std::is_same_v<Return, TVMFFIAny>) {
     return AnyView(42).CopyToTVMFFIAny();
@@ -264,7 +264,7 @@ TEST(ExpectedChecks, StructuralMutateReturnsOnlyErrors) {
 
 template <typename Return>
 Return VisitReturnIfStop(Expected<Optional<VisitInterrupt>> result, int* continued) noexcept {
-  TVM_FFI_S_VISIT_RET_IF_STOP(result);
+  TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(result);
   ++*continued;
   if constexpr (std::is_same_v<Return, TVMFFIAny>) {
     return AnyView(nullptr).CopyToTVMFFIAny();

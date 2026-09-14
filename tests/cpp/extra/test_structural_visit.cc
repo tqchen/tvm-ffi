@@ -685,9 +685,9 @@ TEST(StructuralVisit, CallbackDrivenTraversal) {
       TPair(Array<ObjectRef>{lhs}, Array<ObjectRef>{stop, skipped}),
       [](const TPairObj* pair,
          StructuralVisitorObj* visitor) -> Expected<Optional<VisitInterrupt>> {
-        TVM_FFI_S_VISIT_RET_IF_STOP(visitor->WithDefRegionKind(
+        TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->WithDefRegionKind(
             kTVMFFIDefRegionKindPattern, [&] { return visitor->VisitExpected(pair->lhs); }));
-        TVM_FFI_S_VISIT_RET_IF_STOP(visitor->WithDefRegionKind(
+        TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->WithDefRegionKind(
             kTVMFFIDefRegionKindSimple, [&] { return visitor->VisitExpected(pair->rhs); }));
         return Optional<VisitInterrupt>(std::nullopt);
       },
@@ -754,7 +754,7 @@ TEST(StructuralVisit, CallbackVisitsLhsOnly) {
   Expected<Optional<VisitInterrupt>> result = StructuralVisitExpected(
       root,
       [](const TPair& pair, StructuralVisitorObj* visitor) -> Expected<Optional<VisitInterrupt>> {
-        TVM_FFI_S_VISIT_RET_IF_STOP(visitor->VisitExpected(pair->lhs));
+        TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(pair->lhs));
         return Optional<VisitInterrupt>(std::nullopt);
       },
       [&](const TVar& var, StructuralVisitorObj*) -> Expected<Optional<VisitInterrupt>> {

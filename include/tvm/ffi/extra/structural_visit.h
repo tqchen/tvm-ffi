@@ -513,15 +513,15 @@ namespace details {
  * TVMFFIAny FooVisit(StructuralVisitorObj* visitor, AnyView value) noexcept {
  *   const FooNode* self =
  *       details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const FooNode>(value);
- *   TVM_FFI_S_VISIT_RET_IF_STOP(visitor->VisitExpected(self->a));
- *   TVM_FFI_S_VISIT_RET_IF_STOP(visitor->VisitExpected(self->b));
+ *   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->a));
+ *   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->b));
  *   return AnyView(nullptr).CopyToTVMFFIAny();
  * }
  * \endcode
  *
  * \param Result An expression yielding the descent result to inspect.
  */
-#define TVM_FFI_S_VISIT_RET_IF_STOP(Result)                                        \
+#define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result)                                 \
   do {                                                                             \
     auto&& tvm_ffi_res_ = (Result);                                                \
     if (TVM_FFI_PREDICT_FALSE(                                                     \
