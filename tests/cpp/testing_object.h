@@ -253,12 +253,10 @@ class TMutatePairObj : public Object {
     ++StructuralMutateCallCount();
     const TMutatePairObj* self =
         details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const TMutatePairObj>(value);
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
-        UnchangedOr<ObjectRef>, lhs,
-        mutator->MutateExpected(self->lhs, /* allow_inplace= */ false));
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
-        UnchangedOr<ObjectRef>, rhs,
-        mutator->MutateExpected(self->rhs, /* allow_inplace= */ false));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, lhs,
+                                      mutator->MutateExpected(self->lhs, InplaceMode::kDisallow));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, rhs,
+                                      mutator->MutateExpected(self->rhs, InplaceMode::kDisallow));
     if (lhs.UnchangedOrSameAs(self->lhs) && rhs.UnchangedOrSameAs(self->rhs)) {
       return Unchanged().CopyToTVMFFIAny();
     }

@@ -49,6 +49,16 @@
 namespace tvm {
 namespace ffi {
 
+/*!
+ * \brief Permission to mutate a value in place along its ownership path.
+ */
+enum class InplaceMode : int32_t {
+  /*! \brief Preserve the source through copy-on-write mutation. */
+  kDisallow = 0,
+  /*! \brief Permit in-place mutation when the current value is uniquely owned. */
+  kAllow = 1,
+};
+
 class StructuralMutatorObj;
 template <typename T>
 class UnchangedOr;
@@ -386,43 +396,45 @@ class StructuralMutatorObj : public Object {
   /*!
    * \brief Throwing form of \ref MutateExpected.
    * \param value The borrowed value to mutate.
-   * \param allow_inplace Whether the caller permits mutation along this ownership path.
+   * \param inplace_mode Whether the caller permits mutation along this ownership path.
    * \return The replacement or unchanged marker.
    * \throws Error if mutation fails.
    *
-   * \note Omitting allow_inplace defaults to copy-on-write. In-place mutation is permitted
-   *       only when allow_inplace is true and the current value is uniquely owned. True requires
-   *       permission along the entire ownership path from the root; recursive calls must forward
-   *       their established permission explicitly. Uniqueness is checked before callback arguments
-   *       acquire ownership. This permits in-place dispatch but does not guarantee reuse: a hook
-   *       may return a replacement. In-place changes completed before an Error are not rolled
-   *       back.
+   * \note The default InplaceMode::kDisallow uses copy-on-write. In-place mutation is permitted
+   *       only when inplace_mode is InplaceMode::kAllow and the current value is uniquely owned.
+   *       InplaceMode::kAllow requires permission along the entire path from the root.
+   *       Recursive calls must forward their established mode explicitly. Uniqueness is checked
+   *       before callback arguments acquire ownership. This permits in-place dispatch but does
+   *       not guarantee reuse: a hook may return a replacement. In-place changes completed before
+   *       an Error are not rolled back.
    *
    * \code{.cpp}
    * Expr new_node = mutator->Mutate(node).ValueOrUnchanged(AnyView(node)).cast<Expr>();
    * \endcode
    */
-  TVM_FFI_INLINE UnchangedOr<Any> Mutate(AnyView value, bool allow_inplace = false) {
-    return std::move(MutateExpected(value, allow_inplace)).value();
+  TVM_FFI_INLINE UnchangedOr<Any> Mutate(AnyView value,
+                                         InplaceMode inplace_mode = InplaceMode::kDisallow) {
+    return std::move(MutateExpected(value, inplace_mode)).value();
   }
 
   /*!
    * \brief Mutate a value, permitting in-place mutation only when uniquely owned.
    * \param value The borrowed value to mutate.
-   * \param allow_inplace Whether the caller permits mutation along this ownership path.
+   * \param inplace_mode Whether the caller permits mutation along this ownership path.
    * \return The replacement or unchanged marker, or an Error if mutation failed.
    *
-   * \note Omitting allow_inplace defaults to copy-on-write. In-place mutation is permitted
-   *       only when allow_inplace is true and the current value is uniquely owned. True requires
-   *       permission along the entire ownership path from the root; recursive calls must forward
-   *       their established permission explicitly. Uniqueness is checked before callback arguments
-   *       acquire ownership. This permits in-place dispatch but does not guarantee reuse: a hook
-   *       may return a replacement. In-place changes completed before an Error are not rolled back.
+   * \note The default InplaceMode::kDisallow uses copy-on-write. In-place mutation is permitted
+   *       only when inplace_mode is InplaceMode::kAllow and the current value is uniquely owned.
+   *       InplaceMode::kAllow requires permission along the entire path from the root.
+   *       Recursive calls must forward their established mode explicitly. Uniqueness is checked
+   *       before callback arguments acquire ownership. This permits in-place dispatch but does
+   *       not guarantee reuse: a hook may return a replacement. In-place changes completed before
+   *       an Error are not rolled back.
    */
-  TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateExpected(AnyView value,
-                                                           bool allow_inplace = false) noexcept {
+  TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateExpected(
+      AnyView value, InplaceMode inplace_mode = InplaceMode::kDisallow) noexcept {
     const Object* object = value.as<Object>();
-    if (allow_inplace && object != nullptr && object->unique()) {
+    if (inplace_mode == InplaceMode::kAllow && object != nullptr && object->unique()) {
       return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
           (*vtable_->maybe_inplace_mutate)(this, value));
     }
@@ -433,21 +445,22 @@ class StructuralMutatorObj : public Object {
   /*!
    * \brief Apply default structural mutation with validated in-place permission.
    * \param value The borrowed current value to mutate.
-   * \param allow_inplace Whether mutating this value in place is already known to be safe.
+   * \param inplace_mode Whether mutating this value in place is already known to be safe.
    * \return The replacement or unchanged marker, or an Error if mutation failed.
    *
-   * \note Omitting allow_inplace defaults to copy-on-write. This method bypasses the current
-   *       engine callback and trusts true as already validated permission, without rechecking
-   *       uniqueness. Propagate the callback's permission explicitly, even if its typed argument
-   *       has acquired another reference. Permission must cover the entire path from the root.
+   * \note The default InplaceMode::kDisallow uses copy-on-write. This method bypasses the current
+   *       engine callback and trusts InplaceMode::kAllow without rechecking uniqueness.
+   *       Propagate the callback's validated mode explicitly, even if its typed argument has
+   *       acquired another reference. Permission must cover the entire path from the root.
    *       Without an in-place hook, ordinary mutation runs. In-place changes completed before an
    *       Error are not rolled back. Registered hooks own variable-remap handling; the reflected
    *       fallback applies it automatically and always uses copy-on-write mutation.
    */
   TVM_FFI_INLINE Expected<UnchangedOr<Any>> DefaultMutateExpected(
-      AnyView value, bool allow_inplace = false) noexcept {
+      AnyView value, InplaceMode inplace_mode = InplaceMode::kDisallow) noexcept {
     return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
-        allow_inplace ? DefaultMaybeInplaceMutateRaw(value) : DefaultMutateRaw(value));
+        inplace_mode == InplaceMode::kAllow ? DefaultMaybeInplaceMutateRaw(value)
+                                            : DefaultMutateRaw(value));
   }
 
   /*!
@@ -672,7 +685,7 @@ class StructuralMutatorObj : public Object {
       return result;
     }
     return details::ExpectedUnsafe::MoveToTVMFFIAny(
-        DefaultMutateExpected(value, /* allow_inplace= */ false));
+        DefaultMutateExpected(value, InplaceMode::kDisallow));
   }
 
  protected:
@@ -768,14 +781,14 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
           Expected<UnchangedOr<Any>> mutated_field = [&]() -> Expected<UnchangedOr<Any>> {
             if (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefSimple) {
               return mutator->WithDefRegionKind(kTVMFFIDefRegionKindSimple, [&]() {
-                return mutator->MutateExpected(field_value, /* allow_inplace= */ false);
+                return mutator->MutateExpected(field_value, InplaceMode::kDisallow);
               });
             } else if (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefPattern) {
               return mutator->WithDefRegionKind(kTVMFFIDefRegionKindPattern, [&]() {
-                return mutator->MutateExpected(field_value, /* allow_inplace= */ false);
+                return mutator->MutateExpected(field_value, InplaceMode::kDisallow);
               });
             } else {
-              return mutator->MutateExpected(field_value, /* allow_inplace= */ false);
+              return mutator->MutateExpected(field_value, InplaceMode::kDisallow);
             }
           }();
           if (TVM_FFI_PREDICT_FALSE(mutated_field.is_err())) {
@@ -882,11 +895,11 @@ namespace details {
  * TVMFFIAny FooMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
  *   const FooNode* self =
  *       details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const FooNode>(value);
- *   constexpr bool allow_inplace = false;
+ *   constexpr InplaceMode inplace_mode = InplaceMode::kDisallow;
  *   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Expr>, a,
- *                                     mutator->MutateExpected(self->a, allow_inplace));
+ *                                     mutator->MutateExpected(self->a, inplace_mode));
  *   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Expr>, b,
- *                                     mutator->MutateExpected(self->b, allow_inplace));
+ *                                     mutator->MutateExpected(self->b, inplace_mode));
  *   if (a.UnchangedOrSameAs(self->a) && b.UnchangedOrSameAs(self->b)) {
  *     return Unchanged().CopyToTVMFFIAny();
  *   }
@@ -1205,14 +1218,14 @@ class StructuralMapEngine : public Parent {
   /*!
    * \brief Test one link against \p value and, if it matches, mutate the node through it.
    *
-   * \tparam kMaybeInplace Whether the caller may mutate a uniquely owned node in place.
+   * \tparam kInplaceMode Whether the caller may mutate a uniquely owned node in place.
    * \tparam Callback The link's callback type.
    * \param callback The link's callback.
    * \param value The borrowed value to test and mutate.
    * \param out Receives the mutated value or Error when the link matched.
    * \return Whether the link matched, in which case \p out was written.
    */
-  template <bool kMaybeInplace, typename Callback>
+  template <InplaceMode kInplaceMode, typename Callback>
   TVM_FFI_INLINE bool TryLink(Callback& callback, AnyView value, Expected<Any>* out) noexcept {
     using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
     static_assert(FuncInfo::num_args >= 1,
@@ -1249,16 +1262,18 @@ class StructuralMapEngine : public Parent {
           mapped_value.type_index() == TypeIndex::kTVMFFIUnchanged ? value : AnyView(mapped_value);
       // Each descent names the node it actually ran on in the error context.
       *out = [&]() -> Expected<Any> {
-        if constexpr (kMaybeInplace) {
+        if constexpr (kInplaceMode == InplaceMode::kAllow) {
           // A pre-order result can be mutated in place if unchanged or uniquely owned.
           if (descent_view.same_as(value)) {
-            return this->DefaultMutateExpected(value, /* allow_inplace= */ true);
+            return this->DefaultMutateExpected(value, InplaceMode::kAllow);
           }
           const Object* mapped_obj = descent_view.as<Object>();
-          bool can_inplace = mapped_obj != nullptr && mapped_obj->unique();
-          return this->DefaultMutateExpected(descent_view, can_inplace);
+          InplaceMode inplace_mode = mapped_obj != nullptr && mapped_obj->unique()
+                                         ? InplaceMode::kAllow
+                                         : InplaceMode::kDisallow;
+          return this->DefaultMutateExpected(descent_view, inplace_mode);
         } else {
-          return this->DefaultMutateExpected(descent_view, /* allow_inplace= */ false);
+          return this->DefaultMutateExpected(descent_view, InplaceMode::kDisallow);
         }
       }();
       if (TVM_FFI_PREDICT_FALSE(out->is_err())) return true;
@@ -1299,10 +1314,10 @@ class StructuralMapEngine : public Parent {
    * \brief Test every link in declaration order, stopping at the first that matches.
    * \return Whether some link matched, in which case \p out was written.
    */
-  template <bool kMaybeInplace, size_t... Is>
+  template <InplaceMode kInplaceMode, size_t... Is>
   TVM_FFI_INLINE bool TryLinks(AnyView value, Expected<Any>* out,
                                std::index_sequence<Is...>) noexcept {
-    return (TryLink<kMaybeInplace>(std::get<Is>(callbacks_), value, out) || ...);
+    return (TryLink<kInplaceMode>(std::get<Is>(callbacks_), value, out) || ...);
   }
 
   /*!
@@ -1313,18 +1328,18 @@ class StructuralMapEngine : public Parent {
   TVM_FFI_INLINE TVMFFIAny MutateImplRaw(AnyView value) noexcept {
     Expected<Any> out{Any()};
     if constexpr (order == WalkOrder::kPostOrder) {
-      out = this->DefaultMutateExpected(value, /* allow_inplace= */ false);
+      out = this->DefaultMutateExpected(value, InplaceMode::kDisallow);
       if (TVM_FFI_PREDICT_FALSE(out.is_err())) {
         return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
       }
-      TryLinks<false>(value, &out, std::index_sequence_for<Callbacks...>{});
+      TryLinks<InplaceMode::kDisallow>(value, &out, std::index_sequence_for<Callbacks...>{});
       return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
     } else {
-      if (TryLinks<false>(value, &out, std::index_sequence_for<Callbacks...>{})) {
+      if (TryLinks<InplaceMode::kDisallow>(value, &out, std::index_sequence_for<Callbacks...>{})) {
         return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
       }
       return ExpectedUnsafe::MoveToTVMFFIAny(
-          this->DefaultMutateExpected(value, /* allow_inplace= */ false));
+          this->DefaultMutateExpected(value, InplaceMode::kDisallow));
     }
   }
 
@@ -1336,18 +1351,18 @@ class StructuralMapEngine : public Parent {
   TVM_FFI_INLINE TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
     Expected<Any> out{Any()};
     if constexpr (order == WalkOrder::kPostOrder) {
-      out = this->DefaultMutateExpected(value, /* allow_inplace= */ true);
+      out = this->DefaultMutateExpected(value, InplaceMode::kAllow);
       if (TVM_FFI_PREDICT_FALSE(out.is_err())) {
         return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
       }
-      TryLinks<true>(value, &out, std::index_sequence_for<Callbacks...>{});
+      TryLinks<InplaceMode::kAllow>(value, &out, std::index_sequence_for<Callbacks...>{});
       return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
     } else {
-      if (TryLinks<true>(value, &out, std::index_sequence_for<Callbacks...>{})) {
+      if (TryLinks<InplaceMode::kAllow>(value, &out, std::index_sequence_for<Callbacks...>{})) {
         return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
       }
       return ExpectedUnsafe::MoveToTVMFFIAny(
-          this->DefaultMutateExpected(value, /* allow_inplace= */ true));
+          this->DefaultMutateExpected(value, InplaceMode::kAllow));
     }
   }
 
@@ -1445,12 +1460,12 @@ class StructuralMapDynEngine : public Parent {
 
   /*!
    * \brief Test the runtime link table against \p value and mutate through the first match.
-   * \tparam kMaybeInplace Whether a uniquely owned node may be mutated in place.
+   * \tparam kInplaceMode Whether a uniquely owned node may be mutated in place.
    * \param value The borrowed value to test and mutate.
    * \param out Receives the mutated value or Error when a link matched.
    * \return Whether a link matched, in which case \p out was written.
    */
-  template <bool kMaybeInplace>
+  template <InplaceMode kInplaceMode>
   TVM_FFI_INLINE bool TryLink(AnyView value, Expected<Any>* out) noexcept {
     if constexpr (order == WalkOrder::kPreOrder) {
       bool with_kind = false;
@@ -1468,15 +1483,17 @@ class StructuralMapDynEngine : public Parent {
       const AnyView descent_view =
           mapped_value.type_index() == TypeIndex::kTVMFFIUnchanged ? value : AnyView(mapped_value);
       *out = [&]() -> Expected<Any> {
-        if constexpr (kMaybeInplace) {
+        if constexpr (kInplaceMode == InplaceMode::kAllow) {
           if (descent_view.same_as(value)) {
-            return this->DefaultMutateExpected(value, /* allow_inplace= */ true);
+            return this->DefaultMutateExpected(value, InplaceMode::kAllow);
           }
           const Object* mapped_obj = descent_view.as<Object>();
-          bool can_inplace = mapped_obj != nullptr && mapped_obj->unique();
-          return this->DefaultMutateExpected(descent_view, can_inplace);
+          InplaceMode inplace_mode = mapped_obj != nullptr && mapped_obj->unique()
+                                         ? InplaceMode::kAllow
+                                         : InplaceMode::kDisallow;
+          return this->DefaultMutateExpected(descent_view, inplace_mode);
         } else {
-          return this->DefaultMutateExpected(descent_view, /* allow_inplace= */ false);
+          return this->DefaultMutateExpected(descent_view, InplaceMode::kDisallow);
         }
       }();
       if (TVM_FFI_PREDICT_FALSE(out->is_err())) return true;
@@ -1509,18 +1526,18 @@ class StructuralMapDynEngine : public Parent {
   TVM_FFI_INLINE TVMFFIAny MutateImplRaw(AnyView value) noexcept {
     Expected<Any> out{Any()};
     if constexpr (order == WalkOrder::kPostOrder) {
-      out = this->DefaultMutateExpected(value, /* allow_inplace= */ false);
+      out = this->DefaultMutateExpected(value, InplaceMode::kDisallow);
       if (TVM_FFI_PREDICT_FALSE(out.is_err())) {
         return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
       }
-      TryLink<false>(value, &out);
+      TryLink<InplaceMode::kDisallow>(value, &out);
       return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
     } else {
-      if (TryLink<false>(value, &out)) {
+      if (TryLink<InplaceMode::kDisallow>(value, &out)) {
         return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
       }
       return ExpectedUnsafe::MoveToTVMFFIAny(
-          this->DefaultMutateExpected(value, /* allow_inplace= */ false));
+          this->DefaultMutateExpected(value, InplaceMode::kDisallow));
     }
   }
 
@@ -1528,18 +1545,18 @@ class StructuralMapDynEngine : public Parent {
   TVM_FFI_INLINE TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
     Expected<Any> out{Any()};
     if constexpr (order == WalkOrder::kPostOrder) {
-      out = this->DefaultMutateExpected(value, /* allow_inplace= */ true);
+      out = this->DefaultMutateExpected(value, InplaceMode::kAllow);
       if (TVM_FFI_PREDICT_FALSE(out.is_err())) {
         return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
       }
-      TryLink<true>(value, &out);
+      TryLink<InplaceMode::kAllow>(value, &out);
       return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
     } else {
-      if (TryLink<true>(value, &out)) {
+      if (TryLink<InplaceMode::kAllow>(value, &out)) {
         return ExpectedUnsafe::MoveToTVMFFIAny(std::move(out));
       }
       return ExpectedUnsafe::MoveToTVMFFIAny(
-          this->DefaultMutateExpected(value, /* allow_inplace= */ true));
+          this->DefaultMutateExpected(value, InplaceMode::kAllow));
     }
   }
 
@@ -1586,7 +1603,7 @@ class StructuralMutateEngine : public Parent {
   static TVMFFIAny DispatchMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
     auto* self = static_cast<StructuralMutateEngine*>(mutator);
     if constexpr (sizeof...(Callbacks) == 1) {
-      return self->template MutateSingleCallbackRaw<false>(value);
+      return self->template MutateSingleCallbackRaw<InplaceMode::kDisallow>(value);
     } else {
       return self->MutateImplRaw(value);
     }
@@ -1597,7 +1614,7 @@ class StructuralMutateEngine : public Parent {
                                               AnyView value) noexcept {
     auto* self = static_cast<StructuralMutateEngine*>(mutator);
     if constexpr (sizeof...(Callbacks) == 1) {
-      return self->template MutateSingleCallbackRaw<true>(value);
+      return self->template MutateSingleCallbackRaw<InplaceMode::kAllow>(value);
     } else {
       return self->MaybeInplaceMutateImplRaw(value);
     }
@@ -1606,7 +1623,7 @@ class StructuralMutateEngine : public Parent {
   /*! \brief Mutate one value, handing a matched callback ownership of descent. */
   TVMFFIAny MutateImplRaw(AnyView value) noexcept {
     Expected<Any> result{Any()};
-    if (DispatchCallbacks(value, false, &result)) {
+    if (DispatchCallbacks(value, InplaceMode::kDisallow, &result)) {
       if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
         // Keep callback-boundary context in addition to the default-descent
         // context: a callback may return a rebuilt value, so the two nodes can differ.
@@ -1615,13 +1632,13 @@ class StructuralMutateEngine : public Parent {
       return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
     }
     return details::ExpectedUnsafe::MoveToTVMFFIAny(
-        Parent::DefaultMutateExpected(value, /* allow_inplace= */ false));
+        Parent::DefaultMutateExpected(value, InplaceMode::kDisallow));
   }
 
   /*! \brief Maybe mutate one value in place, with callback-owned descent. */
   TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
     Expected<Any> result{Any()};
-    if (DispatchCallbacks(value, true, &result)) {
+    if (DispatchCallbacks(value, InplaceMode::kAllow, &result)) {
       if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
         // Keep callback-boundary context in addition to the default-descent
         // context: a callback may return a rebuilt value, so the two nodes can differ.
@@ -1630,17 +1647,17 @@ class StructuralMutateEngine : public Parent {
       return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
     }
     return details::ExpectedUnsafe::MoveToTVMFFIAny(
-        Parent::DefaultMutateExpected(value, /* allow_inplace= */ true));
+        Parent::DefaultMutateExpected(value, InplaceMode::kAllow));
   }
 
   /*! \brief Invoke a matched callback with the Parent view and preserve returned/thrown Error. */
   template <typename Callback, typename Matched>
   TVM_FFI_INLINE Expected<Any> InvokeCallback(Callback& callback, Matched&& matched,
-                                              bool allow_inplace) noexcept {
+                                              InplaceMode inplace_mode) noexcept {
     using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
     static_assert(FuncInfo::num_args == 2 || FuncInfo::num_args == 3,
                   "StructuralMutate callback must take (value, mutator) or "
-                  "(value, mutator, allow_inplace)");
+                  "(value, mutator, inplace_mode)");
     using SecondArg = std::decay_t<std::tuple_element_t<1, typename FuncInfo::ArgType>>;
     using Second = std::remove_pointer_t<SecondArg>;
     static_assert(std::is_same_v<Second, typename Parent::MutatorObjType>,
@@ -1648,13 +1665,13 @@ class StructuralMutateEngine : public Parent {
                   "Parent::MutatorObjType*");
     if constexpr (FuncInfo::num_args == 3) {
       using ThirdArg = std::decay_t<std::tuple_element_t<2, typename FuncInfo::ArgType>>;
-      static_assert(std::is_same_v<ThirdArg, bool>,
-                    "third StructuralMutate callback argument must be bool");
+      static_assert(std::is_same_v<ThirdArg, InplaceMode>,
+                    "third StructuralMutate callback argument must be InplaceMode");
     }
     auto* mutator = static_cast<typename Parent::MutatorObjType*>(this);
     try {
       if constexpr (FuncInfo::num_args == 3) {
-        return callback(std::forward<Matched>(matched), mutator, allow_inplace);
+        return callback(std::forward<Matched>(matched), mutator, inplace_mode);
       } else {
         return callback(std::forward<Matched>(matched), mutator);
       }
@@ -1672,7 +1689,7 @@ class StructuralMutateEngine : public Parent {
 
   // One callback forwards its result directly, without a callback-chain envelope.
   // AnyView/Any always match; only a typed miss needs the Parent's default descent.
-  template <bool kMaybeInplace>
+  template <InplaceMode kInplaceMode>
   TVM_FFI_INLINE TVMFFIAny MutateSingleCallbackRaw(AnyView value) noexcept {
     auto& callback = std::get<0>(callbacks_);
     using FuncInfo = details::FunctionInfo<std::decay_t<decltype(callback)>>;
@@ -1681,20 +1698,20 @@ class StructuralMutateEngine : public Parent {
     TVMFFIAny result;
     if constexpr (std::is_same_v<TSub, AnyView>) {
       result =
-          details::ExpectedUnsafe::MoveToTVMFFIAny(InvokeCallback(callback, value, kMaybeInplace));
+          details::ExpectedUnsafe::MoveToTVMFFIAny(InvokeCallback(callback, value, kInplaceMode));
     } else if constexpr (std::is_same_v<TSub, Any>) {
       result = details::ExpectedUnsafe::MoveToTVMFFIAny(
-          InvokeCallback(callback, Any(value), kMaybeInplace));
+          InvokeCallback(callback, Any(value), kInplaceMode));
     } else if (auto matched = value.template as<TSub>()) {
       result = details::ExpectedUnsafe::MoveToTVMFFIAny(
-          InvokeCallback(callback, *std::move(matched), kMaybeInplace));
+          InvokeCallback(callback, *std::move(matched), kInplaceMode));
     } else {
-      if constexpr (kMaybeInplace) {
+      if constexpr (kInplaceMode == InplaceMode::kAllow) {
         return details::ExpectedUnsafe::MoveToTVMFFIAny(
-            Parent::DefaultMutateExpected(value, /* allow_inplace= */ true));
+            Parent::DefaultMutateExpected(value, InplaceMode::kAllow));
       } else {
         return details::ExpectedUnsafe::MoveToTVMFFIAny(
-            Parent::DefaultMutateExpected(value, /* allow_inplace= */ false));
+            Parent::DefaultMutateExpected(value, InplaceMode::kDisallow));
       }
     }
     // Release any owning match before naming the callback boundary, as in the general path.
@@ -1706,19 +1723,19 @@ class StructuralMutateEngine : public Parent {
 
   /*! \brief Write a matched callback result, leaving out untouched on a type miss. */
   template <typename Callback>
-  TVM_FFI_INLINE bool TryLink(Callback& callback, AnyView value, bool allow_inplace,
+  TVM_FFI_INLINE bool TryLink(Callback& callback, AnyView value, InplaceMode inplace_mode,
                               Expected<Any>* out) noexcept {
     using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
     using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
     using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
     if constexpr (std::is_same_v<TSub, AnyView>) {
-      *out = InvokeCallback(callback, value, allow_inplace);
+      *out = InvokeCallback(callback, value, inplace_mode);
       return true;
     } else if constexpr (std::is_same_v<TSub, Any>) {
-      *out = InvokeCallback(callback, Any(value), allow_inplace);
+      *out = InvokeCallback(callback, Any(value), inplace_mode);
       return true;
     } else if (auto matched = value.template as<TSub>()) {
-      *out = InvokeCallback(callback, *std::move(matched), allow_inplace);
+      *out = InvokeCallback(callback, *std::move(matched), inplace_mode);
       return true;
     }
     return false;
@@ -1726,15 +1743,15 @@ class StructuralMutateEngine : public Parent {
 
   /*! \brief Fold callbacks in declaration order, stopping at the first match. */
   template <size_t... Is>
-  TVM_FFI_INLINE bool TryLinks(AnyView value, bool allow_inplace, Expected<Any>* out,
+  TVM_FFI_INLINE bool TryLinks(AnyView value, InplaceMode inplace_mode, Expected<Any>* out,
                                std::index_sequence<Is...>) noexcept {
-    return (TryLink(std::get<Is>(callbacks_), value, allow_inplace, out) || ...);
+    return (TryLink(std::get<Is>(callbacks_), value, inplace_mode, out) || ...);
   }
 
   /*! \brief Run the callback chain, returning whether a callback matched. */
-  TVM_FFI_INLINE bool DispatchCallbacks(AnyView value, bool allow_inplace,
+  TVM_FFI_INLINE bool DispatchCallbacks(AnyView value, InplaceMode inplace_mode,
                                         Expected<Any>* out) noexcept {
-    return TryLinks(value, allow_inplace, out, std::index_sequence_for<Callbacks...>{});
+    return TryLinks(value, inplace_mode, out, std::index_sequence_for<Callbacks...>{});
   }
 
   /*! \brief Typed callbacks tested in declaration order, first match wins. */
@@ -1781,7 +1798,7 @@ Expected<Any> StructuralMapExpected(
   static_assert(sizeof...(Callbacks) != 0, "StructuralMap requires at least one callback");
   using Mutator = StructuralMapEngine<StructuralMapEngineBase, order, std::decay_t<Callbacks>...>;
   StructuralMutator mutator(make_object<Mutator>(std::forward<Callbacks>(callbacks)...));
-  auto result = mutator->MutateExpected(root, /* allow_inplace= */ true);
+  auto result = mutator->MutateExpected(root, InplaceMode::kAllow);
   if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
   UnchangedOr<Any> mapped = details::AnyUnsafe::MoveFromAnyAfterCheck<UnchangedOr<Any>>(
       std::move(details::ExpectedUnsafe::GetData(result)));
@@ -1821,7 +1838,7 @@ Any StructuralMap(Any root,
  * A callback takes one of two forms, where ``R`` is a supported return type:
  *
  * - ``R(const T& value, StructuralMutatorObj* mutator)``
- * - ``R(const T& value, StructuralMutatorObj* mutator, bool allow_inplace)``
+ * - ``R(const T& value, StructuralMutatorObj* mutator, InplaceMode inplace_mode)``
  *
  * A callback returns a replacement, ``Unchanged``, or ``Expected<Any>``. The first argument
  * selects by FFI type; callbacks are tried in declaration order and the first match owns mutation
@@ -1833,10 +1850,9 @@ Any StructuralMap(Any root,
  * \return The mutated owning value, or an Error if mutation or a callback fails.
  *
  * \note A two-argument callback descends with ``MutateExpected(value)``, using the default
- *       copy-on-write permission.
- *       A three-argument callback receives ``allow_inplace=true`` only when its value is on a
- *       uniquely owned path. Forward this permission to ``MutateExpected`` for child values
- *       or to ``DefaultMutateExpected`` for the current value's default descent.
+ *       copy-on-write permission. A three-argument callback receives InplaceMode::kAllow only
+ *       when its value is on a uniquely owned path. Forward this mode to ``MutateExpected`` for
+ *       child values or ``DefaultMutateExpected`` for the current value's default descent.
  * \note Pass an owned root with ``std::move(root)`` to permit root reuse. In a
  *       ``__s_maybe_inplace_mutate__`` hook, the corresponding nested idiom is
  *       ``self->field = StructuralMap(std::move(self->field), callback)``; const-correctness
@@ -1849,7 +1865,7 @@ Expected<Any> StructuralMutateExpected(
   static_assert(sizeof...(Callbacks) != 0, "StructuralMutate requires at least one callback");
   using Mutator = StructuralMutateEngine<StructuralMapEngineBase, std::decay_t<Callbacks>...>;
   StructuralMutator mutator(make_object<Mutator>(std::forward<Callbacks>(callbacks)...));
-  auto result = mutator->MutateExpected(root, /* allow_inplace= */ true);
+  auto result = mutator->MutateExpected(root, InplaceMode::kAllow);
   if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
   UnchangedOr<Any> mapped = details::AnyUnsafe::MoveFromAnyAfterCheck<UnchangedOr<Any>>(
       std::move(details::ExpectedUnsafe::GetData(result)));

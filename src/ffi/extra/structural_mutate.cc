@@ -57,11 +57,11 @@ Expected<Any> StructuralMapExpected(
     if (order == static_cast<int>(WalkOrder::kPreOrder)) {
       using Mutator = StructuralMapDynEngine<StructuralMapEngineBase, WalkOrder::kPreOrder>;
       StructuralMutator mutator(make_object<Mutator>(callbacks, callbacks_with_def_region_kind));
-      return mutator->MutateExpected(root, /* allow_inplace= */ true);
+      return mutator->MutateExpected(root, InplaceMode::kAllow);
     }
     using Mutator = StructuralMapDynEngine<StructuralMapEngineBase, WalkOrder::kPostOrder>;
     StructuralMutator mutator(make_object<Mutator>(callbacks, callbacks_with_def_region_kind));
-    return mutator->MutateExpected(root, /* allow_inplace= */ true);
+    return mutator->MutateExpected(root, InplaceMode::kAllow);
   }();
   if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
   UnchangedOr<Any> mapped = AnyUnsafe::MoveFromAnyAfterCheck<UnchangedOr<Any>>(
@@ -96,12 +96,12 @@ class StructuralMutateDynEngine : public Parent {
     return static_cast<StructuralMutateDynEngine*>(mutator)->MaybeInplaceMutateImplRaw(value);
   }
 
-  std::optional<Expected<Any>> DispatchCallback(AnyView value, bool allow_inplace) noexcept {
+  std::optional<Expected<Any>> DispatchCallback(AnyView value, InplaceMode inplace_mode) noexcept {
     for (const auto& entry : callbacks_) {
       if (!RuntimeTypeIndexMatch(value.type_index(), entry.template get<0>())) continue;
       if (entry.template get<2>()) {
         return entry.template get<1>().template CallExpected<Any>(
-            value, GetRef<StructuralMutator>(this), allow_inplace);
+            value, GetRef<StructuralMutator>(this), inplace_mode);
       }
       return entry.template get<1>().template CallExpected<Any>(value,
                                                                 GetRef<StructuralMutator>(this));
@@ -110,7 +110,7 @@ class StructuralMutateDynEngine : public Parent {
   }
 
   TVMFFIAny MutateImplRaw(AnyView value) noexcept {
-    if (std::optional<Expected<Any>> matched = DispatchCallback(value, false)) {
+    if (std::optional<Expected<Any>> matched = DispatchCallback(value, InplaceMode::kDisallow)) {
       Expected<Any> result = *std::move(matched);
       if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
         Parent::UpdateVisitErrorContext(result, value);
@@ -121,7 +121,7 @@ class StructuralMutateDynEngine : public Parent {
   }
 
   TVMFFIAny MaybeInplaceMutateImplRaw(AnyView value) noexcept {
-    if (std::optional<Expected<Any>> matched = DispatchCallback(value, true)) {
+    if (std::optional<Expected<Any>> matched = DispatchCallback(value, InplaceMode::kAllow)) {
       Expected<Any> result = *std::move(matched);
       if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
         Parent::UpdateVisitErrorContext(result, value);
@@ -137,9 +137,10 @@ class StructuralMutateDynEngine : public Parent {
 /*!
  * \brief Runtime callback-driven structural mutation.
  * \param root The root value to mutate.
- * \param callbacks Runtime ``(type_index, callback, accepts_allow_inplace)`` entries. A callback
- *                  whose marker is true is invoked as ``callback(value, mutator, allow_inplace)``;
- *                  otherwise it is invoked as ``callback(value, mutator)``.
+ * \param callbacks Runtime ``(type_index, callback, accepts_inplace_mode)`` entries. A callback
+ *                  whose marker is true is invoked as ``callback(value, mutator, inplace_mode)``;
+ *                  the mode uses the FFI integer representation of InplaceMode. Otherwise the
+ *                  callback is invoked as ``callback(value, mutator)``.
  * \return The mutated owning value, or an Error.
  */
 // The owning parameter makes caller ownership visible to the uniqueness check.
@@ -148,7 +149,7 @@ Expected<Any> StructuralMutateExpected(
     const Array<Tuple<int32_t, Function, bool>>& callbacks) noexcept {
   using Mutator = StructuralMutateDynEngine<StructuralMapEngineBase>;
   StructuralMutator mutator(make_object<Mutator>(callbacks));
-  auto result = mutator->MutateExpected(root, /* allow_inplace= */ true);
+  auto result = mutator->MutateExpected(root, InplaceMode::kAllow);
   if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
   UnchangedOr<Any> mapped = AnyUnsafe::MoveFromAnyAfterCheck<UnchangedOr<Any>>(
       std::move(ExpectedUnsafe::GetData(result)));
@@ -182,7 +183,7 @@ TVM_FFI_INLINE TVMFFIAny MutateSeqContainerChanged(StructuralMutatorObj* mutator
   for (int64_t i = index + 1; i < size; ++i) {
     const Any& item = items[i];
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, mapped_value,
-                                      mutator->MutateExpected(item, /* allow_inplace= */ false));
+                                      mutator->MutateExpected(item, InplaceMode::kDisallow));
     output->SetItemAfterCheck(i, std::move(mapped_value).ValueOrUnchanged(AnyView(item)));
   }
   return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
@@ -204,7 +205,7 @@ TVMFFIAny MutateSeqContainerRaw(StructuralMutatorObj* mutator, const SeqObj* sel
   for (int64_t i = 0; i < size; ++i) {
     const Any& item = items[i];
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, mapped_value,
-                                      mutator->MutateExpected(item, /* allow_inplace= */ false));
+                                      mutator->MutateExpected(item, InplaceMode::kDisallow));
     if (!mapped_value.UnchangedOrSameAs(item)) {
       return MutateSeqContainerChanged(mutator, self, i, std::move(mapped_value).ValueUnchecked());
     }
@@ -225,7 +226,7 @@ TVMFFIAny MaybeInplaceMutateSeqContainerRaw(StructuralMutatorObj* mutator, SeqOb
   for (int64_t i = 0; i < static_cast<int64_t>(self->size()); ++i) {
     const Any& item = self->begin()[i];
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, mapped_value,
-                                      mutator->MutateExpected(item, /* allow_inplace= */ true));
+                                      mutator->MutateExpected(item, InplaceMode::kAllow));
     if (!mapped_value.UnchangedOrSameAs(item)) {
       self->SetItemAfterCheck(i, std::move(mapped_value).ValueUnchecked());
     }
@@ -260,9 +261,8 @@ TVM_FFI_INLINE TVMFFIAny MutateMapValuesChanged(StructuralMutatorObj* mutator,
 
   for (; source_it != self->end(); ++source_it, ++output_it) {
     const Any& old_value = source_it->second;
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
-        UnchangedOr<Any>, new_value,
-        mutator->MutateExpected(old_value, /* allow_inplace= */ false));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, new_value,
+                                      mutator->MutateExpected(old_value, InplaceMode::kDisallow));
     if (!new_value.UnchangedOrSameAs(old_value)) {
       output_it->second = std::move(new_value).ValueUnchecked();
     }
@@ -283,9 +283,8 @@ TVMFFIAny MutateMapValuesRaw(StructuralMutatorObj* mutator, const MapObjType* se
   size_t index = 0;
   for (auto source_it = self->begin(); source_it != self->end(); ++source_it, ++index) {
     const Any& old_value = source_it->second;
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
-        UnchangedOr<Any>, new_value,
-        mutator->MutateExpected(old_value, /* allow_inplace= */ false));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, new_value,
+                                      mutator->MutateExpected(old_value, InplaceMode::kDisallow));
     if (!new_value.UnchangedOrSameAs(old_value)) {
       return MutateMapValuesChanged(mutator, self, source_it, index,
                                     std::move(new_value).ValueUnchecked());
@@ -306,8 +305,8 @@ template <typename MapObjType>
 TVMFFIAny MaybeInplaceMutateMapValuesRaw(StructuralMutatorObj* mutator, MapObjType* self) noexcept {
   for (auto it = self->begin(); it != self->end(); ++it) {
     const Any& old_value = it->second;
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
-        UnchangedOr<Any>, new_value, mutator->MutateExpected(old_value, /* allow_inplace= */ true));
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, new_value,
+                                      mutator->MutateExpected(old_value, InplaceMode::kAllow));
     if (!new_value.UnchangedOrSameAs(old_value)) {
       it->second = std::move(new_value).ValueUnchecked();
     }
@@ -379,16 +378,16 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::GlobalDef()
       .def_method("ffi.StructuralMutatorMutate",
                   [](const StructuralMutator& mutator, AnyView value) {
-                    return std::move(mutator->Mutate(value, /* allow_inplace= */ false))
+                    return std::move(mutator->Mutate(value, InplaceMode::kDisallow))
                         .ValueOrUnchanged(value);
                   })
-      .def_method("ffi.StructuralMutatorDefaultMutate",
-                  [](const StructuralMutator& mutator, AnyView value) -> Any {
-                    UnchangedOr<Any> result =
-                        std::move(mutator->DefaultMutateExpected(value, /* allow_inplace= */ false))
-                            .value();
-                    return std::move(result).ValueOrUnchanged(value);
-                  })
+      .def_method(
+          "ffi.StructuralMutatorDefaultMutate",
+          [](const StructuralMutator& mutator, AnyView value) -> Any {
+            UnchangedOr<Any> result =
+                std::move(mutator->DefaultMutateExpected(value, InplaceMode::kDisallow)).value();
+            return std::move(result).ValueOrUnchanged(value);
+          })
       .def_method("ffi.StructuralMutatorVarRemapGet",
                   [](const StructuralMutator& mutator, AnyView var) {
                     return mutator->VarRemapGetExpected(var).value();

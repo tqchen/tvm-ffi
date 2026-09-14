@@ -77,6 +77,7 @@ if TYPE_CHECKING or not _is_config_mode():
     from .stream import StreamContext, get_raw_stream, use_raw_stream, use_torch_stream
     from .structural import (
         DefRegionKind,
+        InplaceMode,
         StructuralKey,
         StructuralMutator,
         StructuralVisitor,
@@ -150,6 +151,7 @@ __all__ = [
     "Device",
     "Dict",
     "Function",
+    "InplaceMode",
     "List",
     "Map",
     "Module",
