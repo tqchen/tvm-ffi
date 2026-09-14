@@ -445,13 +445,14 @@ class StructuralMutatorObj : public Object {
   /*!
    * \brief Apply default structural mutation with validated in-place permission.
    * \param value The borrowed current value to mutate.
-   * \param inplace_mode Whether mutating this value in place is already known to be safe.
+   * \param inplace_mode The in-place mode already established by the caller for value.
    * \return The replacement or unchanged marker, or an Error if mutation failed.
    *
    * \note The default InplaceMode::kDisallow uses copy-on-write. This method bypasses the current
-   *       engine callback and trusts InplaceMode::kAllow without rechecking uniqueness.
-   *       Propagate the callback's validated mode explicitly, even if its typed argument has
-   *       acquired another reference. Permission must cover the entire path from the root.
+   *       engine callback and uses the mode established by the caller. It does not check
+   *       uniqueness again. Propagate the callback's validated mode explicitly, even if its
+   *       typed argument has acquired another reference. Permission must cover the entire path
+   *       from the root.
    *       Without an in-place hook, ordinary mutation runs. In-place changes completed before an
    *       Error are not rolled back. Registered hooks own variable-remap handling; the reflected
    *       fallback applies it automatically and always uses copy-on-write mutation.
