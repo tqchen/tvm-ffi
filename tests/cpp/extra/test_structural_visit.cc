@@ -676,6 +676,26 @@ TEST(StructuralVisitor, WalkAnyFallback) {
 // StructuralVisit behavior.
 // ---------------------------------------------------------------------------
 
+TEST(StructuralVisit, OptionalEarlyReturn) {
+  bool continued = false;
+  auto visit = [&](Optional<VisitInterrupt> result) -> Optional<VisitInterrupt> {
+    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(result);
+    continued = true;
+    return std::nullopt;
+  };
+
+  EXPECT_FALSE(visit(std::nullopt).has_value());
+  EXPECT_TRUE(continued);
+
+  continued = false;
+  VisitInterrupt interrupt(String("stop"));
+  Optional<VisitInterrupt> result = visit(interrupt);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_TRUE(result.value().same_as(interrupt));
+  EXPECT_EQ(result.value()->value.cast<String>(), "stop");
+  EXPECT_FALSE(continued);
+}
+
 TEST(StructuralVisit, CallbackDrivenTraversal) {
   TVarWithDep lhs("lhs", TVarWithDep("pruned-dependency"));
   TVarWithDep stop("stop");
