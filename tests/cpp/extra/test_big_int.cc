@@ -141,8 +141,8 @@ TEST(BigIntExtra, StructuralMutation) {
   auto never_matches = [](int64_t, StructuralMutatorObj*) -> Expected<Any> { return Any(); };
   using Mutator = StructuralMutateEngine<StructuralMapEngineBase, decltype(never_matches)>;
   StructuralMutator mutator(make_object<Mutator>(never_matches));
-  EXPECT_TRUE(mutator->Mutate(AnyView(value), false).IsUnchanged());
-  EXPECT_TRUE(mutator->Mutate(AnyView(value), true).IsUnchanged());
+  EXPECT_TRUE(mutator->Mutate(AnyView(value), /* allow_inplace= */ false).IsUnchanged());
+  EXPECT_TRUE(mutator->Mutate(AnyView(value), /* allow_inplace= */ true).IsUnchanged());
   EXPECT_TRUE(StructuralMutateExpected(Any(value), never_matches).value().same_as(Any(value)));
   auto map_int = [](int64_t x) -> Expected<Any> { return Any(x + 1); };
   EXPECT_TRUE(StructuralMapExpected<WalkOrder::kPostOrder>(Any(value), map_int)
