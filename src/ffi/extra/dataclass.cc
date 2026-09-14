@@ -23,6 +23,7 @@
  */
 #include <tvm/ffi/any.h>
 #include <tvm/ffi/base_details.h>
+#include <tvm/ffi/big_int.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/dict.h>
 #include <tvm/ffi/container/list.h>
@@ -461,7 +462,8 @@ class ObjectDeepCopier : public ObjectGraphDFS<ObjectDeepCopier, CopyFrame, Any>
     int32_t ti = obj->type_index();
     // Immutable leaf objects and registered enum singletons
     if (ti == TypeIndex::kTVMFFIStr || ti == TypeIndex::kTVMFFIBytes ||
-        ti == TypeIndex::kTVMFFIShape || obj->IsInstance<EnumObj>()) {
+        ti == TypeIndex::kTVMFFIShape || ti == TypeIndex::kTVMFFIBigInt ||
+        obj->IsInstance<EnumObj>()) {
       *out = value;
       return true;
     }
@@ -836,6 +838,10 @@ class ReprPrinter : public ObjectGraphDFS<ReprPrinter, ReprFrame, std::string> {
     }
     if (obj == kwargs_ptr) {
       *out = "<KWARGS>";
+      return true;
+    }
+    if (ti == TypeIndex::kTVMFFIBigInt) {
+      *out = details::int_ops::ToStringFallback(value.cast<BigInt>());
       return true;
     }
     // String/Bytes on heap
@@ -1328,11 +1334,25 @@ class RecursiveComparer : public ObjectGraphDFS<RecursiveComparer, CompareFrame,
         *out = 1;
         return true;
       }
+      if ((lti == TypeIndex::kTVMFFIInt && rti == TypeIndex::kTVMFFIBigInt) ||
+          (lti == TypeIndex::kTVMFFIBigInt && rti == TypeIndex::kTVMFFIInt)) {
+        // Both views borrow the live Any arguments without copying their integer objects.
+        *out = details::int_ops::CompareFallback(details::BigIntUnsafe::GetArrayView(lhs_data),
+                                                 details::BigIntUnsafe::GetArrayView(rhs_data));
+        return true;
+      }
       TVM_FFI_THROW(TypeError) << "Cannot compare values of different types: " << lhs.GetTypeKey()
                                << " vs " << rhs.GetTypeKey();
     }
     if (lti < TypeIndex::kTVMFFIStaticObjectBegin) {
       *out = ComparePOD(lhs, rhs, lhs_data, rhs_data, lti);
+      return true;
+    }
+    if (lti == TypeIndex::kTVMFFIBigInt) {
+      auto lhs_words = details::BigIntUnsafe::GetArrayView(lhs_data);
+      auto rhs_words = details::BigIntUnsafe::GetArrayView(rhs_data);
+      *out = eq_only_ ? !details::int_ops::EqualFallback(lhs_words, rhs_words)
+                      : details::int_ops::CompareFallback(lhs_words, rhs_words);
       return true;
     }
     const Object* lhs_obj = static_cast<const Object*>(lhs.as<Object>());

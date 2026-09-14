@@ -19,6 +19,7 @@
 /*
  * \file src/ffi/container.cc
  */
+#include <tvm/ffi/big_int.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/dict.h>
 #include <tvm/ffi/container/list.h>
@@ -27,6 +28,8 @@
 #include <tvm/ffi/device.h>
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/reflection/registry.h>
+
+#include <sstream>
 
 #include "object_internal.h"
 
@@ -104,6 +107,41 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::EnsureTypeAttrColumn(refl::type_attr::kAnyHash);
   refl::EnsureTypeAttrColumn(refl::type_attr::kAnyEqual);
+  refl::ObjectDef<details::BigIntObj>()
+      .def_type_attr(refl::type_attr::kAnyHash,
+                     [](const BigInt& value) -> int64_t {
+                       return details::int_ops::BitcastToInt64(value.hash());
+                     })
+      .def_type_attr(refl::type_attr::kAnyEqual,
+                     [](const BigInt& lhs, const BigInt& rhs) { return lhs == rhs; })
+      .def_type_attr(refl::type_attr::kEq, [](const BigInt& lhs, const BigInt& rhs,
+                                              const Function&) { return lhs == rhs; })
+      .def_type_attr(refl::type_attr::kCompare,
+                     [](const BigInt& lhs, const BigInt& rhs, const Function&) {
+                       return details::int_ops::CompareFallback(
+                           details::BigIntUnsafe::GetArrayView(lhs),
+                           details::BigIntUnsafe::GetArrayView(rhs));
+                     })
+      .def_type_attr(refl::type_attr::kHash,
+                     [](const BigInt& value, const Function&) -> int64_t {
+                       return details::int_ops::BitcastToInt64(value.hash());
+                     })
+      .def_type_attr(refl::type_attr::kDataToJson,
+                     [](const BigInt& value) -> String {
+                       std::ostringstream stream;
+                       stream << value;
+                       return stream.str();
+                     })
+      .def_type_attr(refl::type_attr::kDataFromJson, [](const String& data) -> BigInt {
+        std::istringstream stream(static_cast<std::string>(data));
+        BigInt value;
+        stream >> std::noskipws >> value;
+        // A graph payload must be one complete decimal integer, without whitespace or junk.
+        if (stream.fail() || !stream.eof()) {
+          TVM_FFI_THROW(ValueError) << "Invalid decimal string for ffi.BigInt";
+        }
+        return value;
+      });
   refl::GlobalDef()
       .def_packed("ffi.Array",
                   [](ffi::PackedArgs args, Any* ret) {

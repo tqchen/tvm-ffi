@@ -6,11 +6,11 @@ if (TVM_FFI_USE_EXTRA_CXX_API)
 endif ()
 
 add_executable(tvm_ffi_tests ${_test_sources})
+target_compile_features(tvm_ffi_tests PRIVATE cxx_std_17)
 
 set_target_properties(
   tvm_ffi_tests
-  PROPERTIES CXX_STANDARD 17
-             CXX_STANDARD_REQUIRED ON
+  PROPERTIES CXX_STANDARD_REQUIRED ON
              CXX_EXTENSIONS OFF
              ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
              LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"

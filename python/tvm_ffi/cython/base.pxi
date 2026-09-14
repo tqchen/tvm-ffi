@@ -154,6 +154,7 @@ cdef extern from "tvm/ffi/c_api.h":
         kTVMFFIOpaquePyObject = 74
         kTVMFFIList = 75
         kTVMFFIDict = 76
+        kTVMFFIBigInt = 78
         kTVMFFIStaticObjectEnd
 
     ctypedef void* TVMFFIObjectHandle
@@ -299,6 +300,7 @@ cdef extern from "tvm/ffi/c_api.h":
     int TVMFFITypeKeyToIndex(TVMFFIByteArray* type_key, int32_t* out_tindex) nogil
     int TVMFFIStringFromByteArray(TVMFFIByteArray* input_, TVMFFIAny* out) nogil
     int TVMFFIBytesFromByteArray(TVMFFIByteArray* input_, TVMFFIAny* out) nogil
+    TVMFFIByteArray TVMFFIBigIntGetContentByteArray(const TVMFFIAny* value) nogil
     int TVMFFIDataTypeFromString(TVMFFIByteArray* str, DLDataType* out) nogil
     int TVMFFIDataTypeToString(const DLDataType* dtype, TVMFFIAny* out) nogil
     const TVMFFIByteArray* TVMFFIBacktrace(const char* filename, int lineno,
@@ -434,6 +436,10 @@ cdef extern from "tvm_ffi_python_helpers.h":
     int TVMFFIPyArgSetterInt_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* arg, TVMFFIAny* out) except -1
     int TVMFFIPyArgSetterBool_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* arg, TVMFFIAny* out) except -1
     int TVMFFIPyArgSetterNone_(TVMFFIPyArgSetter*, TVMFFIPyCallContext*, PyObject* arg, TVMFFIAny* out) except -1
+    # except? -1 propagates an error only when the return value is -1 and a Python exception is set.
+    # Otherwise, CHECK_CALL translates the FFI status.
+    int TVMFFIPyLongToBigInt(PyObject* value, TVMFFIAny* out) except? -1
+    object TVMFFIPyLongFromBytes(const char* data, size_t size)
 
     # Callback arg setter types — view-based AnyView -> PyObject conversion
     # used by the C++ -> Python callback path (PyCallback).

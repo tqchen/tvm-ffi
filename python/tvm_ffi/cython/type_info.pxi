@@ -90,6 +90,7 @@ _TYPE_SCHEMA_ORIGIN_CONVERTER = {
     "ffi.OpaquePyObject": "Any",
     "ffi.Object": "Object",
     "ffi.Tensor": "Tensor",
+    "ffi.BigInt": "int",
     "DLTensor*": "Tensor",
     # ctype types
     "void*": "ctypes.c_void_p",
@@ -153,6 +154,7 @@ _TYPE_INDEX_TO_ORIGIN[kTVMFFIByteArrayPtr] = "bytes"
 _TYPE_INDEX_TO_ORIGIN[kTVMFFISmallStr] = "str"
 _TYPE_INDEX_TO_ORIGIN[kTVMFFISmallBytes] = "bytes"
 _TYPE_INDEX_TO_ORIGIN[kTVMFFIObjectRValueRef] = "Object"
+_TYPE_INDEX_TO_ORIGIN[kTVMFFIBigInt] = "int"
 
 
 @dataclasses.dataclass(repr=False)

@@ -68,6 +68,19 @@ cdef int TVMFFIPyCallbackArgSetterTensor_(
     return 0
 
 
+cdef int TVMFFIPyCallbackArgSetterBigInt_(
+    TVMFFIPyCallbackArgSetter* handle,
+    const DLPackExchangeAPI* api,
+    const TVMFFIAny* arg,
+    PyObject** out
+) except -1:
+    """Convert a borrowed BigInt without retaining its FFI object."""
+    obj = bigint_to_pyint(arg)
+    Py_INCREF(obj)
+    out[0] = <PyObject*>obj
+    return 0
+
+
 cdef int TVMFFIPyCallbackArgSetterObject_(
     TVMFFIPyCallbackArgSetter* handle,
     const DLPackExchangeAPI* api,
@@ -249,6 +262,10 @@ cdef int TVMFFIPyCallbackArgSetterRValueRef_(
     try:
         if actual_type_index == kTVMFFITensor:
             obj = make_tensor_from_chandle(chandle, api)
+        elif actual_type_index == kTVMFFIBigInt:
+            # The integer copies the value; unlike an object wrapper it does not own the +1.
+            obj = bigint_to_pyint(&synthesized)
+            TVMFFIObjectDecRef(chandle)
         else:
             obj = make_ret_object(synthesized)
             if api != NULL and isinstance(obj, CContainerBase):
@@ -274,6 +291,8 @@ cdef public int TVMFFICyCallbackArgSetterFactory(int32_t type_index,
             out.func = TVMFFIPyCallbackArgSetterTensor_
         elif type_index == kTVMFFIOpaquePyObject:
             out.func = TVMFFIPyCallbackArgSetterOpaquePyObject_
+        elif type_index == kTVMFFIBigInt:
+            out.func = TVMFFIPyCallbackArgSetterBigInt_
         else:
             out.func = TVMFFIPyCallbackArgSetterObject_
         return 0

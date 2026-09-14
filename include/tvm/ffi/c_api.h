@@ -189,6 +189,16 @@ typedef enum {
   kTVMFFIDict = 76,
   /*! \brief Structural visit interrupt object. */
   kTVMFFIVisitInterrupt = 77,
+  /*!
+   * \brief Arbitrary-precision integer object, layout = { TVMFFIObject, { size_t }, ... }
+   * \note size_t is the word count; ... contains trailing native int64_t words encoding
+   * a signed two's-complement integer, least-significant word first. Each word uses
+   * native byte order.
+   * The words MUST use the minimal signed representation,
+   * without redundant sign-extension words, retaining a sign-guard word when necessary.
+   * Every value that fits in int64_t MUST use kTVMFFIInt instead of kTVMFFIBigInt.
+   */
+  kTVMFFIBigInt = 78,
   //----------------------------------------------------------------
   // more complex objects
   //----------------------------------------------------------------
@@ -901,6 +911,25 @@ TVM_FFI_DLL int TVMFFIStringFromByteArray(const TVMFFIByteArray* input, TVMFFIAn
  * \return 0 on success, nonzero on failure.
  */
 TVM_FFI_DLL int TVMFFIBytesFromByteArray(const TVMFFIByteArray* input, TVMFFIAny* out);
+
+/*!
+ * \brief Import a signed integer from its native word content, copying and normalizing it.
+ * \param input Whole 64-bit words, least-significant word first, with native byte order
+ * within each word and two's-complement sign. Length must be a multiple of eight;
+ * redundant sign-extension words are accepted, and an empty array represents zero.
+ * \param out The integer value owned by the caller.
+ * \return 0 on success, nonzero on failure.
+ */
+TVM_FFI_DLL int TVMFFIBigIntFromByteArray(const TVMFFIByteArray* input, TVMFFIAny* out);
+/*!
+ * \brief Borrow the native word content of an int64 or BigInt value.
+ * \param value The integer value whose content is borrowed.
+ * \return Whole 64-bit words, least-significant first, native byte order within each
+ * word, signed two's complement. Byte length is a multiple of eight. This is not
+ * a universally little-endian byte format. The view remains valid while the
+ * input value and its referenced storage remain alive and unchanged.
+ */
+TVM_FFI_DLL TVMFFIByteArray TVMFFIBigIntGetContentByteArray(const TVMFFIAny* value);
 
 //---------------------------------------------------------------
 // Section: dtype string support APIs.
