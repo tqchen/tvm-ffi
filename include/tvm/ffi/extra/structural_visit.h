@@ -307,6 +307,27 @@ class StructuralVisitor : public ObjectRef {
 namespace details {
 
 /*!
+ * \brief Return an optional visit result directly or wrap an Expected for return conversion.
+ */
+template <typename T>
+TVM_FFI_INLINE auto VisitReturnHelper(T&& result) {
+  if constexpr (std::is_same_v<std::remove_cv_t<std::remove_reference_t<T>>,
+                               Optional<VisitInterrupt>>) {
+    return std::forward<T>(result);
+  } else {
+    return ExpectedReturnHelper(std::forward<T>(result));
+  }
+}
+
+/*!
+ * \brief Return true when \p result carries a traversal-stopping interrupt.
+ */
+TVM_FFI_INLINE bool StructuralVisitNeedEarlyReturn(
+    const Optional<VisitInterrupt>& result) noexcept {
+  return result.has_value();
+}
+
+/*!
  * \brief Return true when \p result already carries a traversal-stopping state.
  * \tparam T The Expected success type.
  * \param result The Expected value to inspect.
@@ -501,9 +522,9 @@ namespace details {
  * \brief Return from a visit hook if \p Result stops traversal.
  *
  * Propagates an ``Error`` or a ``VisitInterrupt`` out of the enclosing function
- * and otherwise falls through. Works from a raw ``TVMFFIAny`` hook and from a
- * typed ``Expected`` helper alike; the rvalue-only proxy lets the return type
- * select the representation.
+ * and otherwise falls through. An ``Optional<VisitInterrupt>`` result is returned
+ * directly. An ``Expected`` result uses an rvalue-only proxy to select the return
+ * representation for raw ``TVMFFIAny`` hooks or typed ``Expected`` helpers.
  *
  * A registered ``__s_visit__`` hook is one line per traversed field followed by
  * the terminal return. A field skipped on purpose is guarded by a condition and
@@ -521,13 +542,13 @@ namespace details {
  *
  * \param Result An expression yielding the descent result to inspect.
  */
-#define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result)                                 \
-  do {                                                                             \
-    auto&& tvm_ffi_res_ = (Result);                                                \
-    if (TVM_FFI_PREDICT_FALSE(                                                     \
-            ::tvm::ffi::details::StructuralVisitNeedEarlyReturn(tvm_ffi_res_))) {  \
-      return ::tvm::ffi::details::ExpectedReturnHelper(::std::move(tvm_ffi_res_)); \
-    }                                                                              \
+#define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result)                                \
+  do {                                                                            \
+    auto&& tvm_ffi_res_ = (Result);                                               \
+    if (TVM_FFI_PREDICT_FALSE(                                                    \
+            ::tvm::ffi::details::StructuralVisitNeedEarlyReturn(tvm_ffi_res_))) { \
+      return ::tvm::ffi::details::VisitReturnHelper(::std::move(tvm_ffi_res_));   \
+    }                                                                             \
   } while (0)
 
 }  // namespace details
