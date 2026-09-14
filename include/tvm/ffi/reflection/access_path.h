@@ -93,7 +93,7 @@ class AccessStepObj : public Object {
   inline bool StepEqual(const AccessStep& other) const;
 
   /// \cond Doxygen_Suppress
-  static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindTreeNode;
+  static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindConstTreeNode;
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("ffi.reflection.AccessStep", AccessStepObj, Object);
   /// \endcond
 };
@@ -288,7 +288,7 @@ class AccessPathObj : public Object {
   inline bool IsPrefixOf(const AccessPath& other) const;
 
   /// \cond Doxygen_Suppress
-  static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindTreeNode;
+  static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindConstTreeNode;
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("ffi.reflection.AccessPath", AccessPathObj, Object);
   /// \endcond
 

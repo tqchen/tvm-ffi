@@ -73,6 +73,14 @@ class TExpr(tvm_ffi.Object):
     value: int
 
 
+@py_class("testing.py.Metadata", structural_eq="const-tree")
+class TMetadata(tvm_ffi.Object):
+    """Immutable metadata node — pointer shortcut is safe (no var children)."""
+
+    tag: str
+    version: int
+
+
 @py_class("testing.py.Binding", structural_eq="dag")
 class TBinding(tvm_ffi.Object):
     """Binding node — sharing structure is semantically meaningful."""
@@ -233,6 +241,33 @@ class TestTreeNode:
         copies = tvm_ffi.Array([TExpr(value=10), TExpr(value=10)])
         assert structural_equal(shared, copies)
         assert structural_hash(shared) == structural_hash(copies)
+
+
+# ---------------------------------------------------------------------------
+# Tests: const-tree kind
+# ---------------------------------------------------------------------------
+
+
+class TestConstTreeNode:
+    """Test structural_eq="const-tree" kind."""
+
+    def test_equal_content(self) -> None:
+        """Two const-tree nodes with identical content are structurally equal."""
+        a = TMetadata(tag="v1", version=1)
+        b = TMetadata(tag="v1", version=1)
+        assert structural_equal(a, b)
+        assert structural_hash(a) == structural_hash(b)
+
+    def test_different_content(self) -> None:
+        """Two const-tree nodes with different content are not equal."""
+        a = TMetadata(tag="v1", version=1)
+        b = TMetadata(tag="v1", version=2)
+        assert not structural_equal(a, b)
+
+    def test_same_pointer_shortcircuits(self) -> None:
+        """Same pointer should be equal (the const-tree optimization)."""
+        a = TMetadata(tag="test", version=1)
+        assert structural_equal(a, a)
 
 
 # ---------------------------------------------------------------------------
