@@ -390,12 +390,20 @@ class StructuralMutatorObj : public Object {
   /// \return The replacement or unchanged marker.
   /// \throws Error if mutation fails.
   ///
+  /// \note Omitting allow_inplace defaults to copy-on-write. In-place mutation is permitted
+  ///       only when allow_inplace is true and the current value is uniquely owned. True requires
+  ///       permission along the entire ownership path from the root; recursive calls must forward
+  ///       their established permission explicitly. Uniqueness is checked before callback arguments
+  ///       acquire ownership. This permits in-place dispatch but does not guarantee reuse: a hook
+  ///       may return a replacement. In-place changes completed before an Error are not rolled
+  ///       back.
+  ///
   /// \code{.cpp}
   /// Expr new_node = mutator->Mutate(node, /* allow_inplace= */ false)
   ///                     .ValueOrUnchanged(AnyView(node)).cast<Expr>();
   /// \endcode
   ///
-  TVM_FFI_INLINE UnchangedOr<Any> Mutate(AnyView value, bool allow_inplace) {
+  TVM_FFI_INLINE UnchangedOr<Any> Mutate(AnyView value, bool allow_inplace = false) {
     return std::move(MutateExpected(value, allow_inplace)).value();
   }
 
@@ -405,13 +413,15 @@ class StructuralMutatorObj : public Object {
    * \param allow_inplace Whether the caller permits mutation along this ownership path.
    * \return The replacement or unchanged marker, or an Error if mutation failed.
    *
-   * \note Pass false when the path from the root may be shared. Pass true for an owning
-   *       moved-in root or propagate the permission from an in-place callback or hook.
-   *       This method checks the current object's uniqueness before callback arguments
-   *       can acquire ownership. In-place changes completed before an Error are not rolled back.
+   * \note Omitting allow_inplace defaults to copy-on-write. In-place mutation is permitted
+   *       only when allow_inplace is true and the current value is uniquely owned. True requires
+   *       permission along the entire ownership path from the root; recursive calls must forward
+   *       their established permission explicitly. Uniqueness is checked before callback arguments
+   *       acquire ownership. This permits in-place dispatch but does not guarantee reuse: a hook
+   *       may return a replacement. In-place changes completed before an Error are not rolled back.
    */
   TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateExpected(AnyView value,
-                                                           bool allow_inplace) noexcept {
+                                                           bool allow_inplace = false) noexcept {
     const Object* object = value.as<Object>();
     if (allow_inplace && object != nullptr && object->unique()) {
       return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
@@ -427,16 +437,16 @@ class StructuralMutatorObj : public Object {
    * \param allow_inplace Whether mutating this value in place is already known to be safe.
    * \return The replacement or unchanged marker, or an Error if mutation failed.
    *
-   * \note This method bypasses the current engine callback and does not check uniqueness.
-   *       Propagate the callback's validated permission, even if its typed argument has since
-   *       acquired another reference. An in-place hook may be dispatched only when permission
-   *       covers the entire path from the root. Without an in-place hook, ordinary mutation runs.
-   *       In-place changes completed before an Error are not rolled back.
-   *       Registered hooks own variable-remap handling; the reflected fallback applies it
-   *       automatically and always uses copy-on-write mutation.
+   * \note Omitting allow_inplace defaults to copy-on-write. This method bypasses the current
+   *       engine callback and trusts true as already validated permission, without rechecking
+   *       uniqueness. Propagate the callback's permission explicitly, even if its typed argument
+   *       has acquired another reference. Permission must cover the entire path from the root.
+   *       Without an in-place hook, ordinary mutation runs. In-place changes completed before an
+   *       Error are not rolled back. Registered hooks own variable-remap handling; the reflected
+   *       fallback applies it automatically and always uses copy-on-write mutation.
    */
-  TVM_FFI_INLINE Expected<UnchangedOr<Any>> DefaultMutateExpected(AnyView value,
-                                                                  bool allow_inplace) noexcept {
+  TVM_FFI_INLINE Expected<UnchangedOr<Any>> DefaultMutateExpected(
+      AnyView value, bool allow_inplace = false) noexcept {
     return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
         allow_inplace ? DefaultMaybeInplaceMutateRaw(value) : DefaultMutateRaw(value));
   }

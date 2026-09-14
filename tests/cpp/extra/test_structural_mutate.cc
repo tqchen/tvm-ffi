@@ -512,6 +512,24 @@ TEST(StructuralMutate, PreservesUniqueContainerIdentity) {
 
   using Mutator = StructuralMutateEngine<StructuralMapEngineBase, decltype(increment)>;
   StructuralMutator mutator(make_object<Mutator>(increment));
+  AnyArray default_original{int64_t{1}};
+  EXPECT_FALSE(mutator->Mutate(default_original)
+                   .ValueOrUnchanged(AnyView(default_original))
+                   .cast<AnyArray>()
+                   .same_as(default_original));
+  EXPECT_FALSE(std::move(mutator->MutateExpected(default_original))
+                   .value()
+                   .ValueOrUnchanged(AnyView(default_original))
+                   .cast<AnyArray>()
+                   .same_as(default_original));
+  EXPECT_FALSE(std::move(mutator->DefaultMutateExpected(default_original))
+                   .value()
+                   .ValueOrUnchanged(AnyView(default_original))
+                   .cast<AnyArray>()
+                   .same_as(default_original));
+  EXPECT_EQ(default_original[0].cast<int64_t>(), 1);
+  EXPECT_TRUE(default_original.unique());
+
   for (bool allow_inplace : {false, true}) {
     for (bool shared : {false, true}) {
       AnyArray original{int64_t{1}};
