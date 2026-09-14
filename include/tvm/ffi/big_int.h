@@ -66,7 +66,6 @@ class BigIntObj : public Object {
   BigIntObj& operator=(const BigIntObj&) = delete;
   static constexpr uint32_t _type_index = TypeIndex::kTVMFFIBigInt;
   static constexpr bool _type_final = true;
-  static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindConstTreeNode;
   TVM_FFI_DECLARE_OBJECT_INFO_STATIC(StaticTypeKey::kTVMFFIBigInt, BigIntObj, Object);
 
  private:
