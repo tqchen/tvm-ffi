@@ -353,6 +353,31 @@ class UnchangedOr {
     return details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
   }
 
+  /*!
+   * \brief Strictly cast the stored result, moving it on success.
+   * \tparam U The exact target type, including any UnchangedOr wrapper.
+   * \return The cast value, or std::nullopt on a type mismatch.
+   * \note Unchanged succeeds for an UnchangedOr target. No fallback conversions are run.
+   */
+  template <typename U,
+            typename = std::enable_if_t<TypeTraits<U>::storage_enabled || std::is_same_v<U, Any>>>
+  TVM_FFI_INLINE std::optional<U> as() && {
+    return std::move(data_).template as<U>();
+  }
+
+  /*!
+   * \brief Strictly cast the stored result, moving it on success, or throw.
+   * \tparam U The exact target type, including any UnchangedOr wrapper.
+   * \return The cast value.
+   * \throws Error on a type mismatch.
+   * \note Unchanged succeeds for an UnchangedOr target. No fallback conversions are run.
+   */
+  template <typename U,
+            typename = std::enable_if_t<TypeTraits<U>::storage_enabled || std::is_same_v<U, Any>>>
+  TVM_FFI_INLINE U as_or_throw() && {
+    return std::move(data_).template as_or_throw<U>();
+  }
+
  private:
   template <typename>
   friend class UnchangedOr;
@@ -367,6 +392,20 @@ class UnchangedOr {
 namespace details {
 /*! \brief Unsafe moves between UnchangedOr and its single Any storage. */
 struct UnchangedOrUnsafe {
+  /*!
+   * \brief Adopt an owning raw FFI value into UnchangedOr storage.
+   * \tparam T The replacement type.
+   * \param raw The raw FFI value whose ownership is transferred to the result.
+   * \return UnchangedOr backed by the adopted Any storage.
+   * \pre The caller guarantees that raw holds Unchanged or a valid T replacement.
+   * \note No type check, reference increment, or value conversion is performed.
+   */
+  template <typename T>
+  TVM_FFI_INLINE static UnchangedOr<T> MoveFromTVMFFIAny(TVMFFIAny raw) {
+    return UnchangedOr<T>(typename UnchangedOr<T>::UnsafeInit{},
+                          AnyUnsafe::MoveTVMFFIAnyRawToAny(raw));
+  }
+
   template <typename T>
   TVM_FFI_INLINE static TVMFFIAny MoveToTVMFFIAny(UnchangedOr<T>&& result) noexcept {
     return AnyUnsafe::MoveAnyToTVMFFIAny(std::move(result.data_));
