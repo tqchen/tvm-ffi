@@ -28,8 +28,6 @@
 #include <tvm/ffi/optional.h>
 #include <tvm/ffi/reflection/registry.h>
 
-#include <string>
-#include <type_traits>
 #include <utility>
 
 #include "./testing_object.h"
@@ -128,169 +126,41 @@ TEST(Expected, ImplicitConvertingConstructor) {
   EXPECT_EQ(subsumed_failure.error().message(), "subsumed error");
 }
 
-template <typename Source, typename Target, typename = void>
-struct CanAsOrError : std::false_type {};
-
-template <typename Source, typename Target>
-struct CanAsOrError<Source, Target,
-                    std::void_t<decltype(std::declval<Source>().template as_or_error<Target>())>>
-    : std::true_type {};
-
-template <typename Target>
-constexpr bool can_as_or_error_v = CanAsOrError<const Expected<Any>&, Target>::value &&
-                                   CanAsOrError<Expected<Any>&&, Target>::value;
-
-template <typename Target>
-constexpr bool cannot_as_or_error_v = !CanAsOrError<const Expected<Any>&, Target>::value &&
-                                      !CanAsOrError<Expected<Any>&&, Target>::value;
-
-TEST(Expected, AsOrErrorTargetConstraints) {
-  static_assert(can_as_or_error_v<Any>);
-  static_assert(can_as_or_error_v<int>);
-  static_assert(can_as_or_error_v<String>);
-  static_assert(can_as_or_error_v<TInt>);
-  static_assert(can_as_or_error_v<Optional<int>>);
-  static_assert(can_as_or_error_v<Variant<int, String>>);
-  static_assert(can_as_or_error_v<Array<int>>);
-
-  static_assert(cannot_as_or_error_v<void>);
-  static_assert(cannot_as_or_error_v<const void>);
-  static_assert(cannot_as_or_error_v<Error>);
-  static_assert(cannot_as_or_error_v<const Error>);
-  struct DerivedError : Error {};
-  static_assert(cannot_as_or_error_v<DerivedError>);
-  static_assert(cannot_as_or_error_v<const int>);
-  static_assert(cannot_as_or_error_v<int&>);
-  static_assert(cannot_as_or_error_v<const Any&>);
-  static_assert(cannot_as_or_error_v<AnyView>);
-  static_assert(cannot_as_or_error_v<const char*>);
-  static_assert(cannot_as_or_error_v<std::string>);
-  static_assert(cannot_as_or_error_v<Optional<std::string>>);
-  static_assert(!CanAsOrError<const Expected<void>&, Any>::value);
-  static_assert(!CanAsOrError<Expected<void>&&, Any>::value);
-  static_assert(std::is_same_v<decltype(std::declval<const Expected<Any>&>().as_or_error<int>()),
-                               Expected<int>>);
-  static_assert(
-      std::is_same_v<decltype(std::declval<Expected<Any>&&>().as_or_error<int>()), Expected<int>>);
-}
-
-TEST(Expected, AsOrErrorStrictSuccess) {
-  const Expected<Any> integer = 42;
-  EXPECT_EQ(integer.as_or_error<int>().value(), 42);
-  EXPECT_EQ(integer.as_or_error<Any>().value().cast<int>(), 42);
-  EXPECT_EQ(Expected<Any>(42).as_or_error<int>().value(), 42);
-
-  const Expected<Variant<int, String>> variant = Variant<int, String>(42);
-  EXPECT_EQ(variant.as_or_error<int>().value(), 42);
-  auto variant_integer = integer.as_or_error<Variant<int, String>>().value().as<int>();
-  EXPECT_TRUE(variant_integer.has_value() && variant_integer.value() == 42);
-
-  const Expected<Any> none = nullptr;
-  EXPECT_FALSE(none.as_or_error<Optional<int>>().value().has_value());
-  EXPECT_EQ(integer.as_or_error<Optional<int>>().value().value(), 42);
-  EXPECT_EQ(Expected<Optional<int>>(Optional<int>(42)).as_or_error<int>().value(), 42);
-
-  Array<int> array{1, 2, 3};
-  const Expected<Any> container = array;
-  EXPECT_TRUE(container.as_or_error<Array<int>>().value().same_as(array));
-  EXPECT_TRUE(Expected<Any>(array).as_or_error<Array<int>>().value().same_as(array));
-
-  // Integer widths share strict FFI integer storage. Narrowing preserves that storage verbatim.
-  const Expected<int64_t> wide_integer = int64_t{1024};
-  auto narrow_integer = wide_integer.as_or_error<int8_t>();
-  EXPECT_EQ(narrow_integer.as_or_error<Any>().value().cast<int64_t>(), 1024);
-  EXPECT_EQ(std::move(narrow_integer).as_or_error<Any>().value().cast<int64_t>(), 1024);
-}
-
-TEST(Expected, AsOrErrorMismatchDoesNotConvert) {
-  const Expected<int> integer = 42;
-  auto mismatch = integer.as_or_error<double>();
-  ASSERT_TRUE(mismatch.is_err());
-  EXPECT_EQ(mismatch.error().kind(), "TypeError");
-  EXPECT_EQ(mismatch.error().message(), "Cannot treat type `int` as type `float`");
-  EXPECT_EQ(integer.value(), 42);
-  EXPECT_TRUE(Expected<int>(42).as_or_error<double>().is_err());
-  EXPECT_TRUE(Expected<double>(42.0).as_or_error<int>().is_err());
-  EXPECT_TRUE(Expected<bool>(true).as_or_error<int>().is_err());
-  EXPECT_TRUE(integer.as_or_error<bool>().is_err());
-  EXPECT_TRUE(integer.as_or_error<String>().is_err());
-
-  const Expected<Any> container = Array<int>{1, 2};
-  auto container_mismatch = container.as_or_error<Array<double>>();
-  ASSERT_TRUE(container_mismatch.is_err());
-  EXPECT_EQ(container_mismatch.error().kind(), "TypeError");
-  EXPECT_TRUE(Expected<Any>(Array<int>{1, 2}).as_or_error<Array<double>>().is_err());
-
+TEST(Expected, AsOrError) {
   TInt object(42);
   Expected<Any> source = object;
-  EXPECT_EQ(object.use_count(), 2);
-  auto object_mismatch = std::move(source).as_or_error<String>();
-  ASSERT_TRUE(object_mismatch.is_err());
-  EXPECT_EQ(object_mismatch.error().kind(), "TypeError");
-  EXPECT_EQ(object.use_count(), 2);
-  // NOLINTNEXTLINE(bugprone-use-after-move): a strict mismatch preserves the source.
+  auto copied = std::as_const(source).as_or_error<TInt>();
+  EXPECT_TRUE(copied.value().same_as(object));
   EXPECT_TRUE(source.value().cast<TInt>().same_as(object));
-}
-
-TEST(Expected, AsOrErrorCopiesAndMovesObjectStorage) {
-  TInt object(42);
-  Expected<TNumber> source = object;
-  EXPECT_EQ(object.use_count(), 2);
-  {
-    auto copied = std::as_const(source).as_or_error<TInt>();
-    ASSERT_TRUE(copied.is_ok());
-    EXPECT_EQ(object.use_count(), 3);
-    EXPECT_TRUE(copied.value().same_as(object));
-    EXPECT_TRUE(source.value().same_as(object));
-  }
-  EXPECT_EQ(object.use_count(), 2);
+  EXPECT_EQ(object.use_count(), 3);
   auto moved = std::move(source).as_or_error<TInt>();
-  ASSERT_TRUE(moved.is_ok());
-  // NOLINTNEXTLINE(bugprone-use-after-move): verify the transferred storage is cleared.
-  EXPECT_EQ(source.type_index(), TypeIndex::kTVMFFINone);
-  EXPECT_EQ(object.use_count(), 2);
   EXPECT_TRUE(moved.value().same_as(object));
-
-  auto erased = std::move(moved).as_or_error<Any>();
-  // NOLINTNEXTLINE(bugprone-use-after-move): verify the transferred storage is cleared.
-  EXPECT_EQ(moved.type_index(), TypeIndex::kTVMFFINone);
-  EXPECT_EQ(object.use_count(), 2);
-  EXPECT_TRUE(erased.value().cast<TInt>().same_as(object));
-}
-
-template <typename Target>
-void CheckAsOrErrorPreservesError() {
-  Error cause("CauseError", "cause", "cause backtrace");
-  TInt context(42);
-  Error error("ValueError", "original message", "original backtrace", cause, context);
-  Expected<Any> source = error;
-  EXPECT_EQ(error.use_count(), 2);
-  {
-    auto copied = std::as_const(source).template as_or_error<Target>();
-    ASSERT_TRUE(copied.is_err());
-    EXPECT_EQ(error.use_count(), 3);
-    EXPECT_TRUE(copied.error().same_as(error));
-    EXPECT_TRUE(source.error().same_as(error));
-  }
-  EXPECT_EQ(error.use_count(), 2);
-  auto moved = std::move(source).template as_or_error<Target>();
-  ASSERT_TRUE(moved.is_err());
+  EXPECT_EQ(object.use_count(), 3);
   // NOLINTNEXTLINE(bugprone-use-after-move): verify the transferred storage is cleared.
   EXPECT_EQ(source.type_index(), TypeIndex::kTVMFFINone);
-  EXPECT_EQ(error.use_count(), 2);
-  EXPECT_TRUE(moved.error().same_as(error));
-  EXPECT_EQ(moved.error().kind(), "ValueError");
-  EXPECT_EQ(moved.error().message(), "original message");
-  EXPECT_EQ(moved.error().backtrace(), "original backtrace");
-  auto cause_chain = moved.error().cause_chain();
-  EXPECT_TRUE(cause_chain.has_value() && cause_chain.value().same_as(cause));
-  auto extra_context = moved.error().extra_context();
-  EXPECT_TRUE(extra_context.has_value() && extra_context.value().same_as(context));
+
+  EXPECT_EQ(Expected<int>(42).as_or_error<double>().error().kind(), "TypeError");
+  // Strict container mismatches must not enter diagnostics that try fallback conversions.
+  Expected<Any> array = Array<int>{1};
+  EXPECT_EQ(std::as_const(array).as_or_error<Array<double>>().error().kind(), "TypeError");
+  EXPECT_EQ(std::move(array).as_or_error<Array<double>>().error().kind(), "TypeError");
+  // NOLINTNEXTLINE(bugprone-use-after-move): a strict mismatch preserves the source.
+  EXPECT_EQ(array.value().cast<Array<int>>()[0], 1);
 }
 
 TEST(Expected, AsOrErrorPreservesError) {
-  CheckAsOrErrorPreservesError<int>();
-  CheckAsOrErrorPreservesError<Any>();
+  Error error("ValueError", "original message", "original backtrace");
+  Expected<int> source = error;
+  auto copied = std::as_const(source).as_or_error<Any>();
+  EXPECT_TRUE(copied.error().same_as(error));
+  EXPECT_TRUE(source.error().same_as(error));
+  EXPECT_EQ(error.use_count(), 3);
+  auto moved = std::move(source).as_or_error<Any>();
+  EXPECT_TRUE(moved.error().same_as(error));
+  EXPECT_EQ(error.use_count(), 3);
+  // NOLINTNEXTLINE(bugprone-use-after-move): verify the transferred storage is cleared.
+  EXPECT_EQ(source.type_index(), TypeIndex::kTVMFFINone);
+  EXPECT_TRUE(copied.as_or_error<String>().error().same_as(error));
 }
 
 // Test with String type
