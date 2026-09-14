@@ -51,6 +51,9 @@ namespace ffi {
 
 /*!
  * \brief Permission to mutate a value in place along its ownership path.
+ *
+ * \note The numeric values 0 and 1 are part of the Python integer binding contract,
+ *       matching ``InplaceMode.DISALLOW`` and ``InplaceMode.ALLOW`` respectively.
  */
 enum class InplaceMode : int32_t {
   /*! \brief Preserve the source through copy-on-write mutation. */
@@ -402,12 +405,11 @@ class StructuralMutatorObj : public Object {
    *
    * \note The default InplaceMode::kDisallow uses copy-on-write. In-place mutation is permitted
    *       only when inplace_mode is InplaceMode::kAllow and the current value is uniquely owned.
-   *       InplaceMode::kAllow requires permission along the entire path from the root.
-   *       Recursive calls must forward their established mode explicitly. Uniqueness is checked
-   *       before callback arguments acquire ownership. This permits in-place dispatch but does
-   *       not guarantee reuse: a hook may return a replacement. In-place changes completed before
-   *       an Error are not rolled back.
+   *       See \ref MutateExpected for the full permission and error semantics.
    *
+   * Use \ref TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN in Expected-returning helpers or raw hooks to
+   * preserve checked typed mutation results and the fixed mismatch diagnostic. At a throwing
+   * boundary, an explicit cast may instead report its own TypeError:
    * \code{.cpp}
    * Expr new_node = mutator->Mutate(node).ValueOrUnchanged(AnyView(node)).cast<Expr>();
    * \endcode
@@ -434,6 +436,7 @@ class StructuralMutatorObj : public Object {
   TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateExpected(
       AnyView value, InplaceMode inplace_mode = InplaceMode::kDisallow) noexcept {
     const Object* object = value.as<Object>();
+    // Check uniqueness on the borrowed view before callbacks can acquire owning references.
     if (inplace_mode == InplaceMode::kAllow && object != nullptr && object->unique()) {
       return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
           (*vtable_->maybe_inplace_mutate)(this, value));
@@ -448,11 +451,11 @@ class StructuralMutatorObj : public Object {
    * \param inplace_mode The in-place mode already established by the caller for value.
    * \return The replacement or unchanged marker, or an Error if mutation failed.
    *
-   * \note The default InplaceMode::kDisallow uses copy-on-write. This method bypasses the current
-   *       engine callback and uses the mode established by the caller. It does not check
-   *       uniqueness again. Propagate the callback's validated mode explicitly, even if its
-   *       typed argument has acquired another reference. Permission must cover the entire path
-   *       from the root.
+   * \note The default InplaceMode::kDisallow is a copy-on-write convenience for one-off calls.
+   *       Recursive code and hooks must explicitly forward the mode established for the current
+   *       value. This method uses that mode without checking uniqueness again, even if a typed
+   *       callback argument has acquired another reference. It bypasses the current engine
+   *       callback. Permission must cover the entire path from the root.
    *       Without an in-place hook, ordinary mutation runs. In-place changes completed before an
    *       Error are not rolled back. Registered hooks own variable-remap handling; the reflected
    *       fallback applies it automatically and always uses copy-on-write mutation.
