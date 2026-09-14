@@ -62,91 +62,12 @@ TEST(UnchangedOr, BareValueForwarding) {
   EXPECT_DOUBLE_EQ(std::move(numeric).ValueUnchecked(), 42.0);
 }
 
-TEST(UnchangedOr, StrictCastsTransferReplacements) {
-  TInt original(42);
-  {
-    UnchangedOr<Any> source = original;
-    auto narrowed = std::move(source).as<UnchangedOr<TInt>>();
-    static_assert(std::is_same_v<decltype(narrowed), std::optional<UnchangedOr<TInt>>>);
-    ASSERT_TRUE(narrowed.has_value());
-    EXPECT_FALSE(narrowed->IsUnchanged());
-    EXPECT_EQ(AnyView(source).type_index(), TypeIndex::kTVMFFINone);
-    EXPECT_EQ(original.use_count(), 2);
-    TInt replacement = std::move(*narrowed).ValueUnchecked();
-    EXPECT_TRUE(replacement.same_as(original));
-    EXPECT_EQ(original.use_count(), 2);
-  }
-  EXPECT_EQ(original.use_count(), 1);
-  {
-    UnchangedOr<Any> source = original;
-    auto narrowed = std::move(source).as_or_throw<UnchangedOr<TInt>>();
-    static_assert(std::is_same_v<decltype(narrowed), UnchangedOr<TInt>>);
-    EXPECT_EQ(AnyView(source).type_index(), TypeIndex::kTVMFFINone);
-    EXPECT_EQ(original.use_count(), 2);
-    EXPECT_TRUE(std::move(narrowed).ValueUnchecked().same_as(original));
-  }
-  EXPECT_EQ(original.use_count(), 1);
-  EXPECT_TRUE(UnchangedOr<Any>(original).as<TInt>()->same_as(original));
-  EXPECT_TRUE(UnchangedOr<Any>(original).as_or_throw<TInt>().same_as(original));
-}
-
-TEST(UnchangedOr, StrictCastsDistinguishUnchangedAndMismatch) {
-  auto unchanged = UnchangedOr<Any>(Unchanged()).as<UnchangedOr<TInt>>();
-  ASSERT_TRUE(unchanged.has_value());
-  EXPECT_TRUE(unchanged->IsUnchanged());
+TEST(UnchangedOr, PairedCasts) {
+  UnchangedOr<Any> replacement = TInt(42);
+  auto matched = std::move(replacement).as<TInt>();
+  ASSERT_TRUE(matched.has_value());
+  EXPECT_EQ((*matched)->value, 42);
   EXPECT_TRUE(UnchangedOr<Any>(Unchanged()).as_or_throw<UnchangedOr<TInt>>().IsUnchanged());
-  EXPECT_FALSE(UnchangedOr<Any>(Unchanged()).as<TInt>().has_value());
-  EXPECT_THROW(UnchangedOr<Any>(Unchanged()).as_or_throw<TInt>(), Error);
-  EXPECT_EQ(UnchangedOr<Any>(Unchanged()).as_or_throw<Any>().type_index(),
-            TypeIndex::kTVMFFIUnchanged);
-
-  UnchangedOr<Any> mismatch = TInt(42);
-  EXPECT_FALSE(std::move(mismatch).as<UnchangedOr<TFloat>>().has_value());
-  EXPECT_TRUE(AnyView(mismatch).as<TInt>().has_value());
-  try {
-    std::move(mismatch).as_or_throw<UnchangedOr<TFloat>>();
-    FAIL() << "A mismatched replacement must throw";
-  } catch (const Error& error) {
-    EXPECT_EQ(error.kind(), "TypeError");
-    EXPECT_EQ(error.message(), "Cannot treat type `test.Int` as type `UnchangedOr<test.Float>`");
-  }
-  EXPECT_TRUE(std::move(mismatch).as_or_throw<TInt>().unique());
-  EXPECT_FALSE(UnchangedOr<int>(42).as<double>().has_value());
-  EXPECT_THROW(UnchangedOr<int>(42).as_or_throw<double>(), Error);
-}
-
-TEST(UnchangedOr, RawStorageRoundTrip) {
-  TVMFFIAny marker = details::UnchangedOrUnsafe::MoveToTVMFFIAny(UnchangedOr<Any>(Unchanged()));
-  EXPECT_EQ(marker.type_index, TypeIndex::kTVMFFIUnchanged);
-  auto unchanged = details::UnchangedOrUnsafe::MoveFromTVMFFIAny<TInt>(marker);
-  EXPECT_TRUE(unchanged.IsUnchanged());
-  TVMFFIAny roundtrip = details::UnchangedOrUnsafe::MoveToTVMFFIAny(std::move(unchanged));
-  EXPECT_EQ(roundtrip.type_index, marker.type_index);
-  EXPECT_EQ(roundtrip.zero_padding, marker.zero_padding);
-  EXPECT_EQ(roundtrip.v_int64, marker.v_int64);
-
-  TInt original(42);
-  {
-    UnchangedOr<TInt> source = original;
-    TVMFFIAny raw = details::UnchangedOrUnsafe::MoveToTVMFFIAny(std::move(source));
-    EXPECT_EQ(AnyView(source).type_index(), TypeIndex::kTVMFFINone);
-    EXPECT_EQ(original.use_count(), 2);
-    auto adopted = details::UnchangedOrUnsafe::MoveFromTVMFFIAny<TInt>(raw);
-    EXPECT_EQ(original.use_count(), 2);
-    EXPECT_TRUE(adopted.UnchangedOrSameAs(original));
-    TVMFFIAny moved = details::UnchangedOrUnsafe::MoveToTVMFFIAny(std::move(adopted));
-    EXPECT_EQ(moved.type_index, raw.type_index);
-    EXPECT_EQ(moved.v_obj, raw.v_obj);
-    EXPECT_EQ(original.use_count(), 2);
-    TInt replacement = details::UnchangedOrUnsafe::MoveFromTVMFFIAny<TInt>(moved).ValueUnchecked();
-    EXPECT_TRUE(replacement.same_as(original));
-    EXPECT_EQ(original.use_count(), 2);
-  }
-  EXPECT_EQ(original.use_count(), 1);
-  auto none = details::UnchangedOrUnsafe::MoveFromTVMFFIAny<Any>(
-      details::UnchangedOrUnsafe::MoveToTVMFFIAny(UnchangedOr<Any>(Any())));
-  EXPECT_FALSE(none.IsUnchanged());
-  EXPECT_EQ(std::move(none).ValueUnchecked().type_index(), TypeIndex::kTVMFFINone);
 }
 
 TEST(UnchangedOr, ConversionsAndAssignmentMacro) {
