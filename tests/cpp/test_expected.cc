@@ -28,6 +28,8 @@
 #include <tvm/ffi/optional.h>
 #include <tvm/ffi/reflection/registry.h>
 
+#include <utility>
+
 #include "./testing_object.h"
 
 namespace {
@@ -122,6 +124,43 @@ TEST(Expected, ImplicitConvertingConstructor) {
   ASSERT_TRUE(subsumed_failure.is_err());
   EXPECT_EQ(subsumed_failure.error().kind(), "TypeError");
   EXPECT_EQ(subsumed_failure.error().message(), "subsumed error");
+}
+
+TEST(Expected, AsOrError) {
+  TInt object(42);
+  Expected<Any> source = object;
+  auto copied = std::as_const(source).as_or_error<TInt>();
+  EXPECT_TRUE(copied.value().same_as(object));
+  EXPECT_TRUE(source.value().cast<TInt>().same_as(object));
+  EXPECT_EQ(object.use_count(), 3);
+  auto moved = std::move(source).as_or_error<TInt>();
+  EXPECT_TRUE(moved.value().same_as(object));
+  EXPECT_EQ(object.use_count(), 3);
+  // NOLINTNEXTLINE(bugprone-use-after-move): verify the transferred storage is cleared.
+  EXPECT_EQ(source.type_index(), TypeIndex::kTVMFFINone);
+
+  EXPECT_EQ(Expected<int>(42).as_or_error<double>().error().kind(), "TypeError");
+  // Strict container mismatches must not enter diagnostics that try fallback conversions.
+  Expected<Any> array = Array<int>{1};
+  EXPECT_EQ(std::as_const(array).as_or_error<Array<double>>().error().kind(), "TypeError");
+  EXPECT_EQ(std::move(array).as_or_error<Array<double>>().error().kind(), "TypeError");
+  // NOLINTNEXTLINE(bugprone-use-after-move): a strict mismatch preserves the source.
+  EXPECT_EQ(array.value().cast<Array<int>>()[0], 1);
+}
+
+TEST(Expected, AsOrErrorPreservesError) {
+  Error error("ValueError", "original message", "original backtrace");
+  Expected<int> source = error;
+  auto copied = std::as_const(source).as_or_error<Any>();
+  EXPECT_TRUE(copied.error().same_as(error));
+  EXPECT_TRUE(source.error().same_as(error));
+  EXPECT_EQ(error.use_count(), 3);
+  auto moved = std::move(source).as_or_error<Any>();
+  EXPECT_TRUE(moved.error().same_as(error));
+  EXPECT_EQ(error.use_count(), 3);
+  // NOLINTNEXTLINE(bugprone-use-after-move): verify the transferred storage is cleared.
+  EXPECT_EQ(source.type_index(), TypeIndex::kTVMFFINone);
+  EXPECT_TRUE(copied.as_or_error<String>().error().same_as(error));
 }
 
 // Test with String type

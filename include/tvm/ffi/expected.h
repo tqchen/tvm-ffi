@@ -242,6 +242,48 @@ class Expected {
     throw details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(data_));
   }
 
+  /*!
+   * \brief Strictly reinterpret the success value as U, or return an error.
+   * \tparam U An unqualified owning storage type, excluding Error and its subclasses and void.
+   * \return A copy of the stored value or existing error, or TypeError on a type mismatch.
+   * \note This function does not perform value conversions. The source is preserved.
+   */
+  template <typename U, typename = std::enable_if_t<
+                            std::is_same_v<U, std::decay_t<U>> && !std::is_base_of_v<Error, U> &&
+                            (TypeTraits<U>::storage_enabled || std::is_same_v<U, Any>)>>
+  TVM_FFI_INLINE Expected<U> as_or_error() const& {
+    if (TVM_FFI_PREDICT_FALSE(data_.type_index() != TypeIndex::kTVMFFIError &&
+                              !details::AnyUnsafe::CheckAnyStrict<U>(data_))) {
+      // Conversion-failure diagnostics may try fallback conversions, so use the stored type key.
+      return Error("TypeError",
+                   "Cannot treat type `" + data_.GetTypeKey() + "` as type `" +
+                       details::Type2Str<U>::v() + "`",
+                   "");
+    }
+    return Expected<U>(UnsafeInit{}, details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(data_)));
+  }
+
+  /*!
+   * \brief Strictly reinterpret the success value as U, or return an error, moving the storage.
+   * \tparam U An unqualified owning storage type, excluding Error and its subclasses and void.
+   * \return The moved stored value or existing error, or TypeError on a type mismatch.
+   * \note This function does not perform value conversions. A type mismatch preserves the source.
+   */
+  template <typename U, typename = std::enable_if_t<
+                            std::is_same_v<U, std::decay_t<U>> && !std::is_base_of_v<Error, U> &&
+                            (TypeTraits<U>::storage_enabled || std::is_same_v<U, Any>)>>
+  TVM_FFI_INLINE Expected<U> as_or_error() && {
+    if (TVM_FFI_PREDICT_FALSE(data_.type_index() != TypeIndex::kTVMFFIError &&
+                              !details::AnyUnsafe::CheckAnyStrict<U>(data_))) {
+      // Conversion-failure diagnostics may try fallback conversions, so use the stored type key.
+      return Error("TypeError",
+                   "Cannot treat type `" + data_.GetTypeKey() + "` as type `" +
+                       details::Type2Str<U>::v() + "`",
+                   "");
+    }
+    return Expected<U>(UnsafeInit{}, details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(data_)));
+  }
+
   /*! \brief Returns the contained error, or throws RuntimeError if is_ok(). */
   TVM_FFI_INLINE Error error() const& {
     // No branch hint: error() is itself a cold path — callers only invoke it
