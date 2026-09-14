@@ -299,6 +299,16 @@ class UnchangedOr {
   }
 
   /*!
+   * \brief Move the replacement, or copy \p original when unchanged.
+   * \param original The borrowed original value, which is left unmodified.
+   * \return The replacement or original value.
+   */
+  TVM_FFI_INLINE T ValueOrUnchanged(const T& original) && {
+    return IsUnchanged() ? original
+                         : details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
+  }
+
+  /*!
    * \brief Move the replacement, or move \p original when unchanged.
    * \param original The owned original value.
    * \return The replacement or original value.

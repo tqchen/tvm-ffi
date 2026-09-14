@@ -79,6 +79,21 @@ TEST(UnchangedOr, ConversionsAndAssignmentMacro) {
   EXPECT_TRUE(std::move(moved).ValueUnchecked().same_as(original));
   EXPECT_EQ(original.use_count(), 1);
 
+  const TInt borrowed(7);
+  TInt typed_original = UnchangedOr<TInt>(Unchanged()).ValueOrUnchanged(borrowed);
+  EXPECT_TRUE(typed_original.same_as(borrowed));
+  EXPECT_EQ(borrowed.use_count(), 2);
+  TNumber base_original = UnchangedOr<TNumber>(Unchanged()).ValueOrUnchanged(borrowed);
+  EXPECT_TRUE(base_original.same_as(borrowed));
+  EXPECT_EQ(borrowed.use_count(), 3);
+
+  UnchangedOr<TNumber> replacement = TInt(8);
+  TNumber replaced = std::move(replacement).ValueOrUnchanged(borrowed);
+  EXPECT_EQ(replaced.as_or_throw<TInt>()->value, 8);
+  EXPECT_TRUE(replaced.unique());
+  EXPECT_EQ(borrowed->value, 7);
+  EXPECT_EQ(borrowed.use_count(), 3);
+
   UnchangedOr<double> numeric = UnchangedOr<int>(42);
   EXPECT_EQ(AnyView(numeric).type_index(), TypeIndex::kTVMFFIFloat);
   EXPECT_DOUBLE_EQ(std::move(numeric).ValueUnchecked(), 42.0);
