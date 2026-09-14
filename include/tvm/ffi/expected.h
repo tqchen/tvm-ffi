@@ -27,6 +27,8 @@
 #include <tvm/ffi/any.h>
 #include <tvm/ffi/error.h>
 
+#include <sstream>
+#include <string>
 #include <type_traits>
 #include <utility>
 
@@ -683,6 +685,80 @@ struct TypeTraits<Expected<void>> : public TypeTraitsBase {
            R"(,{"type":"ffi.Error"}]})";
   }
 };
+
+// check macros for expected land
+// RET_ means the macro contains return; UNEXPECTED is a value and the caller writes return.
+// While guards preserve an enclosing if/else. Errors record file/line/function only, without
+// a stack walk.
+namespace details {
+
+class UnexpectedBuilder {
+ public:
+  UnexpectedBuilder(const char* kind, const char* file, int line, const char* function)
+      : kind_(kind), file_(file), line_(line), function_(function) {}
+
+  template <typename T>
+  UnexpectedBuilder&& operator<<(T&& value) && {
+    stream_ << std::forward<T>(value);
+    return std::move(*this);
+  }
+
+  UnexpectedBuilder&& operator<<(std::ostream& (*manipulator)(std::ostream&)) && {
+    manipulator(stream_);
+    return std::move(*this);
+  }
+
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  operator Unexpected<Error>() && {
+    std::ostringstream backtrace;
+    backtrace << "  File \"" << file_ << "\", line " << line_ << ", in " << function_ << '\n';
+    return Unexpected(Error(kind_, stream_.str(), backtrace.str()));
+  }
+
+  template <typename T>
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  operator Expected<T>() && {
+    // A return expression cannot chain builder -> Unexpected -> Expected conversions.
+    return static_cast<Unexpected<Error>>(std::move(*this));
+  }
+
+ private:
+  const char* kind_;
+  const char* file_;
+  int line_;
+  const char* function_;
+  std::ostringstream stream_;
+};
+
+}  // namespace details
+
+#define TVM_FFI_UNEXPECTED(ErrorKind) \
+  ::tvm::ffi::details::UnexpectedBuilder(#ErrorKind, __FILE__, __LINE__, TVM_FFI_FUNC_SIG)
+
+#define TVM_FFI_RET_CHECK(cond, ErrorKind) \
+  while (TVM_FFI_PREDICT_FALSE(!(cond)))   \
+  return TVM_FFI_UNEXPECTED(ErrorKind) << "Check failed: (" #cond ") is false: "
+
+#define TVM_FFI_RET_CHECK_BINARY_OP(name, op, x, y, ErrorKind)               \
+  while (auto __tvm_ffi_log_err = /* NOLINT(bugprone-reserved-identifier) */ \
+         ::tvm::ffi::details::LogCheck##name(x, y))                          \
+  return TVM_FFI_UNEXPECTED(ErrorKind)                                       \
+         << "Check failed: " << #x " " #op " " #y << (*__tvm_ffi_log_err) << ": "
+
+#define TVM_FFI_RET_CHECK_LT(x, y, ErrorKind) TVM_FFI_RET_CHECK_BINARY_OP(_LT, <, x, y, ErrorKind)
+#define TVM_FFI_RET_CHECK_GT(x, y, ErrorKind) TVM_FFI_RET_CHECK_BINARY_OP(_GT, >, x, y, ErrorKind)
+#define TVM_FFI_RET_CHECK_LE(x, y, ErrorKind) TVM_FFI_RET_CHECK_BINARY_OP(_LE, <=, x, y, ErrorKind)
+#define TVM_FFI_RET_CHECK_GE(x, y, ErrorKind) TVM_FFI_RET_CHECK_BINARY_OP(_GE, >=, x, y, ErrorKind)
+#define TVM_FFI_RET_CHECK_EQ(x, y, ErrorKind) TVM_FFI_RET_CHECK_BINARY_OP(_EQ, ==, x, y, ErrorKind)
+#define TVM_FFI_RET_CHECK_NE(x, y, ErrorKind) TVM_FFI_RET_CHECK_BINARY_OP(_NE, !=, x, y, ErrorKind)
+
+#define TVM_FFI_RET_ICHECK(x) TVM_FFI_RET_CHECK(x, InternalError)
+#define TVM_FFI_RET_ICHECK_LT(x, y) TVM_FFI_RET_CHECK_LT(x, y, InternalError)
+#define TVM_FFI_RET_ICHECK_GT(x, y) TVM_FFI_RET_CHECK_GT(x, y, InternalError)
+#define TVM_FFI_RET_ICHECK_LE(x, y) TVM_FFI_RET_CHECK_LE(x, y, InternalError)
+#define TVM_FFI_RET_ICHECK_GE(x, y) TVM_FFI_RET_CHECK_GE(x, y, InternalError)
+#define TVM_FFI_RET_ICHECK_EQ(x, y) TVM_FFI_RET_CHECK_EQ(x, y, InternalError)
+#define TVM_FFI_RET_ICHECK_NE(x, y) TVM_FFI_RET_CHECK_NE(x, y, InternalError)
 
 }  // namespace ffi
 }  // namespace tvm

@@ -857,7 +857,7 @@ namespace details {
 /// \cond Doxygen_Suppress
 // Return an error from the current raw or Expected mutation function.
 // The rvalue-only helper lets the enclosing return type select the representation.
-#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result)                   \
+#define TVM_FFI_S_MUTATE_RET_IF_ERROR(Result)                         \
   do {                                                                \
     auto&& tvm_ffi_res_ = (Result);                                   \
     if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.is_err())) {               \
@@ -871,7 +871,7 @@ namespace details {
 /// \cond Doxygen_Suppress
 #define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Type, Name, ResultExpr)               \
   auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */                        \
-  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result);                                                \
+  TVM_FFI_S_MUTATE_RET_IF_ERROR(Result);                                                      \
   if constexpr (!::tvm::ffi::type_subsumes_v<::tvm::ffi::Expected<Type>, decltype(Result)>) { \
     if (TVM_FFI_PREDICT_FALSE(!::tvm::ffi::details::AnyUnsafe::CheckAnyStrict<Type>(          \
             ::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))) {                         \
@@ -927,56 +927,27 @@ namespace details {
                                           Type, Name, ResultExpr)
 
 /// \cond Doxygen_Suppress
-#define TVM_FFI_S_MUTATE_UNSAFE_ASSIGN_OR_RETURN_UNCHECKED_IMPL_(Result, Type, Name, ResultExpr) \
-  auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */                           \
-  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result);                                                   \
-  Type Name = /* NOLINT(bugprone-macro-parentheses) */                                           \
-      ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                               \
+#define TVM_FFI_UNSAFE_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(Result, Type, Name, ResultExpr) \
+  auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */                 \
+  TVM_FFI_S_MUTATE_RET_IF_ERROR(Result);                                               \
+  Type Name = /* NOLINT(bugprone-macro-parentheses) */                                 \
+      ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                     \
           ::std::move(::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))
 /// \endcond
 
 /*!
  * \brief Unwrap a successful mutation result when the caller guarantees it to be ``Type``.
  *
- * This is an unsafe form that can only be used when the mutation contract guarantees the result
- * type.
+ * The caller must guarantee the successful result has the declared type. No runtime type check
+ * is performed, including in debug builds; violating this contract is undefined behavior.
  *
  * \param Type The guaranteed concrete type of the successful value.
  * \param Name The name of the value declared in the enclosing scope.
  * \param ResultExpr An expression producing the ``Expected`` value to unwrap.
  * \sa TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN
  */
-#define TVM_FFI_S_MUTATE_UNSAFE_ASSIGN_OR_RETURN_UNCHECKED(Type, Name, ResultExpr) \
-  TVM_FFI_S_MUTATE_UNSAFE_ASSIGN_OR_RETURN_UNCHECKED_IMPL_(                        \
-      TVM_FFI_STR_CONCAT(tvm_ffi_mutate_result_, __COUNTER__), Type, Name, ResultExpr)
-
-/// \cond Doxygen_Suppress
-#define TVM_FFI_UNSAFE_S_MUTATE_ASSIGN_OR_RETURN_SKIP_CHECK_IMPL_(Result, Type, Name, ResultExpr) \
-  auto Result = (ResultExpr); /* NOLINT(bugprone-macro-parentheses) */                            \
-  TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result);                                                    \
-  TVM_FFI_DCHECK(::tvm::ffi::details::AnyUnsafe::CheckAnyStrict<Type>(                            \
-      ::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))                                      \
-      << "unchecked structural-mutate assign: result is not of the declared type";                \
-  Type Name = /* NOLINT(bugprone-macro-parentheses) */                                            \
-      ::tvm::ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Type>(                                \
-          ::std::move(::tvm::ffi::details::ExpectedUnsafe::GetData(Result)))
-/// \endcond
-
-/*!
- * \brief \ref TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN without the type check.
- *
- * Same signature, raw-or-same-T early-return support, and error propagation; the difference is
- * only what happens to a successful result that is not of type \p Type.
- *
- * The caller must guarantee the result has the declared type; a mismatch is undefined behavior
- * in a release build, and debug builds catch it with ``TVM_FFI_DCHECK``.
- *
- * \param Type The concrete type of the successful value.
- * \param Name The name of the value declared in the enclosing scope.
- * \param ResultExpr An expression producing the ``Expected`` value to unwrap.
- */
-#define TVM_FFI_UNSAFE_S_MUTATE_ASSIGN_OR_RETURN_SKIP_CHECK(Type, Name, ResultExpr) \
-  TVM_FFI_UNSAFE_S_MUTATE_ASSIGN_OR_RETURN_SKIP_CHECK_IMPL_(                        \
+#define TVM_FFI_UNSAFE_S_MUTATE_ASSIGN_OR_RETURN(Type, Name, ResultExpr) \
+  TVM_FFI_UNSAFE_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(                        \
       TVM_FFI_STR_CONCAT(tvm_ffi_mutate_result_, __COUNTER__), Type, Name, ResultExpr)
 
 }  // namespace details
