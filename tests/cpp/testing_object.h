@@ -254,9 +254,9 @@ class TMutatePairObj : public Object {
     const TMutatePairObj* self =
         details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const TMutatePairObj>(value);
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, lhs,
-                                      mutator->MutateExpected(self->lhs));
+                                      mutator->MutateExpected(self->lhs, false));
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, rhs,
-                                      mutator->MutateExpected(self->rhs));
+                                      mutator->MutateExpected(self->rhs, false));
     if (lhs.UnchangedOrSameAs(self->lhs) && rhs.UnchangedOrSameAs(self->rhs)) {
       return Unchanged().CopyToTVMFFIAny();
     }
