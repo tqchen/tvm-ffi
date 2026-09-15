@@ -64,9 +64,11 @@ TEST(UnchangedOr, BareValueForwarding) {
 
 TEST(UnchangedOr, PairedCasts) {
   UnchangedOr<Any> replacement = TInt(42);
-  auto matched = std::move(replacement).as<TInt>();
-  ASSERT_TRUE(matched.has_value());
-  EXPECT_EQ((*matched)->value, 42);
+  if (auto matched = std::move(replacement).as<TInt>()) {
+    EXPECT_EQ((*matched)->value, 42);
+  } else {
+    FAIL() << "Expected TInt replacement";
+  }
   EXPECT_TRUE(UnchangedOr<Any>(Unchanged()).as_or_throw<UnchangedOr<TInt>>().IsUnchanged());
 }
 
