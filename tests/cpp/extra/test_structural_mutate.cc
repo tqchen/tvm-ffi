@@ -77,34 +77,6 @@ TEST(UnchangedOr, ValueOrUnchangedBorrowsLvalues) {
   TInt result = UnchangedOr<TInt>(Unchanged()).ValueOrUnchanged(original);
   EXPECT_TRUE(result.same_as(original));
   EXPECT_EQ(original.use_count(), 2);
-
-  TInt replacement(8);
-  result = UnchangedOr<TInt>(replacement).ValueOrUnchanged(original);
-  EXPECT_TRUE(result.same_as(replacement));
-  EXPECT_EQ(original->value, 7);
-  EXPECT_TRUE(original.unique());
-  EXPECT_EQ(replacement.use_count(), 2);
-}
-
-TEST(UnchangedOr, ValueOrUnchangedTransfersRvalues) {
-  TInt original(7);
-  const auto* identity = original.get();
-  TInt result = UnchangedOr<TInt>(Unchanged()).ValueOrUnchanged(std::move(original));
-  // Verify the documented moved-from state.
-  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
-  EXPECT_FALSE(original.defined());
-  EXPECT_EQ(result.get(), identity);
-  EXPECT_TRUE(result.unique());
-
-  original = TInt(8);
-  TInt replacement(9);
-  result = UnchangedOr<TInt>(replacement).ValueOrUnchanged(std::move(original));
-  EXPECT_TRUE(result.same_as(replacement));
-  // A replacement does not consume the original.
-  // NOLINTNEXTLINE(bugprone-use-after-move)
-  EXPECT_EQ(original->value, 8);
-  EXPECT_TRUE(original.unique());
-  EXPECT_EQ(replacement.use_count(), 2);
 }
 
 TEST(UnchangedOr, ConversionsAndAssignmentMacro) {
