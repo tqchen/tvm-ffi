@@ -62,6 +62,16 @@ TEST(UnchangedOr, BareValueForwarding) {
   EXPECT_DOUBLE_EQ(std::move(numeric).ValueUnchecked(), 42.0);
 }
 
+TEST(UnchangedOr, PairedCasts) {
+  UnchangedOr<Any> replacement = TInt(42);
+  if (auto matched = std::move(replacement).as<TInt>()) {
+    EXPECT_EQ((*matched)->value, 42);
+  } else {
+    FAIL() << "Expected TInt replacement";
+  }
+  EXPECT_TRUE(UnchangedOr<Any>(Unchanged()).as_or_throw<UnchangedOr<TInt>>().IsUnchanged());
+}
+
 TEST(UnchangedOr, ConversionsAndAssignmentMacro) {
   static_assert(!std::is_convertible_v<UnchangedOr<Any>, UnchangedOr<int>>);
   static_assert(type_subsumes_v<Expected<UnchangedOr<TNumber>>, Expected<UnchangedOr<TInt>>>);
