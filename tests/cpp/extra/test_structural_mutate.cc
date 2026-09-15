@@ -72,6 +72,13 @@ TEST(UnchangedOr, PairedCasts) {
   EXPECT_TRUE(UnchangedOr<Any>(Unchanged()).as_or_throw<UnchangedOr<TInt>>().IsUnchanged());
 }
 
+TEST(UnchangedOr, ValueOrUnchangedBorrowsLvalues) {
+  TInt original(7);
+  TInt result = UnchangedOr<TInt>(Unchanged()).ValueOrUnchanged(original);
+  EXPECT_TRUE(result.same_as(original));
+  EXPECT_EQ(original.use_count(), 2);
+}
+
 TEST(UnchangedOr, ConversionsAndAssignmentMacro) {
   static_assert(!std::is_convertible_v<UnchangedOr<Any>, UnchangedOr<int>>);
   static_assert(type_subsumes_v<Expected<UnchangedOr<TNumber>>, Expected<UnchangedOr<TInt>>>);
