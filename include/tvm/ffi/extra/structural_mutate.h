@@ -301,20 +301,11 @@ class UnchangedOr {
   }
 
   /*!
-   * \brief Move the replacement, or move \p original when unchanged.
-   * \param original The owned original value.
-   * \return The replacement or original value.
-   * \note Passing a named lvalue transfers ownership and may leave it moved-from.
-   */
-  TVM_FFI_INLINE T ValueOrUnchanged(T& original) && {
-    return IsUnchanged() ? std::move(original)
-                         : details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
-  }
-
-  /*!
    * \brief Move the replacement, or copy \p original when unchanged.
    * \param original The borrowed original value, which is left unmodified.
    * \return The replacement or original value.
+   * \note Both mutable and const lvalues are borrowed. Use std::move(original) to transfer
+   * ownership.
    */
   TVM_FFI_INLINE T ValueOrUnchanged(const T& original) && {
     return IsUnchanged() ? original
@@ -325,6 +316,7 @@ class UnchangedOr {
    * \brief Move the replacement, or move \p original when unchanged.
    * \param original The owned original value.
    * \return The replacement or original value.
+   * \note The original is moved from only when the result is unchanged.
    */
   TVM_FFI_INLINE T ValueOrUnchanged(T&& original) && {
     return IsUnchanged() ? std::move(original)
