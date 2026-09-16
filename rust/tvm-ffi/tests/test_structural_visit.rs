@@ -23,11 +23,606 @@ use tvm_ffi::{
     dispatch, get_type_attr, structural_visit, structural_walk, Any, Array, DLDataType,
     DLDataTypeCode, DefRegionKind, Error, FieldGetter, Function, Map, Object, ObjectRefCore,
     Result, String as FfiString, StructuralVisitor, TypeIndex, VisitCallbacks, VisitContext,
-    VisitInterrupt, VisitValue, WalkOrder, WalkResult, RUNTIME_ERROR,
+    VisitInterrupt, VisitPolicy, VisitValue, WalkOrder, WalkResult, WalkWithPolicy, RUNTIME_ERROR,
 };
 
 fn runtime_error(message: &str) -> Error {
     Error::new(RUNTIME_ERROR, message, "")
+}
+
+#[test]
+fn composed_policies_share_array_scope_with_visit_and_walk_callbacks() {
+    #[derive(Default)]
+    struct CollectIntegers {
+        depth: usize,
+        integers: Vec<(i64, usize)>,
+        descent_depths: Vec<usize>,
+    }
+
+    impl CollectIntegers {
+        fn record(&mut self, value: i64) {
+            self.integers.push((value, self.depth));
+        }
+    }
+
+    // The outer policy establishes a scope around an array's children.
+    // It does not know what the callbacks will do with the current depth.
+    struct ArrayScope;
+
+    impl VisitPolicy<CollectIntegers> for ArrayScope {
+        fn default_visit(
+            &self,
+            value: &VisitValue,
+            visitor: &mut VisitContext<'_, CollectIntegers>,
+        ) -> Result<Option<VisitInterrupt>> {
+            if value.cast::<Array<Any>>().is_none() {
+                return visitor.visit_children();
+            }
+            let outer_depth = visitor.state().depth;
+            let depth = outer_depth + 1;
+            visitor.state_mut().depth = depth;
+
+            // Continue to RecordDescent, not directly to the children.
+            let result = visitor.visit_children();
+
+            visitor.state_mut().depth = outer_depth;
+            result
+        }
+    }
+
+    // The inner policy observes the scope set by ArrayScope. Its continuation
+    // reaches the built-in Array hook, whose children re-enter the full engine.
+    struct RecordDescent;
+
+    impl VisitPolicy<CollectIntegers> for RecordDescent {
+        fn default_visit(
+            &self,
+            _value: &VisitValue,
+            visitor: &mut VisitContext<'_, CollectIntegers>,
+        ) -> Result<Option<VisitInterrupt>> {
+            let state = visitor.state_mut();
+            state.descent_depths.push(state.depth);
+            visitor.visit_children()
+        }
+    }
+
+    // [1, [2, 3], 4]: the final sibling must see the restored outer depth.
+    let root = Array::new(vec![
+        Any::from(1_i64),
+        Any::from(Array::new(vec![2_i64, 3])),
+        Any::from(4_i64),
+    ]);
+    let expected = vec![(1, 1), (2, 2), (3, 2), (4, 1)];
+
+    let mut visitor = VisitCallbacks::new(
+        CollectIntegers::default(),
+        |value: i64, visitor: &mut VisitContext<'_, CollectIntegers>| {
+            visitor.state_mut().record(value);
+            // Matched visit callbacks own recursion: an integer needs no descent.
+        },
+    )
+    .with_policy((ArrayScope, RecordDescent));
+    assert!(structural_visit(&root, &mut visitor).unwrap().is_none());
+    assert_eq!(visitor.state().integers, expected);
+    assert_eq!(visitor.state().depth, 0);
+    // Only unmatched arrays enter the default policies in this visit.
+    assert_eq!(visitor.state().descent_depths, vec![1, 2]);
+
+    #[dispatch(walk)]
+    impl CollectIntegers {
+        fn walk_integer(&mut self, value: i64) -> WalkResult {
+            self.record(value);
+            WalkResult::Advance
+        }
+    }
+
+    // Reuse the policies with a macro-generated walk dispatcher. Walk manages
+    // recursion, so default policies also run for matched integer leaves.
+    for order in [WalkOrder::PreOrder, WalkOrder::PostOrder] {
+        let mut walker =
+            WalkWithPolicy::new(CollectIntegers::default(), (ArrayScope, RecordDescent));
+        assert!(walker.walk(&root, order).unwrap().is_none());
+        assert_eq!(walker.state().integers, expected);
+        assert_eq!(walker.state().depth, 0);
+        assert_eq!(walker.state().descent_depths, vec![1, 1, 2, 2, 2, 1]);
+    }
+}
+
+// Enter Simple, then Pattern, then attempt to downgrade to None. Verify each
+// enclosing region is restored even when a child interrupts or returns an error.
+#[test]
+fn policy_continuation_scopes_regions_and_restores_after_halts() {
+    #[derive(Clone, Copy)]
+    enum Outcome {
+        Finish,
+        Interrupt,
+        Error,
+    }
+    struct Probe {
+        outcome: Outcome,
+        seen: Vec<(i64, DefRegionKind)>,
+        regions: Vec<DefRegionKind>,
+    }
+    impl Probe {
+        fn record(&mut self, value: i64, kind: DefRegionKind) -> Result<Option<VisitInterrupt>> {
+            self.seen.push((value, kind));
+            if value == 1 {
+                match self.outcome {
+                    Outcome::Interrupt => return Ok(Some(VisitInterrupt::with(42_i64))),
+                    Outcome::Error => return Err(runtime_error("continuation failed")),
+                    Outcome::Finish => {}
+                }
+            }
+            Ok(None)
+        }
+    }
+    #[dispatch(walk)]
+    impl Probe {
+        fn walk_integer(&mut self, value: i64, kind: DefRegionKind) -> Result<WalkResult> {
+            Ok(match self.record(value, kind)? {
+                Some(interrupt) => WalkResult::InterruptWith(interrupt.value),
+                None => WalkResult::Advance,
+            })
+        }
+    }
+    struct Scope(DefRegionKind, i64);
+    impl VisitPolicy<Probe> for Scope {
+        fn default_visit(
+            &self,
+            value: &VisitValue,
+            ctx: &mut VisitContext<'_, Probe>,
+        ) -> Result<Option<VisitInterrupt>> {
+            let Some(array) = value.cast::<Array<i64>>() else {
+                return ctx.visit_children();
+            };
+            let outer = ctx.def_region_kind();
+            ctx.state_mut().regions.push(outer);
+            let result = ctx.default_visit_children(&array, self.0);
+            assert_eq!(ctx.def_region_kind(), outer);
+            // Re-dispatch checks the restored ABI region, not only the context.
+            assert!(ctx.visit(&self.1)?.is_none());
+            result
+        }
+    }
+    use DefRegionKind::{None as Use, Pattern, Simple};
+    let root = Array::new(vec![1_i64, 5]);
+    for outcome in [Outcome::Finish, Outcome::Interrupt, Outcome::Error] {
+        for order in [None, Some(WalkOrder::PreOrder), Some(WalkOrder::PostOrder)] {
+            let state = Probe {
+                outcome,
+                seen: vec![],
+                regions: vec![],
+            };
+            let policies = (Scope(Simple, 4), (Scope(Pattern, 3), Scope(Use, 2)));
+            let (result, state) = if let Some(order) = order {
+                let mut walker = WalkWithPolicy::new(state, policies);
+                let result = walker.walk(&root, order);
+                (result, walker.into_state())
+            } else {
+                let mut visitor =
+                    VisitCallbacks::new(state, |value: i64, ctx: &mut VisitContext<'_, Probe>| {
+                        let kind = ctx.def_region_kind();
+                        ctx.state_mut().record(value, kind)
+                    })
+                    .with_policy(policies);
+                let result = structural_visit(&root, &mut visitor);
+                (result, visitor.into_state())
+            };
+            match outcome {
+                Outcome::Finish => assert!(result.unwrap().is_none()),
+                Outcome::Interrupt => {
+                    assert_eq!(i64::try_from(result.unwrap().unwrap().value).unwrap(), 42)
+                }
+                Outcome::Error => assert!(result
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("continuation failed")),
+            }
+            assert_eq!(state.regions, vec![Use, Simple, Pattern]);
+            let mut expected = vec![(1, Pattern)];
+            if matches!(outcome, Outcome::Finish) {
+                expected.push((5, Pattern)); // Halts must skip the remaining child.
+            }
+            // Unwind the innermost, middle, and outer scopes.
+            expected.extend([(2, Pattern), (3, Simple), (4, Use)]);
+            assert_eq!(state.seen, expected);
+        }
+    }
+}
+
+fn visit_region_graph(with_hook: bool) -> Any {
+    assert_eq!(
+        unsafe { tvm_ffi::tvm_ffi_sys::TVMFFITestingDummyTarget() },
+        0
+    );
+    Function::get_global("testing.make_visit_region_graph")
+        .unwrap()
+        .call_tuple((with_hook,))
+        .unwrap()
+}
+
+#[derive(Default)]
+struct PolicyRegionTrace(Vec<(i64, DefRegionKind)>);
+#[dispatch(walk)]
+impl PolicyRegionTrace {
+    fn walk_integer(&mut self, value: i64, kind: DefRegionKind) -> WalkResult {
+        self.0.push((value, kind));
+        WalkResult::Advance
+    }
+}
+
+// Default descent may target a child container without dispatching its own
+// callback, while keeping subsequent policies and child callback dispatch.
+#[test]
+fn policy_continuation_retargets_without_dispatching_the_container() {
+    #[derive(Default)]
+    struct Probe(Vec<(&'static str, i64, DefRegionKind)>, bool);
+
+    #[dispatch(walk)]
+    impl Probe {
+        fn walk_array(&mut self, value: Array<Any>, kind: DefRegionKind) -> WalkResult {
+            self.0.push(("array callback", value.len() as i64, kind));
+            if self.1 {
+                WalkResult::Skip
+            } else {
+                WalkResult::Advance
+            }
+        }
+        fn walk_integer(&mut self, value: i64, kind: DefRegionKind) -> WalkResult {
+            self.0.push(("integer callback", value, kind));
+            WalkResult::Advance
+        }
+    }
+
+    struct Redirect;
+    impl VisitPolicy<Probe> for Redirect {
+        fn default_visit(
+            &self,
+            value: &VisitValue,
+            ctx: &mut VisitContext<'_, Probe>,
+        ) -> Result<Option<VisitInterrupt>> {
+            let Some(array) = value.cast::<Array<Any>>() else {
+                return ctx.visit_children();
+            };
+            assert_eq!(
+                array.len(),
+                2,
+                "the redirected array must not restart this policy"
+            );
+            let kind = ctx.def_region_kind();
+            ctx.state_mut().0.push(("before", 2, kind));
+            let target = array.get(0).unwrap();
+            let result = ctx.default_visit_children(&target, DefRegionKind::Pattern);
+            assert_eq!(ctx.current().cast::<Array<Any>>().unwrap().len(), 2);
+            assert_eq!(ctx.def_region_kind(), DefRegionKind::None);
+            let kind = ctx.def_region_kind();
+            ctx.state_mut().0.push(("after", 2, kind));
+            result
+        }
+    }
+
+    struct Observe;
+    impl VisitPolicy<Probe> for Observe {
+        fn default_visit(
+            &self,
+            value: &VisitValue,
+            ctx: &mut VisitContext<'_, Probe>,
+        ) -> Result<Option<VisitInterrupt>> {
+            if let Some(array) = value.cast::<Array<Any>>() {
+                assert_eq!(ctx.current().cast::<Array<Any>>().unwrap().len(), 1);
+                let kind = ctx.def_region_kind();
+                ctx.state_mut()
+                    .0
+                    .push(("next policy", array.len() as i64, kind));
+            } else if value.cast::<i64>().is_none() {
+                let kind = ctx.def_region_kind();
+                ctx.state_mut().0.push(("reflected policy", 0, kind));
+            }
+            ctx.visit_children()
+        }
+    }
+
+    let root = Array::new(vec![Any::from(Array::new(vec![7_i64])), Any::from(99_i64)]);
+    let descent = vec![
+        ("before", 2, DefRegionKind::None),
+        ("next policy", 1, DefRegionKind::Pattern),
+        ("integer callback", 7, DefRegionKind::Pattern),
+        ("after", 2, DefRegionKind::None),
+    ];
+    for order in [WalkOrder::PreOrder, WalkOrder::PostOrder] {
+        for skip in [false, true] {
+            let mut walker = WalkWithPolicy::new(Probe(vec![], skip), (Redirect, Observe));
+            assert!(walker.walk(&root, order).unwrap().is_none());
+            let mut expected = descent.clone();
+            let array_callback = ("array callback", 2, DefRegionKind::None);
+            match order {
+                WalkOrder::PreOrder => {
+                    if skip {
+                        expected.clear(); // Skip prevents policy entry as well as child traversal.
+                    }
+                    expected.insert(0, array_callback);
+                }
+                WalkOrder::PostOrder => expected.push(array_callback),
+            }
+            assert_eq!(walker.state().0, expected);
+        }
+    }
+    let mut visitor = VisitCallbacks::new(
+        Probe::default(),
+        |value: &VisitValue, ctx: &mut VisitContext<'_, Probe>| {
+            let kind = ctx.def_region_kind();
+            if let Some(array) = value.cast::<Array<Any>>() {
+                ctx.state_mut()
+                    .0
+                    .push(("array callback", array.len() as i64, kind));
+                ctx.visit_children()
+            } else {
+                ctx.state_mut()
+                    .0
+                    .push(("integer callback", value.cast::<i64>().unwrap(), kind));
+                Ok(None)
+            }
+        },
+    )
+    .with_policy((Redirect, Observe));
+    assert!(structural_visit(&root, &mut visitor).unwrap().is_none());
+    let mut expected = descent;
+    expected.insert(0, ("array callback", 2, DefRegionKind::None));
+    assert_eq!(visitor.state().0, expected);
+
+    // A callback can also retarget default descent, entering the configured
+    // policy. This target uses reflection instead of the Array hook above.
+    let target = visit_region_graph(false);
+    let mut visitor = VisitCallbacks::new(
+        Probe::default(),
+        |value: &VisitValue, ctx: &mut VisitContext<'_, Probe>| {
+            if value.cast::<i64>() == Some(-1) {
+                assert!(ctx
+                    .default_visit_children(&Any::new(), DefRegionKind::Pattern)?
+                    .is_none());
+                let result = ctx.default_visit_children(&target, DefRegionKind::Pattern);
+                assert_eq!(ctx.current().cast::<i64>(), Some(-1));
+                assert_eq!(ctx.def_region_kind(), DefRegionKind::None);
+                return result;
+            }
+            // A callback on the reflected target itself would fail this cast.
+            let integer = value.cast::<i64>().unwrap();
+            let kind = ctx.def_region_kind();
+            ctx.state_mut().0.push(("integer callback", integer, kind));
+            Ok(None)
+        },
+    )
+    .with_policy(Observe);
+    assert!(structural_visit(&-1_i64, &mut visitor).unwrap().is_none());
+    assert_eq!(
+        visitor.state().0,
+        vec![
+            ("reflected policy", 0, DefRegionKind::Pattern),
+            ("integer callback", 1, DefRegionKind::Pattern),
+            ("integer callback", 2, DefRegionKind::Pattern),
+            ("integer callback", 3, DefRegionKind::Pattern),
+        ]
+    );
+}
+
+#[test]
+fn policy_halts_skip_remaining_policies_and_restore_outer_state() {
+    #[derive(Default)]
+    struct Probe {
+        events: Vec<&'static str>,
+        depth: usize,
+    }
+    #[dispatch(walk)]
+    impl Probe {
+        fn walk_any(&mut self, value: &VisitValue, kind: DefRegionKind) -> WalkResult {
+            assert!(
+                value.cast::<Array<i64>>().is_some(),
+                "children must not be visited"
+            );
+            assert_eq!(kind, DefRegionKind::None);
+            self.events.push("callback");
+            WalkResult::Advance
+        }
+    }
+    struct Scope;
+    impl VisitPolicy<Probe> for Scope {
+        fn default_visit(
+            &self,
+            value: &VisitValue,
+            ctx: &mut VisitContext<'_, Probe>,
+        ) -> Result<Option<VisitInterrupt>> {
+            ctx.state_mut().events.push("enter");
+            ctx.state_mut().depth += 1;
+            let result = ctx.default_visit_children(&value.to_owned(), DefRegionKind::Pattern);
+            assert_eq!(ctx.def_region_kind(), DefRegionKind::None);
+            ctx.state_mut().depth -= 1;
+            ctx.state_mut().events.push("exit");
+            result
+        }
+    }
+    struct Stop(bool);
+    impl VisitPolicy<Probe> for Stop {
+        fn default_visit(
+            &self,
+            _: &VisitValue,
+            ctx: &mut VisitContext<'_, Probe>,
+        ) -> Result<Option<VisitInterrupt>> {
+            assert_eq!(ctx.def_region_kind(), DefRegionKind::Pattern);
+            assert_eq!(ctx.state().depth, 1);
+            ctx.state_mut().events.push("stop");
+            if self.0 {
+                Err(runtime_error("policy failed"))
+            } else {
+                Ok(Some(VisitInterrupt::with(42_i64)))
+            }
+        }
+    }
+    struct Unreachable;
+    impl VisitPolicy<Probe> for Unreachable {
+        fn default_visit(
+            &self,
+            _: &VisitValue,
+            _: &mut VisitContext<'_, Probe>,
+        ) -> Result<Option<VisitInterrupt>> {
+            panic!("the policy after Stop must not run")
+        }
+    }
+    let root = Array::new(vec![1_i64]);
+    for error in [false, true] {
+        for order in [None, Some(WalkOrder::PreOrder), Some(WalkOrder::PostOrder)] {
+            let policies = (Scope, (Stop(error), Unreachable));
+            let (result, state) = if let Some(order) = order {
+                let mut walker = WalkWithPolicy::new(Probe::default(), policies);
+                let result = walker.walk(&root, order);
+                (result, walker.into_state())
+            } else {
+                let mut visitor = VisitCallbacks::new(
+                    Probe::default(),
+                    |value: &VisitValue, ctx: &mut VisitContext<'_, Probe>| {
+                        let kind = ctx.def_region_kind();
+                        ctx.state_mut().walk_any(value, kind);
+                        ctx.visit_children()
+                    },
+                )
+                .with_policy(policies);
+                let result = structural_visit(&root, &mut visitor);
+                (result, visitor.into_state())
+            };
+            if error {
+                assert!(result.err().unwrap().to_string().contains("policy failed"));
+            } else {
+                assert_eq!(i64::try_from(result.unwrap().unwrap().value).unwrap(), 42);
+            }
+            let expected = if order == Some(WalkOrder::PostOrder) {
+                vec!["enter", "stop", "exit"]
+            } else {
+                vec!["callback", "enter", "stop", "exit"]
+            };
+            assert_eq!(state.events, expected);
+            assert_eq!(state.depth, 0);
+        }
+    }
+}
+
+#[test]
+fn policy_regions_compose_with_field_flags_and_function_hooks() {
+    struct SetRootRegion(i32, DefRegionKind);
+    impl VisitPolicy<PolicyRegionTrace> for SetRootRegion {
+        fn default_visit(
+            &self,
+            value: &VisitValue,
+            ctx: &mut VisitContext<'_, PolicyRegionTrace>,
+        ) -> Result<Option<VisitInterrupt>> {
+            if value.type_index() == self.0 {
+                ctx.default_visit_children(&value.to_owned(), self.1)
+            } else {
+                ctx.visit_children()
+            }
+        }
+    }
+    use DefRegionKind::{None as Use, Pattern, Simple};
+    for with_hook in [false, true] {
+        let root = visit_region_graph(with_hook);
+        if with_hook {
+            // Exercise the Function-valued __s_visit__ path, not an opaque pointer hook.
+            assert!(
+                Function::try_from(get_type_attr(root.type_index(), "__s_visit__").unwrap())
+                    .is_ok()
+            );
+        }
+        for region in [Use, Simple, Pattern] {
+            let ordinary = if with_hook && region == Use {
+                Simple
+            } else {
+                region
+            };
+            let mut expected = vec![
+                (1, if region == Pattern { Pattern } else { Simple }),
+                (2, Pattern),
+                (3, ordinary),
+            ];
+            if with_hook {
+                expected.push((4, region));
+            }
+            for order in [None, Some(WalkOrder::PreOrder), Some(WalkOrder::PostOrder)] {
+                let policy = SetRootRegion(root.type_index(), region);
+                let state = if let Some(order) = order {
+                    let mut walker = WalkWithPolicy::new(PolicyRegionTrace::default(), policy);
+                    assert!(walker.walk(&root, order).unwrap().is_none());
+                    walker.into_state()
+                } else {
+                    let mut visitor = VisitCallbacks::new(
+                        PolicyRegionTrace::default(),
+                        |value: i64, ctx: &mut VisitContext<'_, PolicyRegionTrace>| {
+                            let kind = ctx.def_region_kind();
+                            ctx.state_mut().0.push((value, kind));
+                        },
+                    )
+                    .with_policy(policy);
+                    assert!(structural_visit(&root, &mut visitor).unwrap().is_none());
+                    visitor.into_state()
+                };
+                assert_eq!(state.0, expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn walk_policy_preserves_reflected_pattern_before_default_descent() {
+    let root = visit_region_graph(false);
+    struct Reenter(DefRegionKind);
+    impl VisitPolicy<PolicyRegionTrace> for Reenter {
+        fn default_visit(
+            &self,
+            value: &VisitValue,
+            ctx: &mut VisitContext<'_, PolicyRegionTrace>,
+        ) -> Result<Option<VisitInterrupt>> {
+            match value.cast::<i64>() {
+                Some(2) => {
+                    assert_eq!(ctx.def_region_kind(), DefRegionKind::Pattern);
+                    // Re-dispatch immediately: visit_children() must not be needed
+                    // to synchronize the ABI visitor with the reflected field region.
+                    ctx.visit_with(&99_i64, self.0)
+                }
+                Some(3) => {
+                    assert_eq!(ctx.def_region_kind(), DefRegionKind::None);
+                    // The preceding field's Pattern scope must not leak into a sibling.
+                    ctx.visit(&100_i64)
+                }
+                _ => ctx.visit_children(),
+            }
+        }
+    }
+    use DefRegionKind::{None as Use, Pattern, Simple};
+    for requested in [Use, Simple] {
+        for order in [WalkOrder::PreOrder, WalkOrder::PostOrder] {
+            let mut walker = WalkWithPolicy::new(PolicyRegionTrace::default(), Reenter(requested));
+            assert!(walker.walk(&root, order).unwrap().is_none());
+            let expected = match order {
+                WalkOrder::PreOrder => vec![
+                    (1, Simple),
+                    (2, Pattern),
+                    (99, Pattern),
+                    (3, Use),
+                    (100, Use),
+                ],
+                WalkOrder::PostOrder => vec![
+                    (1, Simple),
+                    (99, Pattern),
+                    (2, Pattern),
+                    (100, Use),
+                    (3, Use),
+                ],
+            };
+            assert_eq!(
+                walker.state().0,
+                expected,
+                "order={order:?}, requested={requested:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -328,10 +923,7 @@ fn manual_child_visit_can_override_def_region() {
     let root = Array::new(vec![7i64, 8]);
     let mut probe = ManualRegionVisitor::default();
     assert!(structural_visit(&root, &mut probe).unwrap().is_none());
-    assert_eq!(
-        probe.seen,
-        vec![DefRegionKind::Simple, DefRegionKind::None]
-    );
+    assert_eq!(probe.seen, vec![DefRegionKind::Simple, DefRegionKind::None]);
 }
 
 #[derive(Default)]

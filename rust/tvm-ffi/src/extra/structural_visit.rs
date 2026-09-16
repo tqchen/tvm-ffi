@@ -57,7 +57,7 @@ use crate::function::Function;
 use crate::object::{Object, ObjectArc, ObjectCore};
 use crate::reflection::TypeAttrColumn;
 use crate::tvm_ffi_sys::TVMFFIFieldFlagBitMask::{
-    kTVMFFIFieldFlagBitMaskSEqHashDefSimple, kTVMFFIFieldFlagBitMaskSEqHashDefPattern,
+    kTVMFFIFieldFlagBitMaskSEqHashDefPattern, kTVMFFIFieldFlagBitMaskSEqHashDefSimple,
     kTVMFFIFieldFlagBitMaskSEqHashIgnore,
 };
 use crate::tvm_ffi_sys::{
@@ -141,13 +141,9 @@ pub enum DefRegionKind {
 const _: () = {
     assert!(DefRegionKind::None as i32 == TVMFFIDefRegionKind::kTVMFFIDefRegionKindNone as i32);
     assert!(
-        DefRegionKind::Pattern as i32
-            == TVMFFIDefRegionKind::kTVMFFIDefRegionKindPattern as i32
+        DefRegionKind::Pattern as i32 == TVMFFIDefRegionKind::kTVMFFIDefRegionKindPattern as i32
     );
-    assert!(
-        DefRegionKind::Simple as i32
-            == TVMFFIDefRegionKind::kTVMFFIDefRegionKindSimple as i32
-    );
+    assert!(DefRegionKind::Simple as i32 == TVMFFIDefRegionKind::kTVMFFIDefRegionKindSimple as i32);
 };
 
 /// Interrupt state of a traversal, mirroring C++ `ffi.VisitInterrupt`.
@@ -228,6 +224,9 @@ impl From<Error> for NativeHalt {
 
 type NativeResult = std::result::Result<(), NativeHalt>;
 
+mod policy;
+pub use policy::{DefaultVisitPolicy, VisitPolicy, WalkWithPolicy};
+
 /// State and recursive operations available to a visit callback.
 ///
 /// A matched callback owns traversal of its value. Recursive operations
@@ -299,11 +298,51 @@ impl<State> VisitContext<'_, State> {
         self.driver.visit_raw(raw, def_region_kind)
     }
 
-    /// Visit the current value's children using registered hooks or reflected
-    /// structural fields. The current value itself is not dispatched again.
+    /// Apply default descent without dispatching the current value again.
+    /// A callback enters its configured policy; within a policy this continues
+    /// with the next policy, then registered hooks or reflected fields.
     pub fn visit_children(&mut self) -> Result<Option<VisitInterrupt>> {
-        self.driver
-            .visit_children_raw(self.current.raw(), self.def_region_kind)
+        self.default_visit_children_raw(self.current.raw(), self.def_region_kind)
+    }
+
+    /// Apply default descent to `value` under an explicit definition region.
+    ///
+    /// Like [`Self::visit_children`], this continues with the next policy (or
+    /// enters the configured policy from a callback), then registered hooks or
+    /// reflected fields. It does not dispatch callbacks for `value` itself;
+    /// its children re-enter the full callback engine.
+    ///
+    /// An enclosing [`DefRegionKind::Pattern`] cannot be downgraded. The current
+    /// value and region of this context are unchanged after the call, including
+    /// when descent returns an error or interrupt.
+    pub fn default_visit_children<T>(
+        &mut self,
+        value: &T,
+        def_region_kind: DefRegionKind,
+    ) -> Result<Option<VisitInterrupt>>
+    where
+        for<'x> AnyView<'x>: From<&'x T>,
+    {
+        self.default_visit_children_raw(raw_of(AnyView::from(value)), def_region_kind)
+    }
+
+    fn default_visit_children_raw(
+        &mut self,
+        raw: TVMFFIAny,
+        def_region_kind: DefRegionKind,
+    ) -> Result<Option<VisitInterrupt>> {
+        if raw.type_index == TVMFFITypeIndex::kTVMFFINone as i32 {
+            return Ok(None);
+        }
+        let kind = if self.def_region_kind == DefRegionKind::Pattern {
+            DefRegionKind::Pattern
+        } else {
+            def_region_kind
+        };
+        let active = active_structural_visitor()?;
+        // Keep the ABI visitor in sync while policies run, not only inside
+        // hooks: a subsequent visit_with must also preserve a pattern region.
+        with_visitor_def_region(active, kind, || self.driver.visit_children_raw(raw, kind))
     }
 }
 
@@ -473,7 +512,8 @@ macro_rules! impl_visit_chain_link {
 impl_callback_chain_tuple_arities!(impl_visit_chain_link);
 
 /// A reusable callback visitor with shared user state.
-pub struct VisitCallbacks<State, Link, Marker> {
+pub struct VisitCallbacks<State, Link, Marker, Policy = DefaultVisitPolicy> {
+    policy: Option<Rc<Policy>>,
     state: State,
     callbacks: Rc<Link>,
     _marker: PhantomData<fn(Marker)>,
@@ -488,12 +528,27 @@ where
         Self {
             state,
             callbacks: Rc::new(callbacks),
+            policy: None,
             _marker: PhantomData,
         }
     }
 }
 
-impl<State, Link, Marker> VisitCallbacks<State, Link, Marker> {
+impl<State, Link, Marker, Policy> VisitCallbacks<State, Link, Marker, Policy> {
+    /// Set the default-recursion policy while retaining the callbacks and state.
+    /// A matched callback enters the policy only when it calls `visit_children()`.
+    pub fn with_policy<P: VisitPolicy<State>>(
+        self,
+        policy: P,
+    ) -> VisitCallbacks<State, Link, Marker, P> {
+        VisitCallbacks {
+            state: self.state,
+            callbacks: self.callbacks,
+            policy: Some(Rc::new(policy)),
+            _marker: PhantomData,
+        }
+    }
+
     /// Shared access to the callback state.
     pub fn state(&self) -> &State {
         &self.state
@@ -521,7 +576,9 @@ trait VisitCallbackState<State> {
     fn callback_state_mut(&mut self) -> &mut State;
 }
 
-impl<State, Link, Marker> VisitCallbackState<State> for VisitCallbacks<State, Link, Marker> {
+impl<State, Link, Marker, Policy> VisitCallbackState<State>
+    for VisitCallbacks<State, Link, Marker, Policy>
+{
     fn callback_state(&self) -> &State {
         &self.state
     }
@@ -979,17 +1036,21 @@ pub trait StructuralVisitor: Sized {
         value: &VisitValue,
         def_region_kind: DefRegionKind,
     ) -> Result<Option<VisitInterrupt>> {
-        let raw = value.raw();
-        let context = std::ptr::from_mut(&mut *self).cast::<c_void>();
-        let result = visit_children_raw(
-            raw,
-            &mut UserChildren { visitor: self },
-            context,
-            def_region_kind,
-        )
-        .map_err(|halt| with_value_context(halt, raw));
-        finish(result)
+        default_user_visit_children(self, value, def_region_kind)
     }
+}
+
+fn default_user_visit_children<V: StructuralVisitor>(
+    visitor: &mut V,
+    value: &VisitValue,
+    def_region_kind: DefRegionKind,
+) -> Result<Option<VisitInterrupt>> {
+    let raw = value.raw();
+    let context = std::ptr::from_mut(&mut *visitor).cast::<c_void>();
+    finish(
+        visit_children_raw(raw, &mut UserChildren { visitor }, context, def_region_kind)
+            .map_err(|halt| with_value_context(halt, raw)),
+    )
 }
 
 fn try_visit_callbacks<State, Link, Marker>(
@@ -1015,9 +1076,10 @@ where
     }
 }
 
-impl<State, Link, Marker> StructuralVisitor for VisitCallbacks<State, Link, Marker>
+impl<State, Link, Marker, Policy> StructuralVisitor for VisitCallbacks<State, Link, Marker, Policy>
 where
     Link: VisitChainLink<State, Marker>,
+    Policy: VisitPolicy<State>,
 {
     fn visit(
         &mut self,
@@ -1026,6 +1088,22 @@ where
     ) -> Result<Option<VisitInterrupt>> {
         let callback_ptr = Rc::as_ptr(&self.callbacks);
         try_visit_callbacks::<State, Link, Marker>(self, callback_ptr, value, def_region_kind)
+    }
+
+    fn default_visit_children(
+        &mut self,
+        value: &VisitValue,
+        def_region_kind: DefRegionKind,
+    ) -> Result<Option<VisitInterrupt>> {
+        let Some(policy) = self.policy.as_ref().map(Rc::clone) else {
+            return default_user_visit_children(self, value, def_region_kind);
+        };
+        policy::visit_with_policy(
+            &mut policy::VisitDescent { visitor: self },
+            &*policy,
+            value,
+            def_region_kind,
+        )
     }
 }
 
@@ -1085,8 +1163,32 @@ where
 
 /// Internal callback protocol used by [`IntoWalker`].
 #[doc(hidden)]
-pub trait NativeVisit {
+pub trait NativeVisit: Sized {
+    const CUSTOM_DESCENT: bool = false;
+
     fn visit(&mut self, value: &VisitValue, def_region_kind: DefRegionKind) -> Result<WalkResult>;
+
+    fn default_visit_children<const PRE_ORDER: bool>(
+        &mut self,
+        value: &VisitValue,
+        def_region_kind: DefRegionKind,
+    ) -> Result<Option<VisitInterrupt>> {
+        default_walk_children::<Self, PRE_ORDER>(self, value, def_region_kind)
+    }
+}
+
+fn default_walk_children<V: NativeVisit, const PRE_ORDER: bool>(
+    visitor: &mut V,
+    value: &VisitValue,
+    def_region_kind: DefRegionKind,
+) -> Result<Option<VisitInterrupt>> {
+    let context = std::ptr::from_mut(&mut *visitor).cast::<c_void>();
+    finish(visit_children_raw(
+        value.raw(),
+        &mut WalkChildren::<V, PRE_ORDER> { visitor },
+        context,
+        def_region_kind,
+    ))
 }
 
 /// Action applied to each child found by the shared traversal.
@@ -1147,12 +1249,19 @@ fn visit_raw<V: NativeVisit, const PRE_ORDER: bool>(
         }
     }
 
-    let context = std::ptr::from_mut(&mut *visitor).cast::<c_void>();
-    let children = &mut WalkChildren::<V, PRE_ORDER> {
-        visitor: &mut *visitor,
-    };
-    if let Err(halt) = visit_children_raw(value, children, context, def_region_kind) {
-        return Err(with_value_context(halt, value));
+    if V::CUSTOM_DESCENT {
+        match visitor.default_visit_children::<PRE_ORDER>(&visit_value, def_region_kind) {
+            Ok(None) => {}
+            Ok(Some(interrupt)) => return Err(NativeHalt::Interrupt(interrupt.value)),
+            Err(error) => return Err(with_value_context(error.into(), value)),
+        }
+    } else {
+        // Preserve the raw-result path for ordinary walkers.
+        let context = std::ptr::from_mut(&mut *visitor).cast::<c_void>();
+        let children = &mut WalkChildren::<V, PRE_ORDER> { visitor };
+        if let Err(halt) = visit_children_raw(value, children, context, def_region_kind) {
+            return Err(with_value_context(halt, value));
+        }
     }
 
     if PRE_ORDER {
@@ -1567,7 +1676,7 @@ unsafe fn runtime_walk<V: NativeVisit, const PRE_ORDER: bool>(
     if raw.type_index == TVMFFITypeIndex::kTVMFFINone as i32 {
         return Ok(());
     }
-    if raw.type_index < TVMFFITypeIndex::kTVMFFIStaticObjectBegin as i32 {
+    if !V::CUSTOM_DESCENT && raw.type_index < TVMFFITypeIndex::kTVMFFIStaticObjectBegin as i32 {
         let visitor = &mut *context.cast::<V>();
         if PRE_ORDER {
             match visitor.visit(&VisitValue::from_raw(raw), def_region_kind) {
