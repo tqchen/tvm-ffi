@@ -75,16 +75,16 @@ TEST(ExpectedChecks, ReturnChecks) {
   int left = 0;
   int right = 0;
   streamed = 0;
-  auto binary = [&](bool outer, int x) noexcept -> Expected<UnchangedOr<Any>> {
+  auto binary = [&](bool outer, int x) noexcept -> Expected<MutationResult<Any>> {
     if (outer)
       TVM_FFI_RET_ICHECK_EQ((++left, x), (++right, 3)) << " detail " << ++streamed;
     else
-      return UnchangedOr<Any>(Unchanged());
-    return UnchangedOr<Any>(Any(42));
+      return MutationResult<Any>(Unchanged());
+    return MutationResult<Any>(Any(42));
   };
   EXPECT_TRUE(binary(false, 4).value().IsUnchanged());
   EXPECT_EQ(left + right, 0);
-  EXPECT_EQ(binary(true, 3).value().ValueOrUnchanged(Any(0)).cast<int>(), 42);
+  EXPECT_EQ(binary(true, 3).value().ValueOrOriginal(Any(0)).cast<int>(), 42);
   EXPECT_EQ(left, 1);
   EXPECT_EQ(right, 1);
   EXPECT_EQ(streamed, 0);

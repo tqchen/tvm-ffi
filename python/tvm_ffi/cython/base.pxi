@@ -139,7 +139,7 @@ cdef extern from "tvm/ffi/c_api.h":
         kTVMFFIObjectRValueRef = 10
         kTVMFFISmallStr = 11
         kTVMFFISmallBytes = 12
-        kTVMFFIUnchanged = 13
+        kTVMFFIMutationMarker = 13
         kTVMFFIStaticObjectBegin = 64
         kTVMFFIObject = 64
         kTVMFFIStr = 65
@@ -156,6 +156,10 @@ cdef extern from "tvm/ffi/c_api.h":
         kTVMFFIDict = 76
         kTVMFFIBigInt = 78
         kTVMFFIStaticObjectEnd
+
+    cdef enum TVMFFIMutationMarkerKind:
+        kTVMFFIMutationMarkerUnchanged
+        kTVMFFIMutationMarkerUpdatedInPlace
 
     ctypedef void* TVMFFIObjectHandle
 

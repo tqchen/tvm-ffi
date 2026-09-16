@@ -181,9 +181,9 @@ class TypeSchema:
         if origin == "Union":
             if len(args) < 2:
                 raise ValueError("Union must have at least two arguments")
-        elif origin == "Optional":
+        elif origin in ("Optional", "MutationResult"):
             if len(args) != 1:
-                raise ValueError("Optional must have exactly one argument")
+                raise ValueError(f"{origin} must have exactly one argument")
         elif origin in ("list", "Array", "List"):
             if len(args) not in (0, 1):
                 raise ValueError(f"{origin} must have 0 or 1 argument")
@@ -198,7 +198,7 @@ class TypeSchema:
             pass  # tuple can have arbitrary number of arguments
         # Compute origin_type_index if not already set
         if self.origin_type_index == _ORIGIN_TYPE_INDEX_UNKNOWN:
-            if origin in ("Optional", "Union"):
+            if origin in ("Optional", "Union", "MutationResult"):
                 self.origin_type_index = _ORIGIN_TYPE_INDEX_STRUCTURAL
             elif origin in _ORIGIN_TO_TYPE_INDEX:
                 self.origin_type_index = _ORIGIN_TO_TYPE_INDEX[origin]
@@ -595,6 +595,11 @@ class TypeSchema:
             return " | ".join(args)
         elif origin == "Optional":
             return args[0] + " | None"
+        elif origin == "MutationResult":
+            markers = ["ffi.Unchanged", "ffi.UpdatedInPlace"]
+            if ty_map is not None:
+                markers = [ty_map(marker) for marker in markers]
+            return " | ".join([*args, *markers])
         elif origin == "Callable":
             if not args:
                 return "Callable[..., Any]"

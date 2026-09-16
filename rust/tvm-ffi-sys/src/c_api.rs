@@ -56,8 +56,8 @@ pub enum TVMFFITypeIndex {
     kTVMFFISmallStr = 11,
     /// Small bytes on stack
     kTVMFFISmallBytes = 12,
-    /// Structural-mutation marker indicating that no new value was produced
-    kTVMFFIUnchanged = 13,
+    /// No replacement was produced; v_int64 stores TVMFFIMutationMarkerKind and padding is zero.
+    kTVMFFIMutationMarker = 13,
     /// Start of statically defined objects.
     kTVMFFIStaticObjectBegin = 64,
     /// String object, layout = { TVMFFIObject, TVMFFIByteArray, ... }
@@ -95,6 +95,16 @@ pub enum TVMFFITypeIndex {
     kTVMFFIStaticObjectEnd = 79,
     /// Start of dynamically allocated object type indices.
     kTVMFFIDynObjectBegin = 128,
+}
+
+/// Mutually exclusive payload states for kTVMFFIMutationMarker; other values are reserved.
+#[repr(i32)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TVMFFIMutationMarkerKind {
+    /// The original value and its subtree are unchanged.
+    kTVMFFIMutationMarkerUnchanged = 0,
+    /// The original identity is retained, but its value or subtree changed in place.
+    kTVMFFIMutationMarkerUpdatedInPlace = 1,
 }
 
 #[repr(i32)]

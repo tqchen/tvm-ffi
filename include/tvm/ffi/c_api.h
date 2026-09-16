@@ -136,8 +136,16 @@ typedef enum {
   kTVMFFISmallStr = 11,
   /*! \brief Small bytes on stack */
   kTVMFFISmallBytes = 12,
-  /*! \brief Structural-mutation marker indicating that no new value was produced */
-  kTVMFFIUnchanged = 13,
+  /*!
+   * \brief Structural-mutation marker indicating that no replacement value was produced.
+   *
+   * The original value is reused. TVMFFIAny::v_int64 stores a TVMFFIMutationMarkerKind
+   * indicating whether the original value or its subtree changed in place.
+   * TVMFFIAny::zero_padding must be zero.
+   *
+   * \sa TVMFFIMutationMarkerKind
+   */
+  kTVMFFIMutationMarker = 13,
   /*! \brief Start of statically defined objects. */
   kTVMFFIStaticObjectBegin = 64,
   /*!
@@ -212,6 +220,29 @@ typedef enum {
 } TVMFFITypeIndex;
 #endif
 // [TVMFFITypeIndex.end]
+
+// [TVMFFIMutationMarkerKind.begin]
+/*!
+ * \brief Payload states for the kTVMFFIMutationMarker mutation marker.
+ *
+ * Stored in TVMFFIAny::v_int64 when type_index is kTVMFFIMutationMarker.
+ * These are mutually exclusive states, not a bitmask. Other values are reserved.
+ */
+#ifdef __cplusplus
+enum TVMFFIMutationMarkerKind : int32_t {
+#else
+typedef enum {
+#endif
+  /*! \brief The original value and its subtree are unchanged. */
+  kTVMFFIMutationMarkerUnchanged = 0,
+  /*! \brief The original identity is retained, but the value or its subtree changed in place. */
+  kTVMFFIMutationMarkerUpdatedInPlace = 1,
+#ifdef __cplusplus
+};
+#else
+} TVMFFIMutationMarkerKind;
+#endif
+// [TVMFFIMutationMarkerKind.end]
 
 /*! \brief Handle to Object from C API's pov */
 typedef void* TVMFFIObjectHandle;

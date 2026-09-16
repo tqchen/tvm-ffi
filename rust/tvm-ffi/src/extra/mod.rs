@@ -18,7 +18,7 @@
  */
 pub mod dispatch;
 pub mod module;
+pub mod mutation_result;
 mod structural_common;
 pub mod structural_mutate;
 pub mod structural_visit;
-pub mod unchanged;

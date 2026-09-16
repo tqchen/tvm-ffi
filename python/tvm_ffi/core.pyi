@@ -40,6 +40,12 @@ _TRACEBACK_TO_BACKTRACE_STR: Callable[[types.TracebackType | None], str] | None
 # DLPack protocol version (defined in tensor.pxi)
 __dlpack_version__: tuple[int, int]
 
+class Unchanged:
+    """Mutation marker guaranteeing an unchanged original subtree."""
+
+class UpdatedInPlace:
+    """Mutation marker retaining identity after an in-place subtree change."""
+
 class CObject:
     def __ctypes_handle__(self) -> Any: ...
     def __chandle__(self) -> int: ...

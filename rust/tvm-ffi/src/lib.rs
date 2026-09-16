@@ -48,6 +48,7 @@ pub use crate::error::{
     ATTRIBUTE_ERROR, INDEX_ERROR, KEY_ERROR, RUNTIME_ERROR, TYPE_ERROR, VALUE_ERROR,
 };
 pub use crate::extra::module::Module;
+pub use crate::extra::mutation_result::{MutationResult, Unchanged, UpdatedInPlace};
 pub use crate::extra::structural_mutate::{
     structural_map, structural_mutate, CallbackMutator, InplaceValue, IntoMapResult, IntoMapper,
     IntoMutator, MapChainLink, MapDispatch, MapValue, MutateCallbacks, MutateChainLink,
@@ -58,7 +59,6 @@ pub use crate::extra::structural_visit::{
     StructuralVisitor, VisitCallbacks, VisitChainLink, VisitContext, VisitInterrupt, VisitValue,
     WalkChainLink, WalkDispatch, WalkOrder, WalkResult,
 };
-pub use crate::extra::unchanged::{Unchanged, UnchangedOr};
 pub use crate::function::Function;
 pub use crate::object::ObjectRefCast;
 pub use crate::object::{

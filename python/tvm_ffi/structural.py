@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from .access_path import AccessPath
 
 from . import _ffi_api, core
-from .core import Object
+from .core import Object, Unchanged, UpdatedInPlace
 from .registry import register_object
 
 __all__ = [
@@ -37,6 +37,8 @@ __all__ = [
     "StructuralKey",
     "StructuralMutator",
     "StructuralVisitor",
+    "Unchanged",
+    "UpdatedInPlace",
     "VisitInterrupt",
     "WalkOrder",
     "WalkResult",
@@ -475,8 +477,12 @@ class StructuralMutator(Object):
     def mutate(self, value: Any) -> Any:
         """Mutate ``value`` without modifying it in place.
 
-        The original value is returned when none of its structural fields
-        change; otherwise, the result is a mutated copy.
+        Return :class:`Unchanged` when the original subtree is unchanged,
+        :class:`UpdatedInPlace` when its identity is retained after a change,
+        or an owning replacement (including ``None``). Forward the result
+        directly only when returning a result for this same original value.
+        When using a child as a replacement for its parent, resolve either
+        marker to that child explicitly.
 
         Parameters
         ----------
@@ -486,7 +492,7 @@ class StructuralMutator(Object):
         Returns
         -------
         result
-            The mutated owning value.
+            An :class:`Unchanged` or :class:`UpdatedInPlace` marker, or an owning replacement.
 
         """
         return _ffi_api.StructuralMutatorMutate(self, value)
@@ -495,7 +501,9 @@ class StructuralMutator(Object):
         """Mutate ``value`` using its registered or reflected default behavior.
 
         This bypasses the active engine callback for ``value`` itself while
-        recursive children re-enter the same mutator. A ``structural_mutate``
+        recursive children re-enter the same mutator. Preserve either marker
+        when forwarding this result so subtree changes remain observable.
+        A ``structural_mutate``
         callback may use it on its matched value to request default descent.
 
         Parameters
@@ -506,7 +514,7 @@ class StructuralMutator(Object):
         Returns
         -------
         result
-            The mutated owning value.
+            An :class:`Unchanged` or :class:`UpdatedInPlace` marker, or an owning replacement.
 
         """
         return _ffi_api.StructuralMutatorDefaultMutate(  # ty: ignore[unresolved-attribute]
@@ -725,7 +733,12 @@ def structural_mutate(
     :meth:`StructuralMutator.default_mutate` for the matched value's default
     mutation. Its returned value is final and is not traversed again. Entries
     use ``structural_map`` matching rules, and an unmatched value follows
-    registered/default mutation.
+    registered/default mutation. Return :class:`Unchanged` to retain an
+    unchanged subtree, :class:`UpdatedInPlace` after changing it in place, or
+    a replacement value. Returning the original as an ordinary value asserts
+    that its subtree is unchanged. Forward the result of a mutator call for
+    the same value directly to preserve these markers. This top-level function
+    resolves either marker to the original and returns an owning value.
 
     Parameters
     ----------
@@ -763,7 +776,8 @@ def structural_map(
     """Structurally map a value using typed replacement callbacks.
 
     Each callback must follow map semantics: it returns the unchanged input or
-    a replacement value and must not mutate its input in place. The policy is
+    a replacement value and must not mutate its input in place. It may also
+    return :class:`Unchanged` to keep the input. The policy is
     ``mutate(x) = post(D(pre(x)))``: callbacks run at every occurrence, while
     only default descent ``D`` reads or writes the variable-remap cache. A
     graph rewrite that must preserve sharing keeps its own callback memo.

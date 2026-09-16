@@ -253,16 +253,19 @@ class TMutatePairObj : public Object {
     ++StructuralMutateCallCount();
     const TMutatePairObj* self =
         details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const TMutatePairObj>(value);
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, lhs,
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(MutationResult<ObjectRef>, lhs,
                                       mutator->MutateExpected(self->lhs, InplaceMode::kDisallow));
-    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, rhs,
+    TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(MutationResult<ObjectRef>, rhs,
                                       mutator->MutateExpected(self->rhs, InplaceMode::kDisallow));
     if (lhs.UnchangedOrSameAs(self->lhs) && rhs.UnchangedOrSameAs(self->rhs)) {
       return Unchanged().CopyToTVMFFIAny();
     }
+    if (!lhs.HasValue() && !rhs.HasValue()) {
+      return UpdatedInPlace().CopyToTVMFFIAny();
+    }
     ObjectPtr<TMutatePairObj> copy = make_object<TMutatePairObj>(*self);
-    copy->lhs = std::move(lhs).ValueOrUnchanged(std::move(copy->lhs));
-    copy->rhs = std::move(rhs).ValueOrUnchanged(std::move(copy->rhs));
+    copy->lhs = std::move(lhs).ValueOrOriginal(std::move(copy->lhs));
+    copy->rhs = std::move(rhs).ValueOrOriginal(std::move(copy->rhs));
     return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
   }
 

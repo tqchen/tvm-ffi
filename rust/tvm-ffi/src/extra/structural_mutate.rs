@@ -48,6 +48,8 @@ use crate::tvm_ffi_sys::{
 };
 use crate::tvm_ffi_sys::{TVMFFIObjectHandle, TVMFFISEqHashKind};
 
+use super::mutation_result::{is_marker, is_unchanged, is_updated_in_place};
+pub use super::mutation_result::{MutationResult, Unchanged, UpdatedInPlace};
 use super::structural_common::{
     impl_callback_chain_tuple_arities, is_plain_inline, same_shallow,
     try_to_owned_without_normalization, with_structural_error_context,
@@ -56,8 +58,6 @@ use super::structural_visit::{
     field_def_region, for_each_field_info, free_var_child_region, type_attr_column, type_key_of,
     DefRegionKind, WalkOrder,
 };
-use super::unchanged::is_unchanged;
-pub use super::unchanged::{Unchanged, UnchangedOr};
 
 const STRUCTURAL_MUTATE_ATTR: &str = "__s_mutate__";
 const STRUCTURAL_MAYBE_INPLACE_MUTATE_ATTR: &str = "__s_maybe_inplace_mutate__";
@@ -211,9 +211,13 @@ impl Mutator {
         StructuralMutator::default_mutate(dispatch, &self.current, self.def_region_kind)
     }
 
-    /// Mutate a borrowed child while preserving an unchanged result.
+    /// Mutate a borrowed child while preserving both mutation marker states.
     #[inline]
-    pub fn mutate_result<D, T>(&mut self, dispatch: &mut D, value: &T) -> Result<UnchangedOr<Any>>
+    pub fn mutate_result<D, T>(
+        &mut self,
+        dispatch: &mut D,
+        value: &T,
+    ) -> Result<MutationResult<Any>>
     where
         D: MutateDispatch,
         for<'x> AnyView<'x>: From<&'x T>,
@@ -221,14 +225,14 @@ impl Mutator {
         self.mutate_with_result(dispatch, value, self.def_region_kind)
     }
 
-    /// Mutate a borrowed child under an explicit region, preserving unchanged.
+    /// Mutate a borrowed child under an explicit region, preserving both mutation marker states.
     #[inline]
     pub fn mutate_with_result<D, T>(
         &mut self,
         dispatch: &mut D,
         value: &T,
         kind: DefRegionKind,
-    ) -> Result<UnchangedOr<Any>>
+    ) -> Result<MutationResult<Any>>
     where
         D: MutateDispatch,
         for<'x> AnyView<'x>: From<&'x T>,
@@ -236,12 +240,12 @@ impl Mutator {
         StructuralMutator::mutate_result(dispatch, value, kind)
     }
 
-    /// Apply default mutation without materializing an unchanged original.
+    /// Apply default mutation without materializing either marker as an owning original.
     #[inline]
     pub fn default_mutate_result<D: MutateDispatch>(
         &mut self,
         dispatch: &mut D,
-    ) -> Result<UnchangedOr<Any>> {
+    ) -> Result<MutationResult<Any>> {
         StructuralMutator::default_mutate_result(dispatch, &self.current, self.def_region_kind)
     }
 
@@ -364,13 +368,15 @@ where
             def_region_kind,
             Permit::MaybeInPlace,
         )?;
-        Ok(if is_unchanged(&result) { value } else { result })
+        Ok(if is_marker(&result) { value } else { result })
     }
 
     /// Apply default mutation to the callback's current value.
     ///
     /// This operation always uses the copy path because a callback may still
     /// hold a shared borrow of the current value. It may be called repeatedly.
+    /// This is an owning-value boundary: use [`Self::default_mutate_result`] to
+    /// forward a mutation result without losing in-place subtree changes.
     #[inline(always)]
     pub fn default_mutate(&mut self) -> Result<Any> {
         self.driver
@@ -378,37 +384,37 @@ where
             .and_then(|result| resolve_result(result, self.current.raw()))
     }
 
-    /// Mutate a borrowed child while preserving an unchanged result.
+    /// Mutate a borrowed child while preserving both mutation marker states.
     #[inline]
-    pub fn mutate_result<T>(&mut self, value: &T) -> Result<UnchangedOr<Any>>
+    pub fn mutate_result<T>(&mut self, value: &T) -> Result<MutationResult<Any>>
     where
         for<'x> AnyView<'x>: From<&'x T>,
     {
         self.mutate_with_result(value, self.def_region_kind)
     }
 
-    /// Mutate a borrowed child under an explicit region, preserving unchanged.
+    /// Mutate a borrowed child under an explicit region, preserving both mutation marker states.
     #[inline]
     pub fn mutate_with_result<T>(
         &mut self,
         value: &T,
         kind: DefRegionKind,
-    ) -> Result<UnchangedOr<Any>>
+    ) -> Result<MutationResult<Any>>
     where
         for<'x> AnyView<'x>: From<&'x T>,
     {
         let view = AnyView::from(value);
         self.driver
             .mutate_raw(*view.as_raw_ffi_any(), kind, Permit::Copy)
-            .and_then(UnchangedOr::from_carrier)
+            .and_then(MutationResult::from_carrier)
     }
 
-    /// Apply default mutation without materializing an unchanged original.
+    /// Apply default mutation without materializing either marker as an owning original.
     #[inline]
-    pub fn default_mutate_result(&mut self) -> Result<UnchangedOr<Any>> {
+    pub fn default_mutate_result(&mut self) -> Result<MutationResult<Any>> {
         self.driver
             .default_mutate_raw(self.current.raw(), self.def_region_kind)
-            .and_then(UnchangedOr::from_carrier)
+            .and_then(MutationResult::from_carrier)
     }
 
     /// Look up an invocation-local identity substitution.
@@ -1134,7 +1140,7 @@ impl StructuralVarRemap {
         Ok(self.entries.get(&key).map(|entry| entry.result.clone()))
     }
 
-    /// Store a descent result or an [`Unchanged`] marker for `var`.
+    /// Store a descent result or either mutation marker for `var`.
     pub fn set(&mut self, var: &MapValue, mutated_value: &Any) -> Result<()> {
         let key = object_identity_key(var.raw())?;
         self.entries.insert(
@@ -1158,6 +1164,10 @@ impl StructuralVarRemap {
 /// Implementations descend with the `mutate` or `default_*` helpers.
 /// Prefer mutation callbacks or `#[dispatch(mutate)]` for typed dispatch with
 /// recursion supplied through [`Mutator`].
+///
+/// Owning helpers resolve both markers to the original value. Hook implementations
+/// must forward the corresponding `_result` helper instead when reporting mutation:
+/// returning a resolved original would erase an in-place subtree change.
 pub trait StructuralMutator: Sized {
     /// Dispatch one borrowed value without modifying its source storage.
     ///
@@ -1201,7 +1211,7 @@ pub trait StructuralMutator: Sized {
             def_region_kind,
             Permit::MaybeInPlace,
         )?;
-        Ok(if is_unchanged(&result) { value } else { result })
+        Ok(if is_marker(&result) { value } else { result })
     }
 
     /// Apply default non-in-place mutation to `value`'s children.
@@ -1244,14 +1254,14 @@ pub trait StructuralMutator: Sized {
             .and_then(|result| resolve_result(result, raw))
     }
 
-    /// Re-enter this mutator for a borrowed value, preserving unchanged.
-    fn mutate_result<T>(&mut self, value: &T, kind: DefRegionKind) -> Result<UnchangedOr<Any>>
+    /// Re-enter this mutator for a borrowed value, preserving both mutation marker states.
+    fn mutate_result<T>(&mut self, value: &T, kind: DefRegionKind) -> Result<MutationResult<Any>>
     where
         for<'x> AnyView<'x>: From<&'x T>,
     {
         let view = AnyView::from(value);
         dispatch_user_raw(self, *view.as_raw_ffi_any(), kind, Permit::Copy)
-            .and_then(UnchangedOr::from_carrier)
+            .and_then(MutationResult::from_carrier)
     }
 
     /// Default non-in-place mutation with an unchanged-or-replacement result.
@@ -1259,38 +1269,38 @@ pub trait StructuralMutator: Sized {
         &mut self,
         value: &MapValue,
         kind: DefRegionKind,
-    ) -> Result<UnchangedOr<Any>> {
+    ) -> Result<MutationResult<Any>> {
         user_default_mutate(self, value.raw(), kind, Permit::Copy)
-            .and_then(UnchangedOr::from_carrier)
+            .and_then(MutationResult::from_carrier)
     }
 
-    /// Default mutation of a borrowed typed value, preserving unchanged.
+    /// Default mutation of a borrowed typed value, preserving both mutation marker states.
     fn default_mutate_value_result<T>(
         &mut self,
         value: &T,
         kind: DefRegionKind,
-    ) -> Result<UnchangedOr<Any>>
+    ) -> Result<MutationResult<Any>>
     where
         for<'x> AnyView<'x>: From<&'x T>,
     {
         let view = AnyView::from(value);
         user_default_mutate(self, *view.as_raw_ffi_any(), kind, Permit::Copy)
-            .and_then(UnchangedOr::from_carrier)
+            .and_then(MutationResult::from_carrier)
     }
 
-    /// Default mutation under an engine-issued capability, preserving unchanged.
+    /// Default mutation under an engine-issued capability, preserving both mutation marker states.
     fn default_maybe_inplace_mutate_result(
         &mut self,
         value: InplaceValue<'_>,
         kind: DefRegionKind,
-    ) -> Result<UnchangedOr<Any>> {
+    ) -> Result<MutationResult<Any>> {
         let raw = value.raw();
         let permit = if object_is_unique(raw) {
             Permit::MaybeInPlace
         } else {
             Permit::Copy
         };
-        user_default_mutate(self, raw, kind, permit).and_then(UnchangedOr::from_carrier)
+        user_default_mutate(self, raw, kind, permit).and_then(MutationResult::from_carrier)
     }
 
     /// Look up a FreeVar or DAG-node substitution from the active mutation.
@@ -1567,14 +1577,13 @@ impl<D: MapDispatch> NativeMapper<D> {
                 Some(result) => {
                     let mapped = result?;
                     // A pre-order callback may replace an inline leaf with a subtree.
-                    if self.order == WalkOrder::PreOrder && !is_plain_inline(mapped.type_index()) {
+                    if self.order == WalkOrder::PreOrder
+                        && !is_marker(&mapped)
+                        && !is_plain_inline(mapped.type_index())
+                    {
                         let descended =
                             self.map_default_root(&mapped, def_region_kind, Permit::MaybeInPlace)?;
-                        Ok(if is_unchanged(&descended) {
-                            mapped
-                        } else {
-                            descended
-                        })
+                        Ok(compose_results(raw, mapped, descended))
                     } else {
                         Ok(mapped)
                     }
@@ -1606,31 +1615,34 @@ impl<D: MapDispatch> NativeMapper<D> {
                 };
                 let mapped = callback_result?;
                 let mapped_raw = *mapped.as_raw_ffi_any();
-                if is_unchanged(&mapped) || same_shallow(raw, mapped_raw) {
+                if is_marker(&mapped) || same_shallow(raw, mapped_raw) {
+                    let updated = is_updated_in_place(&mapped);
                     // Release the callback's temporary ownership before the
                     // runtime uniqueness check observes the original.
                     drop(mapped);
-                    self.default_map_current_raw(raw, def_region_kind, permit)
+                    let descended = self.default_map_current_raw(raw, def_region_kind, permit)?;
+                    let first = if updated {
+                        UpdatedInPlace.into()
+                    } else {
+                        Unchanged.into()
+                    };
+                    Ok(compose_results(raw, first, descended))
                 } else {
                     let descended =
                         self.map_default_root(&mapped, def_region_kind, Permit::MaybeInPlace)?;
-                    Ok(if is_unchanged(&descended) {
-                        mapped
-                    } else {
-                        descended
-                    })
+                    Ok(compose_results(raw, mapped, descended))
                 }
             }
             WalkOrder::PostOrder => {
                 let mapped = self.default_map_current_raw(raw, def_region_kind, permit)?;
-                let mapped_raw = if is_unchanged(&mapped) {
+                let mapped_raw = if is_marker(&mapped) {
                     raw
                 } else {
                     *mapped.as_raw_ffi_any()
                 };
                 let value = MapValue::from_raw(mapped_raw);
                 match self.dispatch.dispatch_map(&value, def_region_kind) {
-                    Some(result) => result,
+                    Some(result) => Ok(compose_results(raw, mapped, result?)),
                     None => Ok(mapped),
                 }
             }
@@ -1648,6 +1660,24 @@ impl<D: MapDispatch> NativeMapper<D> {
         self.default_map_current_raw(raw, def_region_kind, permit)
             .map_err(|error| with_value_context(error, raw))
     }
+}
+
+/// Compose consecutive results relative to the original input. A later marker
+/// retains an earlier replacement; an update to the original identity survives
+/// a later same-identity value or unchanged marker.
+fn compose_results(original: TVMFFIAny, first: Any, second: Any) -> Any {
+    if is_marker(&second) {
+        if is_updated_in_place(&second)
+            && (is_marker(&first) || same_shallow(original, *first.as_raw_ffi_any()))
+        {
+            return UpdatedInPlace.into();
+        }
+        return first;
+    }
+    if is_updated_in_place(&first) && same_shallow(original, *second.as_raw_ffi_any()) {
+        return UpdatedInPlace.into();
+    }
+    second
 }
 
 /// Internal mutation operations shared by the native mapper and a user
@@ -1709,6 +1739,7 @@ trait MutationDriver: Sized {
         }
 
         let mut field_changed = false;
+        let mut subtree_changed = false;
         let mut failure: Option<Error> = None;
         unsafe {
             for_each_field_info(type_info, &mut |field| {
@@ -1720,6 +1751,7 @@ trait MutationDriver: Sized {
                     field,
                     inherited_region,
                     &mut field_changed,
+                    &mut subtree_changed,
                 ) {
                     Ok(()) => ControlFlow::Continue(()),
                     Err(error) => {
@@ -1734,6 +1766,8 @@ trait MutationDriver: Sized {
         }
         if field_changed {
             Ok(output)
+        } else if subtree_changed {
+            Ok(UpdatedInPlace.into())
         } else {
             Ok(Unchanged.into())
         }
@@ -1745,6 +1779,7 @@ trait MutationDriver: Sized {
         field: &TVMFFIFieldInfo,
         inherited_region: DefRegionKind,
         field_changed: &mut bool,
+        subtree_changed: &mut bool,
     ) -> Result<()> {
         let Some(getter) = field.getter else {
             return Err(runtime_error(&format!(
@@ -1786,6 +1821,10 @@ trait MutationDriver: Sized {
             return Ok(());
         }
 
+        *subtree_changed = true;
+        if is_updated_in_place(&mapped) {
+            return Ok(());
+        }
         call_field_setter(field, source_address, mapped.as_raw_ffi_any()).map_err(|error| {
             with_error_context(error, &format!("field `{}`", field.name.as_str()))
         })?;
@@ -2302,7 +2341,7 @@ fn run_structural_mutator_with_context(
         drop(result);
         resume_unwind(payload);
     }
-    result.map(|result| if is_unchanged(&result) { root } else { result })
+    result.map(|result| if is_marker(&result) { root } else { result })
 }
 
 fn call_mutator(
@@ -2417,9 +2456,9 @@ fn result_into_raw(result: Result<Any>) -> TVMFFIAny {
 }
 
 /// Resolve only at an owning-value API boundary; internal Any carriers and
-/// native hooks keep the unchanged tag to avoid acquiring the original.
+/// native hooks keep both marker payloads to avoid acquiring the original.
 fn resolve_result(result: Any, original: TVMFFIAny) -> Result<Any> {
-    if is_unchanged(&result) {
+    if is_marker(&result) {
         owned_from_raw(original)
     } else {
         Ok(result)
@@ -2435,6 +2474,11 @@ fn resolve_result(result: Any, original: TVMFFIAny) -> Result<Any> {
 unsafe fn result_from_raw(raw: TVMFFIAny) -> Result<Any> {
     let value = Any::from_raw_ffi_any(raw);
     if value.type_index() != TVMFFITypeIndex::kTVMFFIError as i32 {
+        if is_marker(&value) && !is_unchanged(&value) && !is_updated_in_place(&value) {
+            return Err(runtime_error(
+                "invalid structural mutation marker payload or padding",
+            ));
+        }
         return Ok(value);
     }
     match Error::try_from(value) {
@@ -2515,7 +2559,7 @@ fn default_mutate_driver<D: MutationDriver>(
     let is_dag_node = kind == Some(TVMFFISEqHashKind::kTVMFFISEqHashKindDAGNode as i32);
     if is_free_var || is_dag_node {
         if let Some(mutated) = driver.var_remap_get_raw(raw)? {
-            // The ABI uses None for a miss; an Unchanged marker is a cached result.
+            // The ABI uses None for a miss; either mutation marker is a cached result.
             if mutated.type_index() != TVMFFITypeIndex::kTVMFFINone as i32 {
                 return Ok(mutated);
             }
@@ -2775,4 +2819,57 @@ fn structural_maybe_inplace_mutate_column() -> Option<TypeAttrColumn> {
 
 fn shallow_copy_column() -> Option<TypeAttrColumn> {
     cached_column(&SHALLOW_COPY_COLUMN, SHALLOW_COPY_ATTR)
+}
+
+#[cfg(test)]
+mod mutation_result_tests {
+    use super::*;
+
+    #[test]
+    fn composition_retains_updates_and_replacements() {
+        let original = Any::from(7i64);
+        let raw = *original.as_raw_ffi_any();
+        for first_updated in [false, true] {
+            for second_updated in [false, true] {
+                let first = if first_updated {
+                    UpdatedInPlace.into()
+                } else {
+                    Unchanged.into()
+                };
+                let second = if second_updated {
+                    UpdatedInPlace.into()
+                } else {
+                    Unchanged.into()
+                };
+                let composed = compose_results(raw, first, second);
+                assert_eq!(
+                    is_updated_in_place(&composed),
+                    first_updated || second_updated
+                );
+                assert_eq!(is_unchanged(&composed), !first_updated && !second_updated);
+            }
+        }
+        let same = compose_results(raw, UpdatedInPlace.into(), original.clone());
+        assert!(is_updated_in_place(&same));
+        let same = compose_results(raw, original.clone(), UpdatedInPlace.into());
+        assert!(is_updated_in_place(&same));
+        for second in [Any::from(Unchanged), Any::from(UpdatedInPlace)] {
+            let replacement = compose_results(raw, Any::from(8i64), second);
+            assert_eq!(i64::try_from(replacement).unwrap(), 8);
+        }
+        let replacement = compose_results(raw, UpdatedInPlace.into(), Any::new());
+        assert_eq!(
+            replacement.type_index(),
+            TVMFFITypeIndex::kTVMFFINone as i32
+        );
+    }
+
+    #[test]
+    fn remap_replays_updated_marker() {
+        let original: Any = crate::Array::new(vec![1i64]).into();
+        let value = MapValue::from_raw(*original.as_raw_ffi_any());
+        let mut remap = StructuralVarRemap::default();
+        remap.set(&value, &UpdatedInPlace.into()).unwrap();
+        assert!(is_updated_in_place(&remap.get(&value).unwrap().unwrap()));
+    }
 }

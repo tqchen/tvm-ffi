@@ -77,8 +77,8 @@ struct StaticTypeKey {
   static constexpr const char* kTVMFFISmallStr = "ffi.SmallStr";
   /*! \brief The type key for SmallBytes */
   static constexpr const char* kTVMFFISmallBytes = "ffi.SmallBytes";
-  /*! \brief The type key for Unchanged */
-  static constexpr const char* kTVMFFIUnchanged = "ffi.Unchanged";
+  /*! \brief The type key for mutation markers */
+  static constexpr const char* kTVMFFIMutationMarker = "ffi.MutationMarker";
   /*! \brief The type key for Error */
   static constexpr const char* kTVMFFIError = "ffi.Error";
   /*! \brief The type key for Bytes */

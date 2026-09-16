@@ -24,8 +24,8 @@ use tvm_ffi::object::ObjectRef;
 use tvm_ffi::{
     dispatch, structural_map, structural_mutate, Any, AnyView, Array, CallbackMutator,
     DefRegionKind, Error, FieldGetter, Function, InplaceValue, Map, MapDispatch, MapValue,
-    MutateCallbacks, Mutator, Object, ObjectArc, ObjectRefCore, Result, String as FfiString,
-    StructuralMutator, StructuralVarRemap, TypeIndex, Unchanged, UnchangedOr, WalkOrder,
+    MutateCallbacks, MutationResult, Mutator, Object, ObjectArc, ObjectRefCore, Result,
+    String as FfiString, StructuralMutator, StructuralVarRemap, TypeIndex, Unchanged, WalkOrder,
     RUNTIME_ERROR,
 };
 
@@ -53,7 +53,8 @@ impl StructuralMutator for ManualIncrement {
         if let Some(integer) = value.cast::<i64>() {
             Ok(Any::from(integer + 1))
         } else {
-            self.default_mutate(value, def_region_kind)
+            self.default_mutate_result(value, def_region_kind)
+                .map(Any::from)
         }
     }
 
@@ -62,7 +63,8 @@ impl StructuralMutator for ManualIncrement {
         value: InplaceValue<'_>,
         def_region_kind: DefRegionKind,
     ) -> Result<Any> {
-        self.default_maybe_inplace_mutate(value, def_region_kind)
+        self.default_maybe_inplace_mutate_result(value, def_region_kind)
+            .map(Any::from)
     }
 
     fn var_remap_get(&mut self, var: &MapValue) -> Result<Option<Any>> {
@@ -86,7 +88,8 @@ impl StructuralMutator for ReplaceNone {
             self.calls += 1;
             Ok(Any::from(8i64))
         } else {
-            self.default_mutate(value, def_region_kind)
+            self.default_mutate_result(value, def_region_kind)
+                .map(Any::from)
         }
     }
 
@@ -95,7 +98,8 @@ impl StructuralMutator for ReplaceNone {
         value: InplaceValue<'_>,
         def_region_kind: DefRegionKind,
     ) -> Result<Any> {
-        self.default_maybe_inplace_mutate(value, def_region_kind)
+        self.default_maybe_inplace_mutate_result(value, def_region_kind)
+            .map(Any::from)
     }
 
     fn var_remap_get(&mut self, var: &MapValue) -> Result<Option<Any>> {
@@ -126,7 +130,8 @@ impl StructuralMutator for RecursiveEntryMutator {
         } else if let Some(integer) = value.cast::<i64>() {
             Ok(Any::from(integer + 1))
         } else {
-            self.default_mutate(value, def_region_kind)
+            self.default_mutate_result(value, def_region_kind)
+                .map(Any::from)
         }
     }
 
@@ -135,7 +140,8 @@ impl StructuralMutator for RecursiveEntryMutator {
         value: InplaceValue<'_>,
         def_region_kind: DefRegionKind,
     ) -> Result<Any> {
-        self.default_maybe_inplace_mutate(value, def_region_kind)
+        self.default_maybe_inplace_mutate_result(value, def_region_kind)
+            .map(Any::from)
     }
 
     fn var_remap_get(&mut self, var: &MapValue) -> Result<Option<Any>> {
@@ -374,7 +380,10 @@ fn native_unchanged_hook_returns_original_without_exposing_marker() {
     let mutated = structural_mutate(source, &mut ManualIncrement::default()).unwrap();
 
     assert_eq!(any_object_pointer(&mutated), source_pointer);
-    assert_ne!(mutated.type_index(), TypeIndex::kTVMFFIUnchanged as i32);
+    assert_ne!(
+        mutated.type_index(),
+        TypeIndex::kTVMFFIMutationMarker as i32
+    );
 }
 
 #[test]
@@ -704,7 +713,7 @@ struct GeneratedDefaultingDispatch {
 impl GeneratedDefaultingDispatch {
     fn mutate_array(&mut self, _array: Array<i64>, mutator: &mut Mutator) -> Result<Any> {
         self.arrays += 1;
-        mutator.default_mutate(self)
+        mutator.default_mutate_result(self).map(Any::from)
     }
 
     fn mutate_integer(&mut self, value: i64) -> Any {
@@ -822,13 +831,13 @@ fn recursive_mutate_returns_unchanged_or_a_replacement() {
     fn clamp_negative_integers(
         value: &MapValue,
         mutator: &mut CallbackMutator,
-    ) -> Result<UnchangedOr<Any>> {
+    ) -> Result<MutationResult<Any>> {
         if let Some(integer) = value.cast::<i64>() {
             if integer >= 0 {
                 // Keep this input without constructing an owning return value.
-                return Ok(UnchangedOr::unchanged());
+                return Ok(MutationResult::unchanged());
             }
-            return Ok(UnchangedOr::changed(Any::from(0i64)));
+            return Ok(MutationResult::changed(Any::from(0i64)));
         }
 
         // Recurse into containers. Keep the unchanged marker if no child changed.
@@ -862,11 +871,11 @@ fn pre_order_unchanged_reuses_unmodified_subtrees() {
     let mapped = structural_map(
         source.clone(),
         (
-            |integer: i64| -> UnchangedOr<i64> {
+            |integer: i64| -> MutationResult<i64> {
                 if integer < 0 {
-                    UnchangedOr::changed(0)
+                    MutationResult::changed(0)
                 } else {
-                    UnchangedOr::unchanged()
+                    MutationResult::unchanged()
                 }
             },
             // Keeping an array still lets pre-order map transform its children.
@@ -1065,7 +1074,7 @@ fn stateful_mutate_default(
     mutator: &mut CallbackMutator<CallbackMutateStats>,
 ) -> Result<Any> {
     mutator.state_mut().defaults += 1;
-    mutator.default_mutate()
+    mutator.default_mutate_result().map(Any::from)
 }
 
 #[test]
@@ -1109,7 +1118,7 @@ fn stateful_mutate_recursive(
         state.current += 1;
         state.maximum = state.maximum.max(state.current);
     }
-    let mutated = mutator.default_mutate()?;
+    let mutated = mutator.default_mutate_result()?.into();
     {
         let state = mutator.state_mut();
         state.current -= 1;
@@ -1184,7 +1193,7 @@ fn callback_mutate_match_is_final_and_same_fn_can_reenter() {
         Array::new(vec![1i64, 2]),
         |_value: &MapValue, mutator: &mut CallbackMutator| {
             calls.set(calls.get() + 1);
-            mutator.default_mutate()
+            mutator.default_mutate_result().map(Any::from)
         },
     )
     .and_then(Array::<i64>::try_from)
@@ -1309,4 +1318,112 @@ fn callback_mutate_panics_resume_and_leave_the_next_run_usable() {
     .and_then(Array::<i64>::try_from)
     .unwrap();
     assert_eq!(mutated.get(0).unwrap(), 2);
+}
+
+#[test]
+fn nested_default_mutation_reports_retained_parent_updates() {
+    #[derive(Default)]
+    struct RecordingMutator {
+        states: Vec<(bool, bool)>,
+    }
+    impl StructuralMutator for RecordingMutator {
+        fn dispatch_mutate(&mut self, value: &MapValue, kind: DefRegionKind) -> Result<Any> {
+            if let Some(integer) = value.cast::<i64>() {
+                Ok(Any::from(integer + 1))
+            } else {
+                self.default_mutate_result(value, kind).map(Any::from)
+            }
+        }
+        fn dispatch_maybe_inplace_mutate(
+            &mut self,
+            value: InplaceValue<'_>,
+            kind: DefRegionKind,
+        ) -> Result<Any> {
+            let result = self.default_maybe_inplace_mutate_result(value, kind)?;
+            self.states
+                .push((result.is_updated_in_place(), result.has_value()));
+            Ok(result.into())
+        }
+    }
+    let root = Array::new(vec![Array::new(vec![1i64])]);
+    let root_ptr = array_pointer(&root);
+    let child_ptr = array_pointer(&root.get(0).unwrap());
+    let mut mutator = RecordingMutator::default();
+    let result = structural_mutate(root, &mut mutator)
+        .and_then(Array::<Array<i64>>::try_from)
+        .unwrap();
+    assert_eq!(array_pointer(&result), root_ptr);
+    assert_eq!(array_pointer(&result.get(0).unwrap()), child_ptr);
+    assert_eq!(result.get(0).unwrap().get(0).unwrap(), 2);
+    assert_eq!(mutator.states, vec![(true, false), (true, false)]);
+}
+
+#[test]
+fn post_order_marker_preserves_descended_replacement() {
+    for updated in [false, true] {
+        let original = Array::new(vec![1i64]);
+        let mapped = structural_map(
+            original.clone(),
+            (
+                |integer: i64| integer + 1,
+                move |_value: &MapValue| -> MutationResult<Any> {
+                    if updated {
+                        tvm_ffi::UpdatedInPlace.into()
+                    } else {
+                        Unchanged.into()
+                    }
+                },
+            ),
+            WalkOrder::PostOrder,
+        )
+        .and_then(Array::<i64>::try_from)
+        .unwrap();
+        assert_eq!(mapped.get(0).unwrap(), 2);
+        assert_eq!(original.get(0).unwrap(), 1);
+        assert_ne!(array_pointer(&mapped), array_pointer(&original));
+    }
+}
+
+#[test]
+fn pre_order_replacement_survives_in_place_descent() {
+    let mapped = structural_map(
+        0i64,
+        |integer: i64| -> Any {
+            if integer == 0 {
+                Array::new(vec![1i64]).into()
+            } else {
+                (integer + 1).into()
+            }
+        },
+        WalkOrder::PreOrder,
+    )
+    .and_then(Array::<i64>::try_from)
+    .unwrap();
+    assert_eq!(mapped.get(0).unwrap(), 2);
+}
+
+#[test]
+fn reflected_child_only_update_retains_parent_without_setting_marker() {
+    let source = reflected_object();
+    let source_ptr = any_object_pointer(&source);
+    let saw_update = Cell::new(false);
+    let result = structural_mutate(
+        source,
+        |value: &MapValue, mutator: &mut CallbackMutator| -> Result<MutationResult<Any>> {
+            if value.cast::<i64>().is_some() {
+                // Conservative change reporting is valid even without a field replacement.
+                return Ok(tvm_ffi::UpdatedInPlace.into());
+            }
+            let result = mutator.default_mutate_result()?;
+            if value.type_index() >= TypeIndex::kTVMFFIDynObjectBegin as i32 {
+                saw_update.set(result.is_updated_in_place());
+                assert!(!result.has_value());
+            }
+            Ok(result)
+        },
+    )
+    .unwrap();
+    assert!(saw_update.get());
+    assert_eq!(any_object_pointer(&result), source_ptr);
+    assert_eq!(reflected_field::<i64>(&result, "v_i64"), 1);
 }

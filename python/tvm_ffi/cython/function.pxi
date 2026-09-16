@@ -68,6 +68,30 @@ cdef object bigint_to_pyint(const TVMFFIAny* value):
     return TVMFFIPyLongFromBytes(data.data, data.size)
 
 
+cdef class Unchanged:
+    """Mutation result that leaves the original value and its subtree unchanged."""
+
+    def __repr__(self):
+        return "Unchanged()"
+
+
+cdef class UpdatedInPlace:
+    """Mutation result that retains the original identity after a subtree change."""
+
+    def __repr__(self):
+        return "UpdatedInPlace()"
+
+
+cdef object make_ret_mutation_marker(const TVMFFIAny* result):
+    if result.zero_padding != 0:
+        raise ValueError("Mutation marker zero_padding must be zero")
+    if result.v_int64 == kTVMFFIMutationMarkerUnchanged:
+        return Unchanged()
+    if result.v_int64 == kTVMFFIMutationMarkerUpdatedInPlace:
+        return UpdatedInPlace()
+    raise ValueError("Reserved mutation marker payload %d" % result.v_int64)
+
+
 cdef inline object make_ret(TVMFFIAny result, const DLPackExchangeAPI* c_ctx_dlpack_api = NULL):
     """convert result to return value."""
     cdef int32_t type_index
@@ -90,6 +114,8 @@ cdef inline object make_ret(TVMFFIAny result, const DLPackExchangeAPI* c_ctx_dlp
     # the following code should be optimized to switch case
     if type_index == kTVMFFINone:
         return None
+    elif type_index == kTVMFFIMutationMarker:
+        return make_ret_mutation_marker(&result)
     elif type_index == kTVMFFIBool:
         return bool(result.v_int64)
     elif type_index == kTVMFFIInt:
@@ -338,6 +364,17 @@ cdef public int TVMFFICyArgSetterBigInt(
     CHECK_CALL(TVMFFIPyLongToBigInt(py_arg, out))
     if out.type_index >= kTVMFFIStaticObjectBegin:
         TVMFFIPyPushTempFFIObject(ctx, out.v_ptr)
+    return 0
+
+
+cdef int TVMFFIPyArgSetterMutationMarker_(
+    TVMFFIPyArgSetter* handle, TVMFFIPyCallContext* ctx,
+    PyObject* py_arg, TVMFFIAny* out
+) except -1:
+    out.type_index = kTVMFFIMutationMarker
+    out.zero_padding = 0
+    out.v_int64 = (kTVMFFIMutationMarkerUnchanged if isinstance(<object>py_arg, Unchanged)
+                   else kTVMFFIMutationMarkerUpdatedInPlace)
     return 0
 
 
@@ -821,6 +858,9 @@ cdef public int TVMFFICyArgSetterFactory(PyObject* value, TVMFFIPyArgSetter* out
 
     if arg is None:
         out.func = TVMFFIPyArgSetterNone_
+        return 0
+    if isinstance(arg, (Unchanged, UpdatedInPlace)):
+        out.func = TVMFFIPyArgSetterMutationMarker_
         return 0
     if isinstance(arg, Tensor):
         out.func = TVMFFIPyArgSetterTensor_

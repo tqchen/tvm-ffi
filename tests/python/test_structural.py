@@ -22,6 +22,7 @@ from typing import Any
 import numpy as np
 import pytest
 import tvm_ffi
+import tvm_ffi.cpp
 import tvm_ffi.testing
 from tvm_ffi.dataclasses import Object, field, py_class
 
@@ -433,11 +434,140 @@ def test_structural_mutate_callback_owned_recursion_and_errors() -> None:
 
 
 def test_structural_mutate_callback_resolves_unchanged() -> None:
+    def select_child(value: tvm_ffi.Array, mutator: tvm_ffi.StructuralMutator) -> object:
+        child = value[0]
+        result = mutator.mutate(child)
+        # A child's marker is relative to the child, not to the enclosing array.
+        return child if isinstance(result, (tvm_ffi.Unchanged, tvm_ffi.UpdatedInPlace)) else result
+
     unchanged = tvm_ffi.structural_mutate(
-        tvm_ffi.Array(["unchanged"]),
-        (tvm_ffi.Array, lambda value, mutator: mutator.mutate(value[0])),
+        tvm_ffi.Array(["unchanged"]), (tvm_ffi.Array, select_child)
     )
     assert unchanged == "unchanged"
+
+
+@pytest.fixture(scope="module")
+def mutation_marker_module() -> tvm_ffi.Module:
+    return tvm_ffi.cpp.load_inline(
+        name="test_mutation_marker_transport",
+        cpp_sources=r"""
+            tvm::ffi::Any marker(int64_t payload, int64_t padding) {
+              TVMFFIAny result{};
+              result.type_index = kTVMFFIMutationMarker;
+              result.zero_padding = static_cast<int32_t>(padding);
+              result.v_int64 = payload;
+              return tvm::ffi::details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
+            }
+            tvm::ffi::Any invoke(tvm::ffi::Function callback, int64_t payload, int64_t padding) {
+              return callback(marker(payload, padding));
+            }
+        """,
+        functions=["marker", "invoke"],
+    )
+
+
+@pytest.mark.parametrize("callback", [False, True])
+@pytest.mark.parametrize("payload,padding", [(2, 0), (-1, 0), (0, 1), (1, 1)])
+def test_mutation_marker_rejects_malformed(
+    mutation_marker_module: tvm_ffi.Module, payload: int, padding: int, callback: bool
+) -> None:
+    message = "zero_padding" if padding else "Reserved mutation marker payload"
+    with pytest.raises(ValueError, match=message):
+        if callback:
+            mutation_marker_module.invoke(lambda value: value, payload, padding)
+        else:
+            mutation_marker_module.marker(payload, padding)
+
+
+def test_mutation_result_schema() -> None:
+    schema = tvm_ffi.core.TypeSchema.from_json_str(
+        '{"type":"MutationResult","args":[{"type":"int"}]}'
+    )
+    assert schema.output_repr() == "int | ffi.Unchanged | ffi.UpdatedInPlace"
+    assert schema.input_repr() == schema.output_repr()
+    assert schema.output_repr(lambda name: name.replace("ffi.", "")) == (
+        "int | Unchanged | UpdatedInPlace"
+    )
+
+
+@pytest.mark.parametrize("marker_type", [tvm_ffi.Unchanged, tvm_ffi.UpdatedInPlace])
+def test_mutation_marker_packed_roundtrip(marker_type: type) -> None:
+    identity = tvm_ffi.convert_func(lambda value: value)
+    marker = marker_type()
+    for _ in range(3):
+        marker = identity(marker)
+        assert type(marker) is marker_type
+    assert repr(marker) == f"{marker_type.__name__}()"
+    assert type(identity(tvm_ffi.Unchanged())) is tvm_ffi.Unchanged
+    assert type(identity(tvm_ffi.UpdatedInPlace())) is tvm_ffi.UpdatedInPlace
+    assert type(identity(tvm_ffi.Unchanged())) is tvm_ffi.Unchanged
+    assert identity(None) is None
+    assert identity(0) == 0
+    assert type(identity(0)) is int
+
+
+@pytest.mark.parametrize("updated", [False, True])
+@pytest.mark.parametrize("moved", [False, True])
+def test_structural_mutate_propagates_marker_through_nested_callbacks(
+    updated: bool, moved: bool
+) -> None:
+    marker_type = tvm_ffi.UpdatedInPlace if updated else tvm_ffi.Unchanged
+    seen: list[type] = []
+
+    def mutate_array(value: tvm_ffi.Array, mutator: tvm_ffi.StructuralMutator) -> object:
+        result = mutator.default_mutate(value)
+        seen.append(type(result))
+        return result
+
+    # Conservative reporting may indicate a change without changing the scalar.
+    # Its state must survive every C++ -> Python -> C++ callback boundary.
+    root = tvm_ffi.Array([tvm_ffi.Array([1])])
+    root_id = root.id_
+    result = tvm_ffi.structural_mutate(
+        root._move() if moved else root,
+        [(tvm_ffi.Array, mutate_array), (int, lambda value, mutator: marker_type())],
+    )
+    assert seen == [marker_type, marker_type]
+    assert isinstance(result, tvm_ffi.Array)
+    assert result.id_ == root_id
+    assert result[0][0] == 1
+
+
+@pytest.mark.parametrize("moved", [False, True])
+def test_structural_mutate_actual_inplace_child_change(moved: bool) -> None:
+    @py_class(f"testing.MutationMarkerLeaf{moved}", structural_eq="tree")
+    class Leaf(Object):
+        value: int
+
+    modes: list[int] = []
+
+    def update_leaf(value: Leaf, mutator: tvm_ffi.StructuralMutator, mode: int) -> object:
+        modes.append(mode)
+        if mode == tvm_ffi.InplaceMode.ALLOW:
+            value.value += 1
+            return tvm_ffi.UpdatedInPlace()
+        return Leaf(value.value + 1)
+
+    root = tvm_ffi.Array([tvm_ffi.Array([Leaf(1)])])
+    root_id = root.id_
+    result = tvm_ffi.structural_mutate(root._move() if moved else root, (Leaf, update_leaf))
+    assert modes == [tvm_ffi.InplaceMode.ALLOW if moved else tvm_ffi.InplaceMode.DISALLOW]
+    assert result[0][0].value == 2
+    assert (result.id_ == root_id) is moved
+    if not moved:
+        assert root[0][0].value == 1
+
+
+@pytest.mark.parametrize("order", ["pre", "post"])
+def test_structural_map_unchanged_marker(order: str) -> None:
+    root = tvm_ffi.Array([tvm_ffi.Array([1]), 2])
+    result = tvm_ffi.structural_map(root, lambda value: tvm_ffi.Unchanged(), order=order)
+    assert result.same_as(root)
+
+
+def test_structural_mutate_null_is_replacement() -> None:
+    result = tvm_ffi.structural_mutate(tvm_ffi.Array([1]), (int, lambda value, mutator: None))
+    assert list(result) == [None]
 
 
 def test_structural_walk_nested_containers_and_skips_map_keys() -> None:

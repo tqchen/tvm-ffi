@@ -494,12 +494,26 @@ example, an integer handler can return `Result<i64>` to report failures and use
 completed before a later error are not rolled back, and the consumed root is
 not returned on error.
 
-Callbacks can also return `Unchanged` or `UnchangedOr<T>`, optionally wrapped
-in `Result`. A pre-order map still maps the original value's children when
-a callback returns `Unchanged`. Use `mutate_result` and
-`default_mutate_result` to preserve unchanged during recursion; existing
-owning-value helpers and top-level functions resolve the marker to the
-original value.
+Callbacks can also return `Unchanged`, `UpdatedInPlace`, or `MutationResult<T>`,
+optionally wrapped in `Result`. `Unchanged` guarantees no structural change to
+the original subtree. `UpdatedInPlace` retains the original identity while
+reporting a change to the value or its subtree, without acquiring an owner.
+Returning the original as an ordinary value asserts its subtree is unchanged.
+A pre-order map still descends into the original children for either marker.
+
+Use `mutate_result` and `default_mutate_result` to preserve both marker states
+during recursion. `is_unchanged()` and `is_updated_in_place()` distinguish them;
+`has_value()` identifies a replacement, including null. Assign fields only for
+a replacement, and propagate `UpdatedInPlace` if a child changed while its
+parent retained its identity. `unchanged_or_same_as()` is always false for
+`UpdatedInPlace`. `map`, `try_map`, and `try_cast` preserve marker payloads.
+At an owning-value boundary, `value_or_original` (or its lazy variant
+`value_or_original_else`) resolves either marker to the original; top-level
+mutation functions do this automatically. Owning convenience helpers such as
+`default_mutate` and `default_maybe_inplace_mutate` are resolution boundaries:
+do not forward their resolved value as a mutation result after an in-place
+change. Forward the corresponding `_result` helper instead, using `.map(Any::from)`
+when a low-level hook requires an `Any` carrier.
 
 `structural_mutate` accepts typed callback chains in addition to a
 `StructuralMutator`. Closure callbacks receive a `CallbackMutator`;
@@ -523,7 +537,7 @@ let mut mutator = MutateCallbacks::new(
             value + 1
         },
         |_value: &MapValue, mutator: &mut CallbackMutator<Stats>| {
-            mutator.default_mutate()
+            mutator.default_mutate_result()
         },
     ),
 );
@@ -575,7 +589,7 @@ For a named custom recursion policy, implement `StructuralMutator` and pass
 `&mut` it to `structural_mutate`. `InplaceValue` is an engine-issued
 capability: callers cannot construct it from a read-only `MapValue`. Override
 `dispatch_maybe_inplace_mutate` to opt into default container reuse;
-`default_maybe_inplace_mutate` rechecks uniqueness before writing. Borrowed
+`default_maybe_inplace_mutate_result` rechecks uniqueness before writing. Borrowed
 values can be re-entered with `mutate`, while owned values can use
 `maybe_inplace_mutate`:
 
@@ -592,7 +606,7 @@ impl StructuralMutator for Increment {
     fn dispatch_mutate(&mut self, value: &MapValue, kind: DefRegionKind) -> Result<Any> {
         match value.cast::<i64>() {
             Some(value) => Ok(Any::from(value + 1)),
-            None => self.default_mutate(value, kind),
+            None => self.default_mutate_result(value, kind).map(Any::from),
         }
     }
 
@@ -601,7 +615,7 @@ impl StructuralMutator for Increment {
         value: InplaceValue<'_>,
         kind: DefRegionKind,
     ) -> Result<Any> {
-        self.default_maybe_inplace_mutate(value, kind)
+        self.default_maybe_inplace_mutate_result(value, kind).map(Any::from)
     }
 }
 

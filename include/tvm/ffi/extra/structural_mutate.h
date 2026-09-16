@@ -64,12 +64,12 @@ enum class InplaceMode : int32_t {
 
 class StructuralMutatorObj;
 template <typename T>
-class UnchangedOr;
+class MutationResult;
 
 /// \cond Doxygen_Suppress
-/*! \brief Whether an UnchangedOr replacement can reuse another replacement's storage. */
+/*! \brief Whether a MutationResult replacement can reuse another replacement's storage. */
 template <typename T, typename U>
-inline constexpr bool type_subsumes_v<UnchangedOr<T>, UnchangedOr<U>> = type_subsumes_v<T, U>;
+inline constexpr bool type_subsumes_v<MutationResult<T>, MutationResult<U>> = type_subsumes_v<T, U>;
 /// \endcond
 
 template <typename Parent, WalkOrder order, typename... Callbacks>
@@ -84,7 +84,7 @@ class StructuralMutateEngine;
  *
  * \param mutator The active structural mutator.
  * \param value The borrowed value to mutate.
- * \return Raw ``TVMFFIAny`` containing a replacement, the unchanged marker, or an Error.
+ * \return Raw ``TVMFFIAny`` containing a replacement, a mutation marker, or an Error.
  *
  * \note The hook is exception-free. Representable failures must be returned as an Error. Hook
  *       implementations should use non-throwing accessors when the engine's type dispatch has
@@ -131,7 +131,7 @@ struct StructuralMutatorVTable {
    *
    * \param mutator The active structural mutator.
    * \param value The borrowed value to mutate.
-   * \return Raw ``TVMFFIAny`` carrying a replacement, the unchanged marker, or Error.
+   * \return Raw ``TVMFFIAny`` carrying a replacement, a mutation marker, or Error.
    */
   FStructuralMutate mutate = nullptr;
   /*!
@@ -139,7 +139,7 @@ struct StructuralMutatorVTable {
    *
    * \param mutator The active structural mutator.
    * \param value The borrowed value to mutate.
-   * \return Raw ``TVMFFIAny`` carrying a replacement, the unchanged marker, or Error.
+   * \return Raw ``TVMFFIAny`` carrying a replacement, a mutation marker, or Error.
    *
    * The returned value may refer to the same object as \p value when the implementation mutates
    * that object in place.
@@ -168,35 +168,35 @@ namespace details {
 template <typename Parent>
 class StructuralMutateDynEngine;
 
-struct UnchangedOrUnsafe;
+struct MutationResultUnsafe;
 
 template <typename T>
-inline constexpr bool is_unchanged_or_v = false;
+inline constexpr bool is_mutation_result_v = false;
 
 template <typename T>
-inline constexpr bool is_unchanged_or_v<UnchangedOr<T>> = true;
+inline constexpr bool is_mutation_result_v<MutationResult<T>> = true;
 }  // namespace details
 
-/*! \brief Tag for a mutation result that produced no new value. */
+/*! \brief Tag guaranteeing that the original value and its subtree are unchanged. */
 struct Unchanged {
   /*!
    * \brief Copy this tag to its raw marker representation.
-   * \return Raw ``TVMFFIAny`` carrying the reserved unchanged type index.
+   * \return Raw ``TVMFFIAny`` carrying the reserved mutation-marker type index.
    */
   TVM_FFI_INLINE TVMFFIAny CopyToTVMFFIAny() const noexcept {
     // The marker needs a reserved type index because every ordinary index is a legal mutation
     // result. In particular, kTVMFFINone is a valid replacement and cannot double as the marker.
     TVMFFIAny raw;
-    raw.type_index = TypeIndex::kTVMFFIUnchanged;
+    raw.type_index = TypeIndex::kTVMFFIMutationMarker;
     // invariance: always set the union padding part to 0
     raw.zero_padding = 0;
-    raw.v_int64 = 0;
+    raw.v_int64 = kTVMFFIMutationMarkerUnchanged;
     return raw;
   }
 
   /*!
    * \brief Convert this tag to its owning marker representation.
-   * \return An owning ``Any`` carrying the reserved unchanged type index.
+   * \return An owning ``Any`` carrying the reserved mutation-marker type index.
    */
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
   TVM_FFI_INLINE operator Any() const noexcept {
@@ -205,39 +205,87 @@ struct Unchanged {
   }
 };
 
+/*! \brief Tag for a changed subtree whose original identity is retained. */
+struct UpdatedInPlace {
+  /*! \brief Copy this resource-free marker to its raw representation. */
+  TVM_FFI_INLINE TVMFFIAny CopyToTVMFFIAny() const noexcept {
+    TVMFFIAny raw = Unchanged().CopyToTVMFFIAny();
+    raw.v_int64 = kTVMFFIMutationMarkerUpdatedInPlace;
+    return raw;
+  }
+
+  /*! \brief Convert this marker to its owning carrier without acquiring an object. */
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE operator Any() const noexcept {
+    return details::AnyUnsafe::MoveTVMFFIAnyRawToAny(CopyToTVMFFIAny());
+  }
+};
+
+namespace details {
+/*! \brief Whether the marker guarantees an unchanged subtree. */
+TVM_FFI_INLINE bool IsUnchangedMutation(AnyView value) noexcept {
+  const TVMFFIAny raw = value.CopyToTVMFFIAny();
+  return raw.type_index == TypeIndex::kTVMFFIMutationMarker &&
+         raw.v_int64 == kTVMFFIMutationMarkerUnchanged;
+}
+
+/*! \brief Combine sequential mutation results relative to the initial input. */
+TVM_FFI_INLINE Any ComposeMutation(AnyView original, Any first, Any second) noexcept {
+  const bool first_marker = first.type_index() == TypeIndex::kTVMFFIMutationMarker;
+  const bool second_marker = second.type_index() == TypeIndex::kTVMFFIMutationMarker;
+  const AnyView intermediate = first_marker ? original : AnyView(first);
+  if (!second_marker && !second.same_as(intermediate)) return second;
+  if (!first_marker && !first.same_as(original)) return first;
+  if ((first_marker && !IsUnchangedMutation(first)) ||
+      (second_marker && !IsUnchangedMutation(second))) {
+    return UpdatedInPlace();
+  }
+  return Unchanged();
+}
+}  // namespace details
+
 /*!
- * \brief A structural-mutation result containing a replacement or no new value.
+ * \brief A structural-mutation result containing an unchanged subtree, in-place update, or value.
+ *
+ * Returning an owning value with the original identity asserts that its subtree is unchanged.
+ * Return UpdatedInPlace when retaining identity after any observable subtree change.
  *
  * \tparam T The replacement value type.
- * \note ``UnchangedOr`` is deliberately designed to only have rvalue-qualified value accessors,
+ * \note ``MutationResult`` is deliberately designed to only have rvalue-qualified value accessors,
  *       so the compiler forces a value to leave the container exactly once, via a move.
  *
  * \code{.cpp}
  * // resolves to the original when the descent reported unchanged
- * copy->a = std::move(a).ValueOrUnchanged(std::move(copy->a));
- * // already known to be changed, so no original is needed
+ * copy->a = std::move(a).ValueOrOriginal(std::move(copy->a));
+ * // HasValue() is true, so no original is needed
  * copy->b = std::move(b).ValueUnchecked();
  * \endcode
  */
 template <typename T>
-class UnchangedOr {
+class MutationResult {
  public:
   static_assert(!std::is_base_of_v<Error, std::remove_cv_t<T>>,
-                "UnchangedOr<Error> is not supported");
+                "MutationResult<Error> is not supported");
 
   /*!
    * \brief Construct an unchanged result from its tag.
    * \param unchanged The unchanged tag.
    */
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  TVM_FFI_INLINE UnchangedOr(Unchanged unchanged) noexcept : data_(static_cast<Any>(unchanged)) {}
+  TVM_FFI_INLINE MutationResult(Unchanged unchanged) noexcept
+      : data_(static_cast<Any>(unchanged)) {}
+
+  /*! \brief Construct an in-place update result from its tag. */
+  // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
+  TVM_FFI_INLINE MutationResult(UpdatedInPlace updated) noexcept
+      : data_(static_cast<Any>(updated)) {}
 
   /*!
    * \brief Construct a changed result from a replacement value.
    * \param value The replacement value.
    */
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  TVM_FFI_INLINE UnchangedOr(T value) : data_(Any(std::move(value))) {}
+  TVM_FFI_INLINE MutationResult(T value) : data_(Any(std::move(value))) {}
 
   /*!
    * \brief Construct a changed result from an implicitly convertible replacement value.
@@ -246,14 +294,16 @@ class UnchangedOr {
    */
   // Preserve the dedicated tag and wrapper routes. Subsumption applies only to materialized
   // wrapper storage; a bare value must first be implicitly convertible to T.
-  template <typename U, typename = std::enable_if_t<!std::is_same_v<std::decay_t<U>, Unchanged> &&
-                                                    !details::is_unchanged_or_v<std::decay_t<U>> &&
-                                                    !details::is_expected_v<std::decay_t<U>> &&
-                                                    !details::is_unexpected_v<std::decay_t<U>> &&
-                                                    !std::is_base_of_v<Error, std::decay_t<U>> &&
-                                                    std::is_convertible_v<U, T>>>
+  template <
+      typename U,
+      typename = std::enable_if_t<
+          !std::is_same_v<std::decay_t<U>, Unchanged> &&
+          !std::is_same_v<std::decay_t<U>, UpdatedInPlace> &&
+          !details::is_mutation_result_v<std::decay_t<U>> &&
+          !details::is_expected_v<std::decay_t<U>> && !details::is_unexpected_v<std::decay_t<U>> &&
+          !std::is_base_of_v<Error, std::decay_t<U>> && std::is_convertible_v<U, T>>>
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  TVM_FFI_INLINE UnchangedOr(U&& value) : data_(Any(T(std::forward<U>(value)))) {}
+  TVM_FFI_INLINE MutationResult(U&& value) : data_(Any(T(std::forward<U>(value)))) {}
 
   /*!
    * \brief Implicit converting constructor from another replacement type.
@@ -263,32 +313,42 @@ class UnchangedOr {
   template <typename U,
             typename = std::enable_if_t<type_subsumes_v<T, U> || std::is_convertible_v<U, T>>>
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
-  TVM_FFI_INLINE UnchangedOr(UnchangedOr<U> other)
+  TVM_FFI_INLINE MutationResult(MutationResult<U> other)
       : data_([&other]() {
           if constexpr (type_subsumes_v<T, U>) {
-            // Reuse materialized storage, including the unchanged marker.
+            // Reuse materialized storage, including either mutation marker.
             return details::AnyUnsafe::MoveTVMFFIAnyRawToAny(
                 details::AnyUnsafe::MoveAnyToTVMFFIAny(std::move(other.data_)));
           } else {
-            return other.IsUnchanged() ? std::move(other.data_)
-                                       : Any(T(std::move(other).ValueUnchecked()));
+            return !other.HasValue() ? std::move(other.data_)
+                                     : Any(T(std::move(other).ValueUnchecked()));
           }
         }()) {}
 
   /// \cond Doxygen_Suppress
-  TVM_FFI_INLINE UnchangedOr(const UnchangedOr&) = default;
-  TVM_FFI_INLINE UnchangedOr(UnchangedOr&&) noexcept = default;
+  TVM_FFI_INLINE MutationResult(const MutationResult&) = default;
+  TVM_FFI_INLINE MutationResult(MutationResult&&) noexcept = default;
   /// \endcond
-  TVM_FFI_INLINE ~UnchangedOr() = default;
-  TVM_FFI_INLINE UnchangedOr& operator=(const UnchangedOr&) = default;
-  TVM_FFI_INLINE UnchangedOr& operator=(UnchangedOr&&) noexcept = default;
+  TVM_FFI_INLINE ~MutationResult() = default;
+  TVM_FFI_INLINE MutationResult& operator=(const MutationResult&) = default;
+  TVM_FFI_INLINE MutationResult& operator=(MutationResult&&) noexcept = default;
 
   /*!
-   * \brief Whether this result asks the caller to preserve the original value.
+   * \brief Whether the original value and its subtree are unchanged.
    * \return Whether the result is unchanged.
    */
-  TVM_FFI_INLINE bool IsUnchanged() const& noexcept {
-    return data_.type_index() == TypeIndex::kTVMFFIUnchanged;
+  TVM_FFI_INLINE bool IsUnchanged() const& noexcept { return details::IsUnchangedMutation(data_); }
+
+  /*! \brief Whether the original identity is retained with a changed subtree. */
+  TVM_FFI_INLINE bool IsUpdatedInPlace() const& noexcept {
+    const TVMFFIAny raw = AnyView(data_).CopyToTVMFFIAny();
+    return raw.type_index == TypeIndex::kTVMFFIMutationMarker &&
+           raw.v_int64 == kTVMFFIMutationMarkerUpdatedInPlace;
+  }
+
+  /*! \brief Whether this result owns a value, including a null replacement. */
+  TVM_FFI_INLINE bool HasValue() const& noexcept {
+    return data_.type_index() != TypeIndex::kTVMFFIMutationMarker;
   }
 
   /*!
@@ -297,49 +357,48 @@ class UnchangedOr {
    * \return Whether the original identity may be reused.
    */
   TVM_FFI_INLINE bool UnchangedOrSameAs(const T& original) const& noexcept {
-    return IsUnchanged() || data_.same_as(original);
+    return IsUnchanged() || (HasValue() && data_.same_as(original));
   }
 
   /*!
-   * \brief Move the replacement, or copy \p original when unchanged.
+   * \brief Move the replacement, or copy \p original when no replacement was produced.
    * \param original The borrowed original value, which is left unmodified.
    * \return The replacement or original value.
    * \note Both mutable and const lvalues are borrowed. Use std::move(original) to transfer
    * ownership.
    */
-  TVM_FFI_INLINE T ValueOrUnchanged(const T& original) && {
-    return IsUnchanged() ? original
-                         : details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
+  TVM_FFI_INLINE T ValueOrOriginal(const T& original) && {
+    return !HasValue() ? original : details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
   }
 
   /*!
-   * \brief Move the replacement, or move \p original when unchanged.
+   * \brief Move the replacement, or move \p original when no replacement was produced.
    * \param original The owned original value.
    * \return The replacement or original value.
-   * \note The original is moved from only when the result is unchanged.
+   * \note The original is moved from only when no replacement was produced.
    */
-  TVM_FFI_INLINE T ValueOrUnchanged(T&& original) && {
-    return IsUnchanged() ? std::move(original)
-                         : details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
+  TVM_FFI_INLINE T ValueOrOriginal(T&& original) && {
+    return !HasValue() ? std::move(original)
+                       : details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
   }
 
   /*!
-   * \brief Move the replacement, or materialize \p original when unchanged.
+   * \brief Move the replacement, or materialize \p original when no replacement was produced.
    * \tparam U The replacement type, constrained to ``Any``.
    * \param original The borrowed original value.
    * \return The replacement or original value.
    */
   template <typename U = T,
             typename = std::enable_if_t<std::is_same_v<T, Any> && std::is_same_v<U, T>>>
-  TVM_FFI_INLINE Any ValueOrUnchanged(AnyView original) && {
-    return IsUnchanged() ? Any(original)
-                         : details::AnyUnsafe::MoveFromAnyAfterCheck<Any>(std::move(data_));
+  TVM_FFI_INLINE Any ValueOrOriginal(AnyView original) && {
+    return !HasValue() ? Any(original)
+                       : details::AnyUnsafe::MoveFromAnyAfterCheck<Any>(std::move(data_));
   }
 
   /*!
-   * \brief Move the known-changed replacement without checking its state.
+   * \brief Move the known owning replacement without checking its state.
    * \return The replacement value.
-   * \pre The result is not unchanged.
+   * \pre HasValue() is true.
    */
   TVM_FFI_INLINE T ValueUnchecked() && {
     return details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
@@ -347,9 +406,9 @@ class UnchangedOr {
 
   /*!
    * \brief Strictly cast the stored result, moving it on success.
-   * \tparam U The exact target type, including any UnchangedOr wrapper.
+   * \tparam U The exact target type, including any MutationResult wrapper.
    * \return The cast value, or std::nullopt on a type mismatch.
-   * \note Unchanged succeeds for an UnchangedOr target. No fallback conversions are run.
+   * \note Both markers succeed for a MutationResult target. No fallback conversions are run.
    */
   template <typename U,
             typename = std::enable_if_t<TypeTraits<U>::storage_enabled || std::is_same_v<U, Any>>>
@@ -359,10 +418,10 @@ class UnchangedOr {
 
   /*!
    * \brief Strictly cast the stored result, moving it on success, or throw.
-   * \tparam U The exact target type, including any UnchangedOr wrapper.
+   * \tparam U The exact target type, including any MutationResult wrapper.
    * \return The cast value.
    * \throws Error on a type mismatch.
-   * \note Unchanged succeeds for an UnchangedOr target. No fallback conversions are run.
+   * \note Both markers succeed for a MutationResult target. No fallback conversions are run.
    */
   template <typename U,
             typename = std::enable_if_t<TypeTraits<U>::storage_enabled || std::is_same_v<U, Any>>>
@@ -372,34 +431,34 @@ class UnchangedOr {
 
  private:
   template <typename>
-  friend class UnchangedOr;
-  friend struct details::UnchangedOrUnsafe;
+  friend class MutationResult;
+  friend struct details::MutationResultUnsafe;
   template <typename, typename>
   friend struct TypeTraits;
   struct UnsafeInit {};
-  TVM_FFI_INLINE explicit UnchangedOr(UnsafeInit, Any data) noexcept : data_(std::move(data)) {}
+  TVM_FFI_INLINE explicit MutationResult(UnsafeInit, Any data) noexcept : data_(std::move(data)) {}
   Any data_;
 };
 
 namespace details {
-/*! \brief Unsafe moves between UnchangedOr and its single Any storage. */
-struct UnchangedOrUnsafe {
+/*! \brief Unsafe moves between MutationResult and its single Any storage. */
+struct MutationResultUnsafe {
   /*!
-   * \brief Adopt an owning raw FFI value into UnchangedOr storage.
+   * \brief Adopt an owning raw FFI value into MutationResult storage.
    * \tparam T The replacement type.
    * \param raw The raw FFI value whose ownership is transferred to the result.
-   * \return UnchangedOr backed by the adopted Any storage.
-   * \pre The caller guarantees that raw holds Unchanged or a valid T replacement.
+   * \return MutationResult backed by the adopted Any storage.
+   * \pre The caller guarantees that raw holds a valid mutation marker or T replacement.
    * \note No type check, reference increment, or value conversion is performed.
    */
   template <typename T>
-  TVM_FFI_INLINE static UnchangedOr<T> MoveFromTVMFFIAny(TVMFFIAny raw) {
-    return UnchangedOr<T>(typename UnchangedOr<T>::UnsafeInit{},
-                          AnyUnsafe::MoveTVMFFIAnyRawToAny(raw));
+  TVM_FFI_INLINE static MutationResult<T> MoveFromTVMFFIAny(TVMFFIAny raw) {
+    return MutationResult<T>(typename MutationResult<T>::UnsafeInit{},
+                             AnyUnsafe::MoveTVMFFIAnyRawToAny(raw));
   }
 
   template <typename T>
-  TVM_FFI_INLINE static TVMFFIAny MoveToTVMFFIAny(UnchangedOr<T>&& result) noexcept {
+  TVM_FFI_INLINE static TVMFFIAny MoveToTVMFFIAny(MutationResult<T>&& result) noexcept {
     return AnyUnsafe::MoveAnyToTVMFFIAny(std::move(result.data_));
   }
 };
@@ -431,7 +490,7 @@ class StructuralMutatorObj : public Object {
    * \brief Throwing form of \ref MutateExpected.
    * \param value The borrowed value to mutate.
    * \param inplace_mode Whether the caller permits mutation along this ownership path.
-   * \return The replacement or unchanged marker.
+   * \return The replacement or mutation marker.
    * \throws Error if mutation fails.
    *
    * \note The default InplaceMode::kDisallow uses copy-on-write. In-place mutation is permitted
@@ -442,11 +501,11 @@ class StructuralMutatorObj : public Object {
    * preserve checked typed mutation results and the fixed mismatch diagnostic. At a throwing
    * boundary, an explicit cast may instead report its own TypeError:
    * \code{.cpp}
-   * Expr new_node = mutator->Mutate(node).ValueOrUnchanged(AnyView(node)).cast<Expr>();
+   * Expr new_node = mutator->Mutate(node).ValueOrOriginal(AnyView(node)).cast<Expr>();
    * \endcode
    */
-  TVM_FFI_INLINE UnchangedOr<Any> Mutate(AnyView value,
-                                         InplaceMode inplace_mode = InplaceMode::kDisallow) {
+  TVM_FFI_INLINE MutationResult<Any> Mutate(AnyView value,
+                                            InplaceMode inplace_mode = InplaceMode::kDisallow) {
     return std::move(MutateExpected(value, inplace_mode)).value();
   }
 
@@ -454,7 +513,7 @@ class StructuralMutatorObj : public Object {
    * \brief Mutate a value, permitting in-place mutation only when uniquely owned.
    * \param value The borrowed value to mutate.
    * \param inplace_mode Whether the caller permits mutation along this ownership path.
-   * \return The replacement or unchanged marker, or an Error if mutation failed.
+   * \return The replacement or mutation marker, or an Error if mutation failed.
    *
    * \note The default InplaceMode::kDisallow uses copy-on-write. In-place mutation is permitted
    *       only when inplace_mode is InplaceMode::kAllow and the current value is uniquely owned.
@@ -464,15 +523,15 @@ class StructuralMutatorObj : public Object {
    *       not guarantee reuse: a hook may return a replacement. In-place changes completed before
    *       an Error are not rolled back.
    */
-  TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateExpected(
+  TVM_FFI_INLINE Expected<MutationResult<Any>> MutateExpected(
       AnyView value, InplaceMode inplace_mode = InplaceMode::kDisallow) noexcept {
     const Object* object = value.as<Object>();
     // Check uniqueness on the borrowed view before callbacks can acquire owning references.
     if (inplace_mode == InplaceMode::kAllow && object != nullptr && object->unique()) {
-      return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
+      return details::ExpectedUnsafe::MoveFromTVMFFIAny<MutationResult<Any>>(
           (*vtable_->maybe_inplace_mutate)(this, value));
     }
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
+    return details::ExpectedUnsafe::MoveFromTVMFFIAny<MutationResult<Any>>(
         (*vtable_->mutate)(this, value));
   }
 
@@ -480,7 +539,7 @@ class StructuralMutatorObj : public Object {
    * \brief Apply default structural mutation with validated in-place permission.
    * \param value The borrowed current value to mutate.
    * \param inplace_mode The in-place mode already established by the caller for value.
-   * \return The replacement or unchanged marker, or an Error if mutation failed.
+   * \return The replacement or mutation marker, or an Error if mutation failed.
    *
    * \note The default InplaceMode::kDisallow is a copy-on-write convenience for one-off calls.
    *       Recursive code and hooks must explicitly forward the mode established for the current
@@ -491,9 +550,9 @@ class StructuralMutatorObj : public Object {
    *       Error are not rolled back. Registered hooks own variable-remap handling; the reflected
    *       fallback applies it automatically and always uses copy-on-write mutation.
    */
-  TVM_FFI_INLINE Expected<UnchangedOr<Any>> DefaultMutateExpected(
+  TVM_FFI_INLINE Expected<MutationResult<Any>> DefaultMutateExpected(
       AnyView value, InplaceMode inplace_mode = InplaceMode::kDisallow) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<UnchangedOr<Any>>(
+    return details::ExpectedUnsafe::MoveFromTVMFFIAny<MutationResult<Any>>(
         inplace_mode == InplaceMode::kAllow ? DefaultMaybeInplaceMutateRaw(value)
                                             : DefaultMutateRaw(value));
   }
@@ -594,7 +653,7 @@ class StructuralMutatorObj : public Object {
 
   // Convention: the ABI boundary is a raw TVMFFIAny; mutation results inside a callback or hook
   // body use Expected<Any> and move out to TVMFFIAny at that boundary. Unchanged converts to an
-  // Any carrying kTVMFFIUnchanged.
+  // Any carrying kTVMFFIMutationMarker.
   //
   // The Raw forms below exist because that boundary is also the default path. A hook is a C-ABI
   // function pointer returning TVMFFIAny, a 16-byte POD that stays in registers; wrapping the
@@ -674,7 +733,7 @@ class StructuralMutatorObj : public Object {
       // Bind the descent result. The one exception is an unchanged simple definition: its
       // uses resolve to the var itself on a miss, so there is nothing to record.
       if (is_dag_node || def_region_kind() == kTVMFFIDefRegionKindPattern ||
-          result_value.type_index() != TypeIndex::kTVMFFIUnchanged) {
+          !details::IsUnchangedMutation(result_value)) {
         Expected<void> set_result = VarRemapSetExpected(value, result_value);
         if (TVM_FFI_PREDICT_FALSE(set_result.is_err())) {
           return details::ExpectedUnsafe::MoveToTVMFFIAny(
@@ -797,6 +856,7 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
 
   const TVMFFITypeInfo* type_info = TVMFFIGetTypeInfo(new_obj->type_index());
   bool field_changed = false;
+  bool subtree_changed = false;
   auto mutate_fields = [&]() {
     reflection::ForEachFieldInfoWithEarlyStop(
         type_info, [&](const TVMFFIFieldInfo* field_info) -> bool {
@@ -812,8 +872,8 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
             return true;
           }
 
-          // Reflected fields use the same unchanged-or-value descent protocol.
-          Expected<UnchangedOr<Any>> mutated_field = [&]() -> Expected<UnchangedOr<Any>> {
+          // Reflected fields use the same three-state descent protocol.
+          Expected<MutationResult<Any>> mutated_field = [&]() -> Expected<MutationResult<Any>> {
             if (field_info->flags & kTVMFFIFieldFlagBitMaskSEqHashDefSimple) {
               return mutator->WithDefRegionKind(kTVMFFIDefRegionKindSimple, [&]() {
                 return mutator->MutateExpected(field_value, InplaceMode::kDisallow);
@@ -831,12 +891,13 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
             return true;
           }
           const Any& mutated_field_data = details::ExpectedUnsafe::GetData(mutated_field);
-          // Unchanged first: it is the common case, and it is one type-index test where the
-          // resolved form ran a full same_as against a value it had just been handed back.
-          if (mutated_field_data.type_index() == TypeIndex::kTVMFFIUnchanged ||
-              field_value.same_as(mutated_field_data)) {
+          // A marker retains the field without assignment, but an in-place child update
+          // still changes the enclosing subtree.
+          if (mutated_field_data.type_index() == TypeIndex::kTVMFFIMutationMarker) {
+            subtree_changed |= !details::IsUnchangedMutation(mutated_field_data);
             return false;
           }
+          if (field_value.same_as(mutated_field_data)) return false;
 
           if (TVM_FFI_PREDICT_FALSE(field_info->setter == nullptr)) {
             result = Unexpected(Error(
@@ -873,7 +934,7 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
     return result;
   }
   if (!field_changed) {
-    return Unchanged();
+    return subtree_changed ? Any(UpdatedInPlace()) : Any(Unchanged());
   }
   return result;
 }
@@ -931,16 +992,16 @@ namespace details {
  *   const FooNode* self =
  *       details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const FooNode>(value);
  *   constexpr InplaceMode inplace_mode = InplaceMode::kDisallow;
- *   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Expr>, a,
+ *   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(MutationResult<Expr>, a,
  *                                     mutator->MutateExpected(self->a, inplace_mode));
- *   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Expr>, b,
+ *   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(MutationResult<Expr>, b,
  *                                     mutator->MutateExpected(self->b, inplace_mode));
  *   if (a.UnchangedOrSameAs(self->a) && b.UnchangedOrSameAs(self->b)) {
  *     return Unchanged().CopyToTVMFFIAny();
  *   }
  *   ObjectPtr<FooNode> copy = make_object<FooNode>(*self);
- *   copy->a = std::move(a).ValueOrUnchanged(std::move(copy->a));
- *   copy->b = std::move(b).ValueOrUnchanged(std::move(copy->b));
+ *   copy->a = std::move(a).ValueOrOriginal(std::move(copy->a));
+ *   copy->b = std::move(b).ValueOrOriginal(std::move(copy->b));
  *   return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
  * }
  * \endcode
@@ -1264,8 +1325,9 @@ class StructuralMapEngine : public Parent {
         return true;
       }
       Any mapped_value = std::move(ExpectedUnsafe::GetData(callback_result));
-      const AnyView descent_view =
-          mapped_value.type_index() == TypeIndex::kTVMFFIUnchanged ? value : AnyView(mapped_value);
+      const AnyView descent_view = mapped_value.type_index() == TypeIndex::kTVMFFIMutationMarker
+                                       ? value
+                                       : AnyView(mapped_value);
       // Each descent names the node it actually ran on in the error context.
       *out = [&]() -> Expected<Any> {
         if constexpr (kInplaceMode == InplaceMode::kAllow) {
@@ -1283,15 +1345,14 @@ class StructuralMapEngine : public Parent {
         }
       }();
       if (TVM_FFI_PREDICT_FALSE(out->is_err())) return true;
-      if (ExpectedUnsafe::GetData(*out).type_index() == TypeIndex::kTVMFFIUnchanged) {
-        *out = std::move(mapped_value);
-      }
+      *out = details::ComposeMutation(value, std::move(mapped_value),
+                                      std::move(ExpectedUnsafe::GetData(*out)));
       return true;
     } else {
       // Post-order descent is performed once by the engine entry before the callback probes.
       // Descended unchanged uses the original view; otherwise the callback sees the replacement.
       const Any& descended_value = ExpectedUnsafe::GetData(*out);
-      const AnyView mapped_view = descended_value.type_index() == TypeIndex::kTVMFFIUnchanged
+      const AnyView mapped_view = descended_value.type_index() == TypeIndex::kTVMFFIMutationMarker
                                       ? value
                                       : AnyView(descended_value);
       std::optional<TSub> matched;
@@ -1299,6 +1360,7 @@ class StructuralMapEngine : public Parent {
         matched = mapped_view.template as<TSub>();
         if (!matched.has_value()) return false;
       }
+      Any prior = std::move(ExpectedUnsafe::GetData(*out));
       *out = [&]() -> Expected<Any> {
         if constexpr (std::is_same_v<TSub, AnyView>) {
           return InvokeTypedCallbackLink(callback, mapped_view, StateIndices{});
@@ -1312,6 +1374,8 @@ class StructuralMapEngine : public Parent {
         this->UpdateVisitErrorContext(*out, mapped_view);
         return true;
       }
+      *out = details::ComposeMutation(value, std::move(prior),
+                                      std::move(ExpectedUnsafe::GetData(*out)));
       return true;
     }
   }
@@ -1486,8 +1550,9 @@ class StructuralMapDynEngine : public Parent {
         return true;
       }
       Any mapped_value = std::move(ExpectedUnsafe::GetData(callback_result));
-      const AnyView descent_view =
-          mapped_value.type_index() == TypeIndex::kTVMFFIUnchanged ? value : AnyView(mapped_value);
+      const AnyView descent_view = mapped_value.type_index() == TypeIndex::kTVMFFIMutationMarker
+                                       ? value
+                                       : AnyView(mapped_value);
       *out = [&]() -> Expected<Any> {
         if constexpr (kInplaceMode == InplaceMode::kAllow) {
           if (descent_view.same_as(value)) {
@@ -1503,15 +1568,14 @@ class StructuralMapDynEngine : public Parent {
         }
       }();
       if (TVM_FFI_PREDICT_FALSE(out->is_err())) return true;
-      if (ExpectedUnsafe::GetData(*out).type_index() == TypeIndex::kTVMFFIUnchanged) {
-        *out = std::move(mapped_value);
-      }
+      *out = details::ComposeMutation(value, std::move(mapped_value),
+                                      std::move(ExpectedUnsafe::GetData(*out)));
       return true;
     } else {
       // Post-order descent is performed once by the engine entry before link selection.
       // See the typed engine: a borrowed view of the original, never an owning copy of it.
       const Any& descended_value = ExpectedUnsafe::GetData(*out);
-      const AnyView mapped_view = descended_value.type_index() == TypeIndex::kTVMFFIUnchanged
+      const AnyView mapped_view = descended_value.type_index() == TypeIndex::kTVMFFIMutationMarker
                                       ? value
                                       : AnyView(descended_value);
       bool with_kind = false;
@@ -1519,11 +1583,14 @@ class StructuralMapDynEngine : public Parent {
       if (!matched.has_value()) return false;
       // WithDefRegionKind restores its state through RAII, so this late read is equivalent to
       // the typed engine's invocation-time read even after recursive descent.
+      Any prior = std::move(ExpectedUnsafe::GetData(*out));
       *out = InvokeLink(*matched, with_kind, mapped_view, this->def_region_kind());
       if (TVM_FFI_PREDICT_FALSE(out->is_err())) {
         this->UpdateVisitErrorContext(*out, mapped_view);
         return true;
       }
+      *out = details::ComposeMutation(value, std::move(prior),
+                                      std::move(ExpectedUnsafe::GetData(*out)));
       return true;
     }
   }
@@ -1806,9 +1873,9 @@ Expected<Any> StructuralMapExpected(
   StructuralMutator mutator(make_object<Mutator>(std::forward<Callbacks>(callbacks)...));
   auto result = mutator->MutateExpected(root, InplaceMode::kAllow);
   if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
-  UnchangedOr<Any> mapped = details::AnyUnsafe::MoveFromAnyAfterCheck<UnchangedOr<Any>>(
+  MutationResult<Any> mapped = details::AnyUnsafe::MoveFromAnyAfterCheck<MutationResult<Any>>(
       std::move(details::ExpectedUnsafe::GetData(result)));
-  return std::move(mapped).ValueOrUnchanged(std::move(root));
+  return std::move(mapped).ValueOrOriginal(std::move(root));
 }
 
 /*!
@@ -1873,9 +1940,9 @@ Expected<Any> StructuralMutateExpected(
   StructuralMutator mutator(make_object<Mutator>(std::forward<Callbacks>(callbacks)...));
   auto result = mutator->MutateExpected(root, InplaceMode::kAllow);
   if (TVM_FFI_PREDICT_FALSE(result.is_err())) return Unexpected(std::move(result).error());
-  UnchangedOr<Any> mapped = details::AnyUnsafe::MoveFromAnyAfterCheck<UnchangedOr<Any>>(
+  MutationResult<Any> mapped = details::AnyUnsafe::MoveFromAnyAfterCheck<MutationResult<Any>>(
       std::move(details::ExpectedUnsafe::GetData(result)));
-  return std::move(mapped).ValueOrUnchanged(std::move(root));
+  return std::move(mapped).ValueOrOriginal(std::move(root));
 }
 
 /*!
@@ -1891,44 +1958,63 @@ Any StructuralMutate(Any root,
 }
 
 template <typename T>
-inline constexpr bool use_default_type_traits_v<UnchangedOr<T>> = false;
+inline constexpr bool use_default_type_traits_v<MutationResult<T>> = false;
 
 template <typename T>
-struct TypeTraits<UnchangedOr<T>> : public TypeTraitsBase {
-  TVM_FFI_INLINE static void CopyToAnyView(const UnchangedOr<T>& src, TVMFFIAny* result) {
+struct TypeTraits<MutationResult<T>> : public TypeTraitsBase {
+  TVM_FFI_INLINE static void CopyToAnyView(const MutationResult<T>& src, TVMFFIAny* result) {
     *result = AnyView(src.data_).CopyToTVMFFIAny();
   }
 
-  TVM_FFI_INLINE static void MoveToAny(UnchangedOr<T> src, TVMFFIAny* result) {
-    *result = details::UnchangedOrUnsafe::MoveToTVMFFIAny(std::move(src));
+  TVM_FFI_INLINE static void MoveToAny(MutationResult<T> src, TVMFFIAny* result) {
+    *result = details::MutationResultUnsafe::MoveToTVMFFIAny(std::move(src));
   }
 
   TVM_FFI_INLINE static bool CheckAnyStrict(const TVMFFIAny* src) {
+    if (src->type_index == TypeIndex::kTVMFFIMutationMarker) {
+      return src->zero_padding == 0 && (src->v_int64 == kTVMFFIMutationMarkerUnchanged ||
+                                        src->v_int64 == kTVMFFIMutationMarkerUpdatedInPlace);
+    }
     if constexpr (std::is_same_v<T, Any>) {
       return src->type_index != TypeIndex::kTVMFFIError;
     } else {
-      return src->type_index == TypeIndex::kTVMFFIUnchanged || TypeTraits<T>::CheckAnyStrict(src);
+      return TypeTraits<T>::CheckAnyStrict(src);
     }
   }
 
-  TVM_FFI_INLINE static UnchangedOr<T> CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
-    if (src->type_index == TypeIndex::kTVMFFIUnchanged) return Unchanged();
+  TVM_FFI_INLINE static MutationResult<T> CopyFromAnyViewAfterCheck(const TVMFFIAny* src) {
+    if (src->type_index == TypeIndex::kTVMFFIMutationMarker) {
+      return MutationResult<T>(typename MutationResult<T>::UnsafeInit{},
+                               details::AnyUnsafe::MoveTVMFFIAnyRawToAny(*src));
+    }
     if constexpr (std::is_same_v<T, Any>) {
-      return UnchangedOr<T>(Any(AnyView::CopyFromTVMFFIAny(*src)));
+      return MutationResult<T>(Any(AnyView::CopyFromTVMFFIAny(*src)));
     } else {
-      return UnchangedOr<T>(TypeTraits<T>::CopyFromAnyViewAfterCheck(src));
+      return MutationResult<T>(TypeTraits<T>::CopyFromAnyViewAfterCheck(src));
     }
   }
 
-  TVM_FFI_INLINE static UnchangedOr<T> MoveFromAnyAfterCheck(TVMFFIAny* src) {
-    return UnchangedOr<T>(typename UnchangedOr<T>::UnsafeInit{},
-                          details::AnyUnsafe::MoveTVMFFIAnyToAny(src));
+  TVM_FFI_INLINE static std::optional<MutationResult<T>> TryCastFromAnyView(const TVMFFIAny* src) {
+    if (CheckAnyStrict(src)) return CopyFromAnyViewAfterCheck(src);
+    if constexpr (!std::is_same_v<T, Any>) {
+      if (src->type_index != TypeIndex::kTVMFFIMutationMarker) {
+        if (auto value = TypeTraits<T>::TryCastFromAnyView(src)) {
+          return MutationResult<T>(*std::move(value));
+        }
+      }
+    }
+    return std::nullopt;
+  }
+
+  TVM_FFI_INLINE static MutationResult<T> MoveFromAnyAfterCheck(TVMFFIAny* src) {
+    return MutationResult<T>(typename MutationResult<T>::UnsafeInit{},
+                             details::AnyUnsafe::MoveTVMFFIAnyToAny(src));
   }
   TVM_FFI_INLINE static std::string TypeStr() {
-    return "UnchangedOr<" + details::Type2Str<T>::v() + ">";
+    return "MutationResult<" + details::Type2Str<T>::v() + ">";
   }
   TVM_FFI_INLINE static std::string TypeSchema() {
-    return R"({"type":"UnchangedOr","args":[)" + details::TypeSchema<T>::v() + "]}";
+    return R"({"type":"MutationResult","args":[)" + details::TypeSchema<T>::v() + "]}";
   }
 };
 

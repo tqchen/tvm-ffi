@@ -415,7 +415,7 @@ class TypeTable {
                             TypeIndex::kTVMFFIObjectRValueRef);
     ReserveBuiltinTypeIndex(StaticTypeKey::kTVMFFISmallStr, TypeIndex::kTVMFFISmallStr);
     ReserveBuiltinTypeIndex(StaticTypeKey::kTVMFFISmallBytes, TypeIndex::kTVMFFISmallBytes);
-    ReserveBuiltinTypeIndex(StaticTypeKey::kTVMFFIUnchanged, TypeIndex::kTVMFFIUnchanged);
+    ReserveBuiltinTypeIndex(StaticTypeKey::kTVMFFIMutationMarker, TypeIndex::kTVMFFIMutationMarker);
     // reserved static type indices for depth 1 object types
     ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIStr, TypeIndex::kTVMFFIStr);
     ReserveDepthOneObjectTypeIndex(StaticTypeKey::kTVMFFIBigInt, TypeIndex::kTVMFFIBigInt);

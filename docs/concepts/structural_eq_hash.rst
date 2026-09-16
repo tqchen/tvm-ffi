@@ -1251,11 +1251,21 @@ structural child, and returns an interrupt if one occurs:
 
 A custom ``__s_mutate__`` hook similarly receives the active mutator.  It should
 recursively call ``mutator.mutate`` and return a new value only when needed.
-In C++, a hook can return ``Unchanged()`` when it produces no new value, or use
-``UnchangedOr<T>`` to carry either that marker or a replacement.  The mutator
-propagates the marker through recursive callback-facing entry points.  The
-top-level ``StructuralMap`` and ``StructuralMutate`` functions resolve it to the
-original value, so it never escapes as a mapped value.
+In C++, ``MutationResult<T>`` carries three states: ``Unchanged()`` guarantees
+that the original subtree is unchanged; ``UpdatedInPlace()`` reports a changed
+subtree with the original identity; an owning value supplies a result, including
+a null replacement. Returning the original as an owning value asserts that its
+subtree is unchanged. Hooks retaining identity after changing a child must return
+``UpdatedInPlace()``, even when no field assignment is needed.
+
+Use ``HasValue()`` before extracting a replacement with ``ValueUnchecked()``.
+``UnchangedOrSameAs(original)`` accepts unchanged markers and owning same-identity
+values, but rejects in-place updates. ``ValueOrOriginal`` resolves either marker
+to the original at an owning API boundary; internal callback and remap paths
+preserve the marker. The top-level ``StructuralMap`` and ``StructuralMutate``
+functions perform this resolution so markers never escape as mapped values.
+Both markers use ABI type index 13, with ``TVMFFIMutationMarkerKind`` payloads zero
+and one respectively, and require zero padding.
 An optional ``__s_maybe_inplace_mutate__`` hook may implement an in-place
 optimization.  The structural-map engine dispatches it only when the input is
 safe to mutate, so the optional hook may rely on that ownership guarantee.  A
@@ -1314,7 +1324,7 @@ subtree. An unmatched value uses default descent:
        });
 
 Walk callbacks return ``Expected<WalkResult>``.  Map callbacks may return a bare
-replacement, ``Unchanged``, or ``Expected<Any>``, and must obey the same
+replacement, ``Unchanged``, ``UpdatedInPlace``, or ``Expected<Any>``, and must obey the same
 non-in-place callback contract as the Python API.
 For ``Map`` and ``Dict``, both APIs process values and skip keys.
 ``StructuralWalk``, ``StructuralVisit`` and ``StructuralMap`` are the

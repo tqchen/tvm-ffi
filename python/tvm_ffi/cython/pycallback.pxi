@@ -279,6 +279,18 @@ cdef int TVMFFIPyCallbackArgSetterRValueRef_(
     return 0
 
 
+cdef int TVMFFIPyCallbackArgSetterMutationMarker_(
+    TVMFFIPyCallbackArgSetter* handle,
+    const DLPackExchangeAPI* api,
+    const TVMFFIAny* arg,
+    PyObject** out
+) except -1:
+    obj = make_ret_mutation_marker(arg)
+    Py_INCREF(obj)
+    out[0] = <PyObject*>obj
+    return 0
+
+
 cdef public int TVMFFICyCallbackArgSetterFactory(int32_t type_index,
                                                  TVMFFIPyCallbackArgSetter* out) except -1:
     """Factory that creates callback arg setters for a given type index.
@@ -298,6 +310,8 @@ cdef public int TVMFFICyCallbackArgSetterFactory(int32_t type_index,
         return 0
     if type_index == kTVMFFINone:
         out.func = TVMFFIPyCallbackArgSetterNone_
+    elif type_index == kTVMFFIMutationMarker:
+        out.func = TVMFFIPyCallbackArgSetterMutationMarker_
     elif type_index == kTVMFFIBool:
         out.func = TVMFFIPyCallbackArgSetterBool_
     elif type_index == kTVMFFIInt:
