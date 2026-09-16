@@ -177,7 +177,7 @@ template <typename T>
 inline constexpr bool is_unchanged_or_v<UnchangedOr<T>> = true;
 }  // namespace details
 
-/*! \brief Tag for a mutation result that produced no new value. */
+/*! \brief Tag indicating that the caller should retain the original value. */
 struct Unchanged {
   /*!
    * \brief Copy this tag to its raw marker representation.
@@ -206,16 +206,24 @@ struct Unchanged {
 };
 
 /*!
- * \brief A structural-mutation result containing a replacement or no new value.
+ * \brief A structural-mutation result containing a replacement or an instruction
+ *        to retain the original value.
+ *
+ * An Unchanged result indicates that no replacement is needed.
+ * A stored replacement may also refer to the original object.
  *
  * \tparam T The replacement value type.
+ * \note In-place updates retain the input's identity, so
+ *       ``UnchangedOrSameAs`` may return true despite structural changes.
+ *       If structural change detection is needed, track changes separately
+ *       or disable in-place mutation.
  * \note ``UnchangedOr`` is deliberately designed to only have rvalue-qualified value accessors,
  *       so the compiler forces a value to leave the container exactly once, via a move.
  *
  * \code{.cpp}
- * // resolves to the original when the descent reported unchanged
+ * // resolves to the original when descent returned the Unchanged marker
  * copy->a = std::move(a).ValueOrUnchanged(std::move(copy->a));
- * // already known to be changed, so no original is needed
+ * // already known to contain a replacement, so no original is needed
  * copy->b = std::move(b).ValueUnchecked();
  * \endcode
  */
@@ -233,14 +241,14 @@ class UnchangedOr {
   TVM_FFI_INLINE UnchangedOr(Unchanged unchanged) noexcept : data_(static_cast<Any>(unchanged)) {}
 
   /*!
-   * \brief Construct a changed result from a replacement value.
+   * \brief Construct a result containing a replacement value.
    * \param value The replacement value.
    */
   // NOLINTNEXTLINE(google-explicit-constructor,runtime/explicit)
   TVM_FFI_INLINE UnchangedOr(T value) : data_(Any(std::move(value))) {}
 
   /*!
-   * \brief Construct a changed result from an implicitly convertible replacement value.
+   * \brief Construct a result containing an implicitly convertible replacement value.
    * \tparam U Source value type, implicitly convertible to T.
    * \param value The replacement value to copy or move.
    */
@@ -284,17 +292,19 @@ class UnchangedOr {
   TVM_FFI_INLINE UnchangedOr& operator=(UnchangedOr&&) noexcept = default;
 
   /*!
-   * \brief Whether this result asks the caller to preserve the original value.
-   * \return Whether the result is unchanged.
+   * \brief Whether this result holds the Unchanged marker, retaining the original value.
+   * \return Whether the result holds the Unchanged marker.
    */
   TVM_FFI_INLINE bool IsUnchanged() const& noexcept {
     return data_.type_index() == TypeIndex::kTVMFFIUnchanged;
   }
 
   /*!
-   * \brief Whether this result is unchanged or contains the original object identity.
+   * \brief Whether this result holds the Unchanged marker or a value that compares
+   *        ``same_as`` to \p original.
    * \param original The original value.
-   * \return Whether the original identity may be reused.
+   * \return Whether the original value may be retained without replacement.
+   * \note For objects, this checks identity, not contents or subtree changes.
    */
   TVM_FFI_INLINE bool UnchangedOrSameAs(const T& original) const& noexcept {
     return IsUnchanged() || data_.same_as(original);
@@ -337,9 +347,9 @@ class UnchangedOr {
   }
 
   /*!
-   * \brief Move the known-changed replacement without checking its state.
+   * \brief Move the stored replacement value without checking its state.
    * \return The replacement value.
-   * \pre The result is not unchanged.
+   * \pre ``!IsUnchanged()``.
    */
   TVM_FFI_INLINE T ValueUnchecked() && {
     return details::AnyUnsafe::MoveFromAnyAfterCheck<T>(std::move(data_));
