@@ -64,15 +64,25 @@ macro_rules! impl_callback_chain_tuple_arities {
 
 pub(crate) use impl_callback_chain_tuple_arities;
 
-/// A borrowed value shared by structural visit and map callbacks.
+/// A borrowed value shared by structural visit, walk, map, and mutate callbacks.
 ///
-/// This type centralizes the audited unsafe operations used to cast FFI
-/// values and borrow object nodes. The public APIs expose it as `VisitValue`
-/// or `MapValue` according to the callback context.
+/// Use `&StructuralView` for an erased callback argument. [`Self::as_node`]
+/// borrows an object node, while [`Self::cast`] returns a typed value (acquiring
+/// ownership for object handles). This view does not grant in-place permission;
+/// consuming mutation callbacks use [`crate::MutateValue`] instead.
+/// `VisitValue` and `MapValue` remain compatibility names for this type.
 #[repr(transparent)]
-pub struct StructuralValue(TVMFFIAny);
+pub struct StructuralView(TVMFFIAny);
 
-impl StructuralValue {
+impl<'a> From<&'a StructuralView> for AnyView<'a> {
+    #[inline]
+    fn from(value: &'a StructuralView) -> Self {
+        // SAFETY: the view cannot outlive the borrowed structural value.
+        unsafe { AnyView::from_raw_ffi_any(value.raw()) }
+    }
+}
+
+impl StructuralView {
     #[inline]
     pub(crate) fn from_raw(raw: TVMFFIAny) -> Self {
         Self(raw)
