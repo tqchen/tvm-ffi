@@ -367,8 +367,9 @@ callback must call `visit_children()` explicitly, and interrupt values must be
 returned explicitly because `?` only propagates errors.
 
 `VisitCallbacks::with_policy` and `WalkWithContextPolicy` use `ContextPolicy<State>`
-to manage context around default recursion. See the `ContextPolicy` API
-documentation for composition and shared state access.
+to manage context around default recursion. Pass `WalkWithContextPolicy` to
+`structural_walk`; pass `&mut walker` to reuse it and inspect its state afterward.
+See the `ContextPolicy` API documentation for composition and shared state access.
 
 For a named implementation, `#[dispatch(visit)]` generates
 `StructuralVisitor` from `visit_*` methods. Matching handlers own recursion;
@@ -418,7 +419,8 @@ explicitly from a `StructuralVisitor`, or skip it with a pre-order
 `WalkResult::Skip`.
 
 `StructuralView` is the shared borrowed callback value for visit, walk, map,
-and mutate; `VisitValue` and `MapValue` remain compatibility names.
+and mutate. Mapping callbacks return replacement values; their input view is
+borrowed and does not grant in-place mutation permission.
 
 ### Structural Mapping and Mutation
 
@@ -491,7 +493,8 @@ the same semantics as C++.
 `MutateCallbacks::with_policy` and `MapWithContextPolicy` use `MutContextPolicy<State>`
 to manage context around default recursion. Policies consume `MutateValue`
 and return `UnchangedOr<Any>`; see the API documentation for composition and
-scoped definition regions. Pass `MapWithContextPolicy` directly to `structural_map`;
+scoped definition regions. Pass `MapWithContextPolicy` directly to `structural_map`,
+or pass `&mut mapper` to reuse it and inspect its state afterward;
 it cannot be a callback tuple member or another wrapper's dispatcher. Compose
 policies as `(outer, inner)` within one wrapper.
 
@@ -510,18 +513,19 @@ not returned on error.
 
 Callbacks can also return `Unchanged` or `UnchangedOr<T>`, optionally wrapped
 in `Result`. A pre-order map still maps the original value's children when
-a callback returns `Unchanged`. Use `mutate_result` and
+a callback returns `Unchanged`; a post-order map keeps the result of child
+mapping. Use `mutate_result` and
 `default_mutate_result` to preserve unchanged during recursion; existing
 owning-value helpers and top-level functions resolve the marker to the
 original value.
 
 `structural_mutate` accepts typed callback chains in addition to a
-`StructuralMutator`. Closure callbacks receive a `CallbackMutator`;
+`StructuralMutator`. Closure callbacks receive a `MutateContext`;
 `MutateCallbacks` adds state shared by that callback chain:
 
 ```rust
 use tvm_ffi::{
-    structural_mutate, Array, CallbackMutator, MutateValue, MutateCallbacks,
+    structural_mutate, Array, MutateCallbacks, MutateContext, MutateValue,
 };
 
 #[derive(Default)]
@@ -532,11 +536,11 @@ struct Stats {
 let mut mutator = MutateCallbacks::new(
     Stats::default(),
     (
-        |value: i64, mutator: &mut CallbackMutator<Stats>| {
+        |value: i64, mutator: &mut MutateContext<'_, Stats>| {
             mutator.state_mut().integers += 1;
             value + 1
         },
-        |value: MutateValue<'_>, mutator: &mut CallbackMutator<Stats>| {
+        |value: MutateValue<'_>, mutator: &mut MutateContext<'_, Stats>| {
             mutator.default_maybe_inplace_mutate(value)
         },
     ),
@@ -547,7 +551,7 @@ assert_eq!(mutated.iter().collect::<Vec<_>>(), vec![2, 3]);
 assert_eq!(mutator.state().integers, 2);
 ```
 
-`CallbackMutator::mutate` uses the copy path for a borrowed value, while
+`MutateContext::mutate` uses the copy path for a borrowed value, while
 `maybe_inplace_mutate` preserves the reuse opportunity of an owned value.
 Closure callbacks are `Fn`; mutable data belongs in the callback state.
 
