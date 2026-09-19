@@ -22,12 +22,12 @@ use tvm_ffi::collections::map::MapObj;
 use tvm_ffi::function::FunctionObj;
 use tvm_ffi::object::ObjectRef;
 use tvm_ffi::{
-    dispatch, structural_map, structural_mutate, Any, AnyView, Array, DefRegionKind,
-    DefaultMutContextPolicy, Error, FieldGetter, Function, InplaceMode, InplaceValue, IntoMapper,
-    Map, MapDispatch, MapWithContextPolicy, MutContextPolicy, MutateCallbacks, MutateContext,
-    MutateValue, Mutator, Object, ObjectArc, ObjectRefCore, Result, String as FfiString,
-    StructuralMutator, StructuralVarRemap, StructuralView, TypeIndex, Unchanged, UnchangedOr,
-    WalkOrder, RUNTIME_ERROR,
+    dispatch, structural_map, structural_mutate, structural_visit, structural_walk, Any, AnyView,
+    Array, DefRegionKind, DefaultMutContextPolicy, Error, FieldGetter, Function, InplaceMode,
+    InplaceValue, IntoMapper, Map, MapDispatch, MapWithContextPolicy, MutContextPolicy,
+    MutateCallbacks, MutateContext, MutateValue, Mutator, Object, ObjectArc, ObjectRefCore, Result,
+    String as FfiString, StructuralMutator, StructuralVarRemap, StructuralView, TypeIndex,
+    Unchanged, UnchangedOr, VisitContext, WalkOrder, WalkResult, RUNTIME_ERROR,
 };
 
 struct IncrementIntegers;
@@ -743,37 +743,168 @@ fn reflected_object_without_shallow_copy_is_rejected_even_when_unchanged() {
 
 #[test]
 fn callback_errors_preserve_message_and_add_object_context() {
-    let error = match structural_map(
-        Array::new(vec![1i64]),
-        |_integer: i64| -> Result<i64> {
-            Err(Error::new(RUNTIME_ERROR, "mapper failed", "origin"))
-        },
-        WalkOrder::PostOrder,
-    ) {
-        Ok(_) => panic!("fallible structural mapper unexpectedly succeeded"),
-        Err(error) => error,
-    };
+    let child = reflected_object();
+    let root = call_global(
+        "ffi.MakeObjectFromPackedArgs",
+        &[
+            FfiString::from("testing.TestObjectPtrHolder").into(),
+            FfiString::from("value").into(),
+            child.clone(),
+        ],
+    );
+    let payload = ObjectRef::try_from(Any::from(Array::new(vec![7i64]))).unwrap();
+    let records = call_global("ffi.List", &[child.clone()]);
+    let context = call_global(
+        "ffi.MakeObjectFromPackedArgs",
+        &[
+            FfiString::from("ffi.VisitErrorContext").into(),
+            FfiString::from("reverse_visit_pattern").into(),
+            records,
+            FfiString::from("prev_error_context").into(),
+            Any::from(payload.clone()),
+        ],
+    );
+    let cause = Error::new(RUNTIME_ERROR, "cause", "");
+    let source = Error::new_with_cause_and_extra_context(
+        RUNTIME_ERROR,
+        "callback failed",
+        "origin",
+        Some(&cause),
+        Some(&ObjectRef::try_from(context.clone()).unwrap()),
+    );
+    let mut errors = Vec::new();
+    for order in [WalkOrder::PreOrder, WalkOrder::PostOrder] {
+        let leaf_error = structural_map(
+            1i64,
+            |_value: i64| -> Result<i64> { Err(source.clone()) },
+            order,
+        )
+        .err()
+        .unwrap();
+        assert!(leaf_error.same_as(&source));
+        errors.push(
+            structural_map(
+                root.clone(),
+                |_value: i64| -> Result<i64> { Err(source.clone()) },
+                order,
+            )
+            .err()
+            .unwrap(),
+        );
+        errors.push(
+            structural_walk(
+                &root,
+                |_value: i64| -> Result<WalkResult> { Err(source.clone()) },
+                order,
+            )
+            .err()
+            .unwrap(),
+        );
+    }
+    errors.push(
+        structural_mutate(
+            root.clone(),
+            |_value: i64, _: &mut MutateContext| -> Result<i64> { Err(source.clone()) },
+        )
+        .err()
+        .unwrap(),
+    );
+    errors.push(
+        structural_visit(
+            &root,
+            |_value: i64, _: &mut VisitContext<'_, ()>| -> Result<()> { Err(source.clone()) },
+        )
+        .err()
+        .unwrap(),
+    );
+    for error in errors {
+        assert_eq!(error.message(), "callback failed");
+        assert!(error.backtrace().contains("origin"));
+        assert!(error
+            .backtrace()
+            .contains("object `testing.TestObjectBase`"));
+        assert!(error.cause_chain().unwrap().same_as(&cause));
+        let context = Any::from(error.extra_context().unwrap());
+        assert!(reflected_field::<ObjectRef>(&context, "prev_error_context").same_as(&payload));
+        let records = Any::from(reflected_field::<ObjectRef>(
+            &context,
+            "reverse_visit_pattern",
+        ));
+        let size = i64::try_from(call_global("ffi.ListSize", &[records.clone()])).unwrap();
+        let outermost = call_global("ffi.ListGetItem", &[records, (size - 1).into()]);
+        assert_eq!(any_object_pointer(&outermost), any_object_pointer(&root));
+        let paths = call_global(
+            "ffi.VisitErrorContext.FindAccessPaths",
+            &[root.clone(), context, false.into()],
+        );
+        let paths = paths.try_as::<Array<Any>>().unwrap();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(
+            call_global("ffi.ReprPrint", &[paths.get(0).unwrap()])
+                .try_as::<FfiString>()
+                .unwrap()
+                .as_str(),
+            "<root>.value"
+        );
+    }
+    let records = Any::from(reflected_field::<ObjectRef>(
+        &context,
+        "reverse_visit_pattern",
+    ));
+    assert_eq!(
+        i64::try_from(call_global("ffi.ListSize", &[records])).unwrap(),
+        1
+    );
+    assert_eq!(source.backtrace(), "origin");
 
-    assert_eq!(error.message(), "mapper failed");
-    assert!(error.backtrace().contains("origin"));
-    assert!(error.backtrace().contains("object `ffi.Array`"));
-
-    let error = match structural_mutate(
-        Array::new(vec![1i64]),
-        |_integer: i64, _mutator: &mut MutateContext<'_>| -> Result<i64> {
-            Err(Error::new(
-                RUNTIME_ERROR,
-                "callback mutator failed",
-                "callback origin",
-            ))
-        },
-    ) {
-        Ok(_) => panic!("fallible callback mutator unexpectedly succeeded"),
-        Err(error) => error,
-    };
-    assert_eq!(error.message(), "callback mutator failed");
-    assert!(error.backtrace().contains("callback origin"));
-    assert!(error.backtrace().contains("object `ffi.Array`"));
+    // The failing node may be a pre-order replacement or a post-order rebuilt parent.
+    for order in [WalkOrder::PreOrder, WalkOrder::PostOrder] {
+        let root = Array::new(vec![0i64]);
+        let mut failed_node = None;
+        let error = structural_map(
+            root.clone(),
+            (
+                |value: Array<i64>| -> Result<Any> {
+                    let value = if order == WalkOrder::PreOrder {
+                        Array::new(vec![1i64])
+                    } else {
+                        value
+                    };
+                    failed_node = Some(value.clone());
+                    if order == WalkOrder::PreOrder {
+                        Ok(value.into())
+                    } else {
+                        Err(Error::new(RUNTIME_ERROR, "failed", ""))
+                    }
+                },
+                |value: i64| -> Result<i64> {
+                    if order == WalkOrder::PreOrder {
+                        Err(Error::new(RUNTIME_ERROR, "failed", ""))
+                    } else {
+                        Ok(value + 1)
+                    }
+                },
+            ),
+            order,
+        )
+        .err()
+        .unwrap();
+        let context = Any::from(error.extra_context().unwrap());
+        let records = Any::from(reflected_field::<ObjectRef>(
+            &context,
+            "reverse_visit_pattern",
+        ));
+        let node = call_global("ffi.ListGetItem", &[records.clone(), 0i64.into()]);
+        assert!(node
+            .try_as::<ObjectRef>()
+            .unwrap()
+            .same_as(&failed_node.unwrap()));
+        assert_eq!(
+            i64::try_from(call_global("ffi.ListSize", &[records])).unwrap(),
+            1
+        );
+        assert_eq!(root.get(0).unwrap(), 0);
+    }
 }
 
 #[test]
@@ -1076,31 +1207,85 @@ fn generated_mutate_dispatch_can_default_recurse_from_a_typed_handler() {
 }
 
 #[test]
-fn pre_order_retained_alias_disables_in_place_mutation() {
-    let root = call_global("ffi.List", &[Any::from(1i64)]);
-    let root_pointer = any_object_pointer(&root);
-    let mut retained = None;
-    let mapped = structural_map(
-        root,
-        |value: &StructuralView| {
-            if value.type_index() == TypeIndex::kTVMFFIList as i32 {
-                retained = Some(value.to_owned());
-                value.to_owned()
-            } else if let Some(integer) = value.cast::<i64>() {
-                Any::from(integer + 1)
-            } else {
-                value.to_owned()
+fn pre_order_mapping_preserves_inplace_permission() {
+    struct Observe<'a>(&'a Cell<Option<InplaceMode>>);
+    impl<State> MutContextPolicy<State> for Observe<'_> {
+        fn default_mutate(
+            &self,
+            value: MutateValue<'_>,
+            ctx: &mut tvm_ffi::MutateContext<'_, State>,
+        ) -> Result<UnchangedOr<Any>> {
+            if value.type_index() >= TypeIndex::kTVMFFIStaticObjectBegin as i32 {
+                self.0.set(Some(value.inplace_mode()));
             }
-        },
-        WalkOrder::PreOrder,
-    )
-    .unwrap();
-    let retained = retained.unwrap();
-
-    assert_eq!(any_object_pointer(&retained), root_pointer);
-    assert_ne!(any_object_pointer(&mapped), root_pointer);
-    assert_eq!(list_item(&retained, 0), 1);
-    assert_eq!(list_item(&mapped, 0), 2);
+            ctx.default_maybe_inplace_mutate_result(value)
+        }
+    }
+    for with_policy in [false, true] {
+        for case in ["inline", "unique", "shared", "retained"] {
+            let root = match case {
+                "inline" => Any::from(true),
+                "retained" => call_global("ffi.List", &[Any::from(1_i64)]),
+                _ => Any::from(Array::new(vec![true])),
+            };
+            let root_pointer = (case == "retained").then(|| any_object_pointer(&root));
+            let alias = (case == "shared").then(|| root.clone());
+            let mut retained = None;
+            let mut pointer = std::ptr::null();
+            let mode = Cell::new(None);
+            let mut mapper = (|value: &StructuralView| {
+                if let Some(integer) = value.cast::<i64>() {
+                    return Any::from(integer + 1);
+                }
+                let mapped = if case == "retained" {
+                    retained = Some(value.to_owned());
+                    value.to_owned()
+                } else {
+                    Array::new(vec![1_i64]).into()
+                };
+                pointer = any_object_pointer(&mapped);
+                mapped
+            })
+            .into_mapper();
+            let output = if with_policy {
+                structural_map(
+                    root,
+                    MapWithContextPolicy::new(&mut mapper, Observe(&mode)),
+                    WalkOrder::PreOrder,
+                )
+                .unwrap()
+            } else {
+                structural_map(root, &mut mapper, WalkOrder::PreOrder).unwrap()
+            };
+            let reuse = case == "unique";
+            assert_eq!(
+                any_object_pointer(&output) == pointer,
+                reuse,
+                "{case}, policy={with_policy}"
+            );
+            if with_policy {
+                assert_eq!(
+                    mode.get(),
+                    Some(if reuse {
+                        InplaceMode::Allow
+                    } else {
+                        InplaceMode::Disallow
+                    })
+                );
+            }
+            if case == "retained" {
+                let retained = retained.unwrap();
+                assert_eq!(any_object_pointer(&retained), root_pointer.unwrap());
+                assert_eq!(list_item(&retained, 0), 1);
+                assert_eq!(list_item(&output, 0), 2);
+            } else {
+                assert_eq!(Array::<i64>::try_from(output).unwrap().get(0).unwrap(), 2);
+            }
+            if let Some(alias) = alias {
+                assert!(Array::<bool>::try_from(alias).unwrap().get(0).unwrap());
+            }
+        }
+    }
 }
 
 #[test]

@@ -19,12 +19,85 @@
 
 use crate::any::{Any, AnyView};
 use crate::error::Error;
-use crate::object::{self, ObjectCore};
-use crate::tvm_ffi_sys::{TVMFFIAny, TVMFFIGetTypeInfo, TVMFFITypeIndex};
+use crate::function::Function;
+use crate::object::{self, ObjectCore, ObjectRefCore};
+use crate::reflection::FieldGetter;
+use crate::tvm_ffi_sys::{
+    TVMFFIAny, TVMFFIByteArray, TVMFFIGetTypeInfo, TVMFFITypeIndex, TVMFFITypeKeyToIndex,
+};
 
 /// Add one structural traversal frame to an error's backtrace.
 pub(crate) fn with_structural_error_context(error: Error, operation: &str, frame: &str) -> Error {
     Error::with_appended_backtrace(error, &format!("[native structural {operation}] {frame}\n"))
+}
+
+#[cold]
+pub(crate) fn with_visit_error_context(error: Error, raw: TVMFFIAny) -> Error {
+    if raw.type_index < TVMFFITypeIndex::kTVMFFIStaticObjectBegin as i32 {
+        return error;
+    }
+    let context = (|| {
+        let mut context_type = 0;
+        unsafe {
+            crate::check_safe_call!(TVMFFITypeKeyToIndex(
+                &TVMFFIByteArray::from_str("ffi.VisitErrorContext"),
+                &mut context_type,
+            ))
+            .ok()?;
+        }
+        let mut previous = error.extra_context();
+        let mut nodes = Vec::new();
+        if let Some(prior) = previous.as_ref() {
+            if AnyView::from(prior).type_index() == context_type {
+                let object = &**object::ObjectRef::data(prior);
+                let records = FieldGetter::new(context_type, "reverse_visit_pattern")
+                    .ok()?
+                    .get_any(object)
+                    .ok()?;
+                let size = Function::get_global("ffi.ListSize")
+                    .ok()?
+                    .call_tuple((records.clone(),))
+                    .ok()?
+                    .try_as::<i64>()?;
+                let get_item = Function::get_global("ffi.ListGetItem").ok()?;
+                for i in 0..size {
+                    nodes.push(get_item.call_tuple((records.clone(), i)).ok()?);
+                }
+                previous = FieldGetter::new(context_type, "prev_error_context")
+                    .ok()?
+                    .get::<_, Option<object::ObjectRef>>(object)
+                    .ok()?;
+            }
+        }
+        let node = StructuralView::from_raw(raw).cast::<object::ObjectRef>()?;
+        nodes.push(Any::from(node));
+        let records = Function::get_global("ffi.List")
+            .ok()?
+            .call_packed(&nodes.iter().map(AnyView::from).collect::<Vec<_>>())
+            .ok()?;
+        Function::get_global("ffi.MakeObjectFromPackedArgs")
+            .ok()?
+            .call_tuple((
+                context_type,
+                crate::String::from("reverse_visit_pattern"),
+                records,
+                crate::String::from("prev_error_context"),
+                previous,
+            ))
+            .ok()?
+            .try_as::<object::ObjectRef>()
+    })();
+    // Diagnostic enrichment must not replace the original error on failure.
+    match context {
+        Some(context) => Error::new_with_cause_and_extra_context(
+            error.kind(),
+            error.message(),
+            error.backtrace(),
+            error.cause_chain().as_ref(),
+            Some(&context),
+        ),
+        None => error,
+    }
 }
 
 // Generate the tuple arities supported by the standard library (1 through 12).
