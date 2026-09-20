@@ -23,11 +23,12 @@ use tvm_ffi::function::FunctionObj;
 use tvm_ffi::object::ObjectRef;
 use tvm_ffi::{
     dispatch, structural_map, structural_mutate, structural_visit, structural_walk, Any, AnyView,
-    Array, DefRegionKind, DefaultMutContextPolicy, Error, FieldGetter, Function, InplaceMode,
-    InplaceValue, IntoMapper, Map, MapDispatch, MapWithContextPolicy, MutContextPolicy,
-    MutateCallbacks, MutateContext, MutateValue, Mutator, Object, ObjectArc, ObjectRefCore, Result,
-    String as FfiString, StructuralMutator, StructuralVarRemap, StructuralView, TypeIndex,
-    Unchanged, UnchangedOr, VisitContext, WalkOrder, WalkResult, RUNTIME_ERROR,
+    Array, DefRegionKind, DefaultContextPolicy, DefaultMutContextPolicy, Error, FieldGetter,
+    Function, InplaceMode, InplaceValue, IntoMapper, Map, MapDispatch, MapWithContextPolicy,
+    MutContextPolicy, MutateCallbacks, MutateContext, MutateValue, Mutator, Object, ObjectArc,
+    ObjectRefCore, Result, String as FfiString, StructuralMutator, StructuralVarRemap,
+    StructuralView, StructuralVisitor, TypeIndex, Unchanged, UnchangedOr, VisitCallbacks,
+    VisitContext, VisitInterrupt, WalkOrder, WalkResult, RUNTIME_ERROR,
 };
 
 struct IncrementIntegers;
@@ -743,6 +744,29 @@ fn reflected_object_without_shallow_copy_is_rejected_even_when_unchanged() {
 
 #[test]
 fn callback_errors_preserve_message_and_add_object_context() {
+    struct Delegate(Error);
+    #[dispatch(visit, policy = (DefaultContextPolicy, DefaultContextPolicy))]
+    impl Delegate {
+        fn visit_any(
+            &mut self,
+            value: &StructuralView,
+            kind: DefRegionKind,
+        ) -> Result<Option<VisitInterrupt>> {
+            if value.cast::<i64>().is_some() {
+                return Err(self.0.clone());
+            }
+            self.default_visit_children(value, kind)
+        }
+    }
+    #[dispatch(mutate, policy = (DefaultMutContextPolicy, DefaultMutContextPolicy))]
+    impl Delegate {
+        fn mutate_any(&mut self, value: MutateValue<'_>, ctx: &mut Mutator) -> Result<Any> {
+            if value.cast::<i64>().is_some() {
+                return Err(self.0.clone());
+            }
+            ctx.default_maybe_inplace_mutate(self, value)
+        }
+    }
     let child = reflected_object();
     let root = call_global(
         "ffi.MakeObjectFromPackedArgs",
@@ -753,7 +777,7 @@ fn callback_errors_preserve_message_and_add_object_context() {
         ],
     );
     let payload = ObjectRef::try_from(Any::from(Array::new(vec![7i64]))).unwrap();
-    let records = call_global("ffi.List", &[child.clone()]);
+    let records = call_global("ffi.List", &[Any::new()]);
     let context = call_global(
         "ffi.MakeObjectFromPackedArgs",
         &[
@@ -800,6 +824,15 @@ fn callback_errors_preserve_message_and_add_object_context() {
             .err()
             .unwrap(),
         );
+        let mut mapper = MapWithContextPolicy::new(
+            (|_: i64| -> Result<i64> { Err(source.clone()) }).into_mapper(),
+            (DefaultMutContextPolicy, DefaultMutContextPolicy),
+        );
+        errors.push(
+            structural_map(root.clone(), &mut mapper, order)
+                .err()
+                .unwrap(),
+        );
     }
     errors.push(
         structural_mutate(
@@ -817,6 +850,34 @@ fn callback_errors_preserve_message_and_add_object_context() {
         .err()
         .unwrap(),
     );
+    let mut visitor = VisitCallbacks::new(
+        (),
+        |value: &StructuralView, ctx: &mut VisitContext<'_, ()>| {
+            if value.cast::<i64>().is_some() {
+                return Err(source.clone());
+            }
+            ctx.visit_children()
+        },
+    )
+    .with_policy((DefaultContextPolicy, DefaultContextPolicy));
+    errors.push(structural_visit(&root, &mut visitor).err().unwrap());
+    let mut mutator =
+        MutateCallbacks::new((), |value: MutateValue<'_>, ctx: &mut MutateContext| {
+            if value.cast::<i64>().is_some() {
+                return Err(source.clone());
+            }
+            ctx.default_maybe_inplace_mutate(value)
+        })
+        .with_policy((DefaultMutContextPolicy, DefaultMutContextPolicy));
+    errors.push(structural_mutate(root.clone(), &mut mutator).err().unwrap());
+    let mut delegate = Delegate(source.clone());
+    errors.push(structural_visit(&root, &mut delegate).err().unwrap());
+    errors.push(
+        structural_mutate(root.clone(), &mut delegate)
+            .err()
+            .unwrap(),
+    );
+    let seeded = errors[0].clone();
     for error in errors {
         assert_eq!(error.message(), "callback failed");
         assert!(error.backtrace().contains("origin"));
@@ -831,6 +892,13 @@ fn callback_errors_preserve_message_and_add_object_context() {
             "reverse_visit_pattern",
         ));
         let size = i64::try_from(call_global("ffi.ListSize", &[records.clone()])).unwrap();
+        assert_eq!(size, 3);
+        assert_eq!(
+            call_global("ffi.ListGetItem", &[records.clone(), 0_i64.into()]).try_as::<()>(),
+            Some(())
+        );
+        let innermost = call_global("ffi.ListGetItem", &[records.clone(), 1_i64.into()]);
+        assert_eq!(any_object_pointer(&innermost), any_object_pointer(&child));
         let outermost = call_global("ffi.ListGetItem", &[records, (size - 1).into()]);
         assert_eq!(any_object_pointer(&outermost), any_object_pointer(&root));
         let paths = call_global(
@@ -856,6 +924,28 @@ fn callback_errors_preserve_message_and_add_object_context() {
         1
     );
     assert_eq!(source.backtrace(), "origin");
+
+    // Keep nonconsecutive occurrences: child -> root -> child is a distinct path.
+    let error = structural_map(
+        child.clone(),
+        |_: i64| -> Result<i64> { Err(seeded.clone()) },
+        WalkOrder::PreOrder,
+    )
+    .err()
+    .unwrap();
+    let context = Any::from(error.extra_context().unwrap());
+    let records = Any::from(reflected_field::<ObjectRef>(
+        &context,
+        "reverse_visit_pattern",
+    ));
+    assert_eq!(
+        i64::try_from(call_global("ffi.ListSize", &[records.clone()])).unwrap(),
+        4
+    );
+    for (i, expected) in [&child, &root, &child].into_iter().enumerate() {
+        let node = call_global("ffi.ListGetItem", &[records.clone(), (i as i64 + 1).into()]);
+        assert_eq!(any_object_pointer(&node), any_object_pointer(expected));
+    }
 
     // The failing node may be a pre-order replacement or a post-order rebuilt parent.
     for order in [WalkOrder::PreOrder, WalkOrder::PostOrder] {
@@ -1944,6 +2034,13 @@ impl MutContextPolicy<PolicyState> for RecordPolicy {
     }
 }
 
+#[dispatch(mutate, policy = (ArrayPolicy, RecordPolicy))]
+impl PolicyState {
+    fn mutate_integer(&mut self, value: i64) -> i64 {
+        self.map_integer(value)
+    }
+}
+
 #[test]
 fn mutation_policies_share_state_and_preserve_callback_order() {
     let root = || Array::new(vec![Any::from(Array::new(vec![1_i64])), Any::from(2_i64)]);
@@ -2012,6 +2109,21 @@ fn mutation_policies_share_state_and_preserve_callback_order() {
     assert_eq!(i64::try_from(array_item(&output, 1)).unwrap(), 3);
     assert_eq!(mutator.state().events, pre);
     assert_eq!(mutator.state().depth, 0);
+
+    let mut dispatch = PolicyState::default();
+    let output = structural_mutate(root(), &mut dispatch).unwrap();
+    assert_eq!(i64::try_from(array_item(&output, 1)).unwrap(), 3);
+    assert_eq!(
+        i64::try_from(array_item(&array_item(&output, 0), 0)).unwrap(),
+        2
+    );
+    assert_eq!(dispatch.depth, 0);
+    assert_eq!(
+        dispatch.events,
+        pre.into_iter()
+            .filter(|(tag, _)| *tag != "callback")
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -2061,6 +2173,8 @@ fn mutation_policy_continuations_preserve_ownership_and_markers() {
     struct Ownership {
         increment: bool,
         retained: Option<Any>,
+        mode: InplaceMode,
+        retain: bool,
     }
     #[dispatch(map)]
     impl Ownership {
@@ -2095,8 +2209,24 @@ fn mutation_policy_continuations_preserve_ownership_and_markers() {
             Ok(result)
         }
     }
-    for entry in 0..3 {
-        // pre-order map, post-order map, mutation callback
+    #[dispatch(mutate, policy = (
+        Control { mode: self.mode, retain: self.retain },
+        DefaultMutContextPolicy,
+    ))]
+    impl Ownership {
+        fn mutate_integer(&mut self, value: i64) -> UnchangedOr<i64> {
+            self.map_integer(value)
+        }
+        fn mutate_array(
+            &mut self,
+            value: MutateValue<'_, Array<i64>>,
+            mutator: &mut Mutator,
+        ) -> Result<UnchangedOr<Any>> {
+            mutator.default_maybe_inplace_mutate_result(self, value)
+        }
+    }
+    for entry in 0..4 {
+        // pre-order map, post-order map, closure mutation, generated mutation
         for case in 0..4 {
             // unique, shared, alias retained by policy, forced copy
             for increment in [false, true] {
@@ -2117,6 +2247,8 @@ fn mutation_policy_continuations_preserve_ownership_and_markers() {
                 let state = Ownership {
                     increment,
                     retained: None,
+                    mode: policy.0.mode,
+                    retain: policy.0.retain,
                 };
                 let (output, state) = if entry < 2 {
                     let mut mapper = MapWithContextPolicy::new(state, policy);
@@ -2131,6 +2263,10 @@ fn mutation_policy_continuations_preserve_ownership_and_markers() {
                     )
                     .unwrap();
                     (output, mapper.into_state())
+                } else if entry == 3 {
+                    let mut dispatch = state;
+                    let output = structural_mutate(root, &mut dispatch).unwrap();
+                    (output, dispatch)
                 } else {
                     let mut mutator = MutateCallbacks::new(
                         state,
@@ -2165,7 +2301,7 @@ fn mutation_policy_continuations_preserve_ownership_and_markers() {
 fn mutation_policy_regions_retargeting_and_error_restore() {
     use DefRegionKind::{None as Use, Pattern, Simple};
     #[derive(Default)]
-    struct Regions(Vec<(i64, DefRegionKind)>);
+    struct Regions(Vec<(i64, DefRegionKind)>, DefRegionKind);
     #[dispatch(map)]
     impl Regions {
         fn map_integer(&mut self, x: i64, kind: DefRegionKind) -> i64 {
@@ -2220,6 +2356,25 @@ fn mutation_policy_regions_retargeting_and_error_restore() {
                 ctx.state_mut().0.push((100, kind));
             }
             ctx.default_maybe_inplace_mutate_result(value)
+        }
+    }
+    #[dispatch(mutate, policy = (Redirect(self.1), Observe))]
+    impl Regions {
+        fn mutate_any(
+            &mut self,
+            value: MutateValue<'_>,
+            mutator: &mut Mutator,
+        ) -> Result<UnchangedOr<Any>> {
+            if let Some(x) = value.cast::<i64>() {
+                self.map_integer(x, mutator.def_region_kind());
+            }
+            if value
+                .as_node::<tvm_ffi::collections::array::ArrayObj>()
+                .is_some()
+            {
+                self.0.push((200, mutator.def_region_kind()));
+            }
+            mutator.default_maybe_inplace_mutate_result(self, value)
         }
     }
     assert_eq!(
@@ -2279,6 +2434,20 @@ fn mutation_policy_regions_retargeting_and_error_restore() {
         structural_mutate(graph, &mut mutator).unwrap();
         assert_eq!(
             mutator.state().0,
+            vec![(1, Simple), (2, Pattern), (99, Pattern), (3, Use)]
+        );
+        let mut dispatch = Regions(vec![], requested);
+        let output = structural_mutate(false, &mut dispatch).unwrap();
+        assert_eq!(i64::try_from(array_item(&output, 0)).unwrap(), 1);
+        assert_eq!(dispatch.0, vec![(100, Pattern), (1, Pattern)]);
+        dispatch.0.clear();
+        let graph = Function::get_global("testing.make_visit_region_graph")
+            .unwrap()
+            .call_tuple((false,))
+            .unwrap();
+        structural_mutate(graph, &mut dispatch).unwrap();
+        assert_eq!(
+            dispatch.0,
             vec![(1, Simple), (2, Pattern), (99, Pattern), (3, Use)]
         );
     }
