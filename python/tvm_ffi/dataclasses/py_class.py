@@ -73,10 +73,57 @@ _FFI_TYPE_ATTR_NAMES: frozenset[str] = frozenset(
     }
 )
 
-# Names collected directly from the class body. Names in
-# ``_FFI_TYPE_ATTR_NAMES`` are registered as TypeAttrColumn entries; other
-# names require explicit ``@method`` marking and register as TypeMethod.
-_FFI_RECOGNIZED_METHODS: frozenset[str] = _FFI_TYPE_ATTR_NAMES
+# Core behavioral hooks copied explicitly at Python schema registration time.
+# The ABI table remains flat: native subclasses never inherit entries implicitly.
+_DEFAULT_INHERIT_TYPE_ATTRS = (
+    "__s_equal__",
+    "__s_hash__",
+    "__s_visit__",
+    "__data_to_json__",
+    "__data_from_json__",
+)
+
+
+def _type_attr_options(cls: type) -> tuple[frozenset[str], tuple[str, ...]]:
+    """Read explicit class policies; inherited lists follow ordinary Python MRO.
+
+    Both lists are per class and may be declared once on an extension base
+    class; neither modifies the runtime's global set of recognized names.
+    ``__ffi_type_attr_names__`` registers class-local extension attributes.
+    ``__ffi_inherit_type_attrs__`` additionally selects parent entries to copy,
+    replacing the core default list (an empty tuple opts out). Inherited names
+    are already recognized and need not appear in both lists.
+    Metadata is never copied unless explicitly listed. A class-body definition,
+    including None, always wins over a parent registration.
+    """
+    extra = getattr(cls, "__ffi_type_attr_names__", ())
+    inherited = getattr(cls, "__ffi_inherit_type_attrs__", _DEFAULT_INHERIT_TYPE_ATTRS)
+    for value in (extra, inherited):
+        if not isinstance(value, (tuple, list)) or not all(isinstance(n, str) for n in value):
+            raise TypeError("TypeAttr registration lists must be tuples or lists of strings")
+    return _FFI_TYPE_ATTR_NAMES | frozenset(extra) | frozenset(inherited), tuple(inherited)
+
+
+def _inherited_type_attrs(type_info: Any, names: tuple[str, ...]) -> list[tuple[Any, ...]]:
+    from ..core import _lookup_type_attr  # noqa: PLC0415
+
+    cls = type_info.type_cls
+    entries = []
+    for name in names:
+        if name in cls.__dict__:
+            continue
+        parent = type_info.parent_type_info
+        while parent is not None:
+            value = _lookup_type_attr(parent.type_index, name)
+            if value is not None:
+                entries.append((name, value, True, None))
+                break
+            parent_cls = parent.type_cls
+            if parent_cls is not None and name in parent_cls.__dict__:
+                # An explicit null value suppresses the hook for descendants too.
+                break
+            parent = parent.parent_type_info
+    return entries
 
 
 @overload
@@ -270,6 +317,7 @@ def _collect_py_methods(
     ``(name, value, is_static, metadata_json)`` tuples when *globalns* is
     provided by the registration path.
     """
+    type_attr_names, _ = _type_attr_options(cls)
     legacy_shape = globalns is None
     if globalns is None:
         globalns = vars(sys.modules[cls.__module__])
@@ -277,7 +325,7 @@ def _collect_py_methods(
     methods: list[tuple[Any, ...]] = []
     for name, value in cls.__dict__.items():
         marked = _is_method_marked(value)
-        if name not in _FFI_RECOGNIZED_METHODS and not marked:
+        if name not in type_attr_names and not marked:
             continue
         # In every case, registering a classmethod as a TypeMethod is
         # wrong: the packed-call convention places ``self`` (an instance)
@@ -295,7 +343,7 @@ def _collect_py_methods(
         is_static = isinstance(value, staticmethod)
         func = value.__func__ if is_static else value
         metadata_json = None
-        if marked and name not in _FFI_TYPE_ATTR_NAMES:
+        if marked and name not in type_attr_names:
             metadata_json = _method_type_schema_json(cls, func, is_static, globalns)
         if legacy_shape:
             methods.append((name, func, is_static))
@@ -332,6 +380,18 @@ def on_fields_resolved(  # noqa: PLR0912, PLR0915
     fields_map: dict[str, Field] = {}
     ip_funcs: dict[str, Any] = {}
     kw_only_active = params["kw_only"]
+    marker_types = getattr(cls, "__ffi_field_markers__", ())
+    if not isinstance(marker_types, (tuple, list)) or not all(
+        isinstance(marker, type) for marker in marker_types
+    ):
+        raise TypeError("__ffi_field_markers__ must be a tuple or list of types")
+    parent = type_info.parent_type_info
+    parent_params = getattr(parent, "_decorator_args", {})
+    markers = list(parent_params.get("field_markers", ()))
+    inherited_count = 0
+    while parent is not None:
+        inherited_count += len(parent.fields)
+        parent = parent.parent_type_info
     for owner in owners:
         for name, resolved_type in hints_by_owner[owner].items():
             # Skip ClassVar.
@@ -343,6 +403,13 @@ def on_fields_resolved(  # noqa: PLR0912, PLR0915
                 kw_only_active = True
                 if owner is cls and name in cls.__dict__:
                     delattr(cls, name)
+                continue
+
+            if any(resolved_type is marker for marker in marker_types):
+                # Marker interpretation and validation belong to the extension.
+                # Record the declaring class and name so its callback can inspect
+                # declarations, including explicit assigned values, without loss.
+                markers.append((resolved_type, owner, name, inherited_count + len(fields_map)))
                 continue
 
             # Extract Field from class dict (inline of _pop_field_from_class).
@@ -389,7 +456,10 @@ def on_fields_resolved(  # noqa: PLR0912, PLR0915
     globalns = getattr(sys.modules.get(cls.__module__, None), "__dict__", {})
     if ip_funcs:
         setattr(cls, "__ffi_init_property_funcs__", ip_funcs)
-    py_methods = _collect_py_methods(cls, globalns)
+    type_attr_names, inherited_attrs = _type_attr_options(cls)
+    py_methods = _collect_py_methods(cls, globalns) or []
+
+    params["field_markers"] = tuple(markers)
 
     # Run marked hooks over the resolved fields.  This happens before the
     # fields reach the C layer so a hook can still settle metadata that
@@ -398,6 +468,15 @@ def on_fields_resolved(  # noqa: PLR0912, PLR0915
     # hook is handed ``own_fields`` directly.
     for hook in field_hooks:
         hook(type_info, own_fields)
+    for f in own_fields:
+        if f.extra_kwargs:
+            raise TypeError(
+                f"{cls.__name__}.{f.name}: unrecognized field options: "
+                + ", ".join(sorted(f.extra_kwargs))
+            )
+
+    py_methods = _collect_py_methods(cls, globalns) or []
+    py_methods.extend(_inherited_type_attrs(type_info, inherited_attrs))
 
     # Register fields and type-level structural eq/hash kind with the C layer.
     structure_kind = _STRUCTURE_KIND_MAP[params["structural_eq"]]
@@ -412,8 +491,8 @@ def on_fields_resolved(  # noqa: PLR0912, PLR0915
     # Register user-defined dunder methods and read back system-generated ones.
     # Non-callable entries whose names are in _FFI_TYPE_ATTR_NAMES are routed
     # to TVMFFITypeRegisterAttr by the Cython layer.
-    type_info._register_py_methods(py_methods, type_attr_names=_FFI_TYPE_ATTR_NAMES)
-    _add_class_attrs(cls, type_info, type_attr_names=_FFI_TYPE_ATTR_NAMES)
+    type_info._register_py_methods(py_methods, type_attr_names=type_attr_names)
+    _add_class_attrs(cls, type_info, type_attr_names=type_attr_names)
 
     # Remove deferred __init__ and restore user-defined __init__ if saved.
     if "__ffi_py_class_is_deferred_init__" in cls.__dict__:
@@ -557,6 +636,26 @@ def py_class(  # noqa: PLR0913
         it only configures how ``structural_equal`` / ``structural_hash``
         walk the object in C++ and never installs or alters Python-level
         ``__eq__`` / ``__hash__``.  See Notes below.
+    __ffi_type_attr_names__
+        Optional per-class list of additional names to publish in the FFI
+        type-attribute table. The list follows Python MRO, so an extension base
+        can declare it once for its subclasses. It does not change a global
+        allowlist or copy parent values. Use it for per-type metadata that
+        each class defines independently, as well as extension methods.
+    __ffi_inherit_type_attrs__
+        Optional per-class list selecting parent type-attribute values to copy
+        after schema resolution. These names are also recognized for direct
+        registration and need not appear in ``__ffi_type_attr_names__``.
+        Class-body values, including ``None``, take precedence. The list
+        replaces the default structural and serialization hooks; ``()`` opts
+        out. Low-level lookup remains exact, with no ancestor traversal.
+    __ffi_field_markers__
+        Optional class attribute listing annotation types that mark field
+        positions instead of declaring stored fields. Before field-resolution
+        callbacks run, ``type_info._decorator_args["field_markers"]`` holds
+        tuples ``(marker_type, owner_class, name, field_index)``. Indices count
+        inherited fields first; inherited marker tuples precede local tuples.
+        Extensions validate names, assigned values, multiplicity and semantics.
     slots
         Accepted for ``dataclass_transform`` compatibility.  Object
         subclasses always use ``__slots__ = ()`` via the metaclass.
