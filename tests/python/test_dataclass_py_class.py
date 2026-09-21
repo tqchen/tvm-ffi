@@ -26,7 +26,7 @@ import itertools
 import math
 import sys
 import types
-from typing import Any, ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, cast
 
 import pytest
 import tvm_ffi
@@ -6356,15 +6356,16 @@ def test_extension_field_markers_record_positions_and_inherit() -> None:
         first: int
         before: _AnnotationMarker
         second: int
-        after: _OtherAnnotationMarker = "extension-owned value"
+        after: _OtherAnnotationMarker = cast(Any, "extension-owned value")
 
         def __ffi_marker_hook__(info: TypeInfo, own_fields: Any) -> None:
+            assert info.type_cls is not None
             observed[info.type_cls] = info._decorator_args["field_markers"]
             assert [f.name for f in own_fields] == (
                 ["first", "second"] if info.type_cls.__name__ == "Base" else ["third"]
             )
 
-        __ffi_marker_hook__.__ffi_on_fields_resolved__ = True
+        setattr(__ffi_marker_hook__, "__ffi_on_fields_resolved__", True)
 
     @py_class(_unique_key("MarkerChild"))
     class Child(Base):
@@ -6378,7 +6379,8 @@ def test_extension_field_markers_record_positions_and_inherit() -> None:
     assert observed[Child] == (*observed[Base], (_AnnotationMarker, Child, "middle", 2))
     assert Base.after == "extension-owned value"
     assert [f.name for f in fields(Child)] == ["first", "second", "third"]
-    assert Child(1, 2, 3).third == 3
+    # Runtime marker annotations do not participate in the generated initializer.
+    assert cast(Any, Child)(1, 2, 3).third == 3
 
 
 def test_extension_field_markers_wait_for_parent_fields() -> None:
@@ -6397,7 +6399,7 @@ def test_extension_field_markers_wait_for_parent_fields() -> None:
     class MarkerLaterValue(Object):
         value: int
 
-    value = Child(MarkerLaterValue(1), 2)
+    value = cast(Any, Child)(MarkerLaterValue(1), 2)
     assert value.second == 2
     assert _get_type_info(Child)._decorator_args["field_markers"] == (
         (_AnnotationMarker, Parent, "boundary", 1),
@@ -6424,7 +6426,7 @@ def test_field_metadata_is_copied_and_available_to_extensions() -> None:
         def __ffi_metadata_hook__(info: TypeInfo, own_fields: Any) -> None:
             own_fields[0].metadata["example.resolved"] = info.type_key
 
-        __ffi_metadata_hook__.__ffi_on_fields_resolved__ = True
+        setattr(__ffi_metadata_hook__, "__ffi_on_fields_resolved__", True)
 
     resolved = fields(WithMetadata)[0]
     assert resolved.metadata == {
@@ -6449,7 +6451,7 @@ def test_mixin_field_metadata_changes_do_not_leak_between_classes() -> None:
     first = fields(First)[0]
     first.metadata["example.option"] = 9
     assert fields(Second)[0].metadata["example.option"] == 1
-    assert Mixin.value.metadata["example.option"] == 1
+    assert vars(Mixin)["value"].metadata["example.option"] == 1
 
 
 def test_extension_field_keywords_are_consumed_by_hooks() -> None:
@@ -6460,7 +6462,7 @@ def test_extension_field_keywords_are_consumed_by_hooks() -> None:
                 if "custom_option" in f.extra_kwargs:
                     f.metadata["example.option"] = f.extra_kwargs.pop("custom_option")
 
-        __ffi_keyword_hook__.__ffi_on_fields_resolved__ = True
+        setattr(__ffi_keyword_hook__, "__ffi_on_fields_resolved__", True)
 
     @py_class(_unique_key("KeywordChild"))
     class Child(Base):
@@ -6496,5 +6498,5 @@ def test_raw_initializer_accepts_field_named_self() -> None:
         self: int
 
     value = Object.__new__(Record)
-    Record.__ffi_init__(value, self=7)
+    getattr(Record, "__ffi_init__")(value, self=7)
     assert value.self == 7

@@ -22,7 +22,7 @@ import copy
 from collections import namedtuple
 from collections.abc import Callable, Iterable
 from functools import wraps
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from ..container import Array, Dict, List, Map
 from ..core import TypeSchema, _to_py_class_value
@@ -96,7 +96,7 @@ def fields(obj_or_cls: Any) -> tuple[Field, ...]:
     return tuple(out)
 
 
-def _make_namedtuple(typename: str, fields: tuple[Field, ...]) -> type:
+def _make_namedtuple(typename: str, fields: tuple[Field, ...]) -> Any:
     """Build a native named tuple with FFI conversion for each resolved Field.
 
     All supplied fields are required, in input order, including ``init=False``
@@ -107,7 +107,8 @@ def _make_namedtuple(typename: str, fields: tuple[Field, ...]) -> type:
     a tuple class whose construction, ``_make``, and ``_replace`` convert values
     just as the source fields do, without constructing a ``Source`` instance.
     """
-    tuple_cls: Any = namedtuple(typename, [f.name for f in fields])
+    # Field names and constructor signatures are supplied at runtime.
+    tuple_cls = cast(Any, namedtuple(typename, [f.name for f in fields]))
     names = tuple_cls._fields
     schemas = tuple(
         f._ty_schema if f._ty_schema is not None else TypeSchema.from_annotation(f.type)
