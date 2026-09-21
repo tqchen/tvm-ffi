@@ -76,23 +76,28 @@ impl<State, Outer: ContextPolicy<State>, Inner: ContextPolicy<State>> ContextPol
     }
 }
 
+#[inline(always)]
 pub(super) fn visit_with_policy<State>(
     driver: &mut dyn VisitContextDriver<State>,
     policy: &impl ContextPolicy<State>,
     value: &StructuralView,
     def_region_kind: DefRegionKind,
 ) -> Result<Option<VisitInterrupt>> {
-    with_visit_region(def_region_kind, |def_region_kind| {
-        policy.default_visit(
-            value,
-            &mut VisitContext {
-                driver,
-                current: StructuralView::from_raw(value.raw()),
-                def_region_kind,
-                _not_send_sync: PhantomData,
-            },
-        )
-    })
+    with_visit_region(
+        def_region_kind,
+        #[inline(always)]
+        |def_region_kind| {
+            policy.default_visit(
+                value,
+                &mut VisitContext {
+                    driver,
+                    current: StructuralView::from_raw(value.raw()),
+                    def_region_kind,
+                    _not_send_sync: PhantomData,
+                },
+            )
+        },
+    )
 }
 
 struct NextPolicy<'a, State, Policy> {
@@ -216,7 +221,7 @@ impl<Walker: WalkDispatch, Policy: ContextPolicy<Walker>> NativeVisit
     fn visit(&mut self, value: &StructuralView, kind: DefRegionKind) -> Result<WalkResult> {
         self.walker
             .dispatch_walk(value, kind)
-            .unwrap_or(Ok(WalkResult::Advance))
+            .unwrap_or_else(|| Ok(WalkResult::Advance))
     }
 
     fn default_visit_children<const PRE_ORDER: bool>(

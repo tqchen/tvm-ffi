@@ -887,7 +887,7 @@ where
     ) -> Result<WalkResult> {
         self.link
             .try_call(value, def_region_kind)
-            .unwrap_or(Ok(WalkResult::Advance))
+            .unwrap_or_else(|| Ok(WalkResult::Advance))
     }
 }
 
@@ -1207,7 +1207,11 @@ fn default_walk_children<V: NativeVisit, const PRE_ORDER: bool>(
 
 /// Action applied to each child found by the shared traversal.
 trait ChildVisit {
-    fn visit_child(&mut self, child: TVMFFIAny, def_region_kind: DefRegionKind) -> NativeResult;
+    fn visit_child(
+        &mut self,
+        child: &StructuralView,
+        def_region_kind: DefRegionKind,
+    ) -> NativeResult;
 }
 
 struct WalkChildren<'a, V, const PRE_ORDER: bool> {
@@ -1215,8 +1219,13 @@ struct WalkChildren<'a, V, const PRE_ORDER: bool> {
 }
 
 impl<V: NativeVisit, const PRE_ORDER: bool> ChildVisit for WalkChildren<'_, V, PRE_ORDER> {
-    fn visit_child(&mut self, child: TVMFFIAny, def_region_kind: DefRegionKind) -> NativeResult {
-        visit_raw::<V, PRE_ORDER>(child, self.visitor, def_region_kind)
+    #[inline(always)]
+    fn visit_child(
+        &mut self,
+        child: &StructuralView,
+        def_region_kind: DefRegionKind,
+    ) -> NativeResult {
+        visit_raw::<V, PRE_ORDER>(child.raw(), self.visitor, def_region_kind)
     }
 }
 
@@ -1226,16 +1235,18 @@ struct UserChildren<'a, V> {
 
 impl<V: StructuralVisitor> ChildVisit for UserChildren<'_, V> {
     #[inline]
-    fn visit_child(&mut self, child: TVMFFIAny, def_region_kind: DefRegionKind) -> NativeResult {
-        if child.type_index == TVMFFITypeIndex::kTVMFFINone as i32 {
+    fn visit_child(
+        &mut self,
+        child: &StructuralView,
+        def_region_kind: DefRegionKind,
+    ) -> NativeResult {
+        if child.type_index() == TVMFFITypeIndex::kTVMFFINone as i32 {
             return Ok(());
         }
-        match with_visit_region(def_region_kind, |kind| {
-            self.visitor.visit(&StructuralView::from_raw(child), kind)
-        }) {
+        match with_visit_region(def_region_kind, |kind| self.visitor.visit(child, kind)) {
             Ok(None) => Ok(()),
             Ok(Some(interrupt)) => Err(NativeHalt::Interrupt(interrupt.value)),
-            Err(error) => Err(with_value_context(NativeHalt::Error(error), child)),
+            Err(error) => Err(with_value_context(NativeHalt::Error(error), child.raw())),
         }
     }
 }
@@ -1250,15 +1261,16 @@ fn visit_raw<V: NativeVisit, const PRE_ORDER: bool>(
     if value.type_index == TVMFFITypeIndex::kTVMFFINone as i32 {
         return Ok(());
     }
-
     let visit_value = StructuralView::from_raw(value);
     if PRE_ORDER {
-        match visitor.visit(&visit_value, def_region_kind) {
-            Ok(WalkResult::Advance) => {}
-            Ok(WalkResult::Skip) => return Ok(()),
-            Ok(WalkResult::Interrupt) => return Err(NativeHalt::Interrupt(Any::new())),
-            Ok(WalkResult::InterruptWith(payload)) => return Err(NativeHalt::Interrupt(payload)),
-            Err(error) => return Err(with_value_context(error.into(), value)),
+        let action = visitor
+            .visit(&visit_value, def_region_kind)
+            .map_err(|error| with_value_context(error.into(), value))?;
+        match action {
+            WalkResult::Advance => {}
+            WalkResult::Skip => return Ok(()),
+            WalkResult::Interrupt => return Err(NativeHalt::Interrupt(Any::new())),
+            WalkResult::InterruptWith(payload) => return Err(NativeHalt::Interrupt(payload)),
         }
     }
 
@@ -1268,7 +1280,9 @@ fn visit_raw<V: NativeVisit, const PRE_ORDER: bool>(
             Ok(Some(interrupt)) => return Err(NativeHalt::Interrupt(interrupt.value)),
             Err(error) => return Err(with_value_context(error.into(), value)),
         }
-    } else {
+    } else if value.type_index >= TVMFFITypeIndex::kTVMFFIStaticObjectBegin as i32
+        || has_registered_visit_hook(value.type_index)
+    {
         // Preserve the raw-result path for ordinary walkers.
         let context = std::ptr::from_mut(&mut *visitor).cast::<c_void>();
         let children = &mut WalkChildren::<V, PRE_ORDER> { visitor };
@@ -1281,9 +1295,9 @@ fn visit_raw<V: NativeVisit, const PRE_ORDER: bool>(
         Ok(())
     } else {
         match visitor.visit(&visit_value, def_region_kind) {
+            Ok(WalkResult::Advance | WalkResult::Skip) => Ok(()),
             Ok(WalkResult::Interrupt) => Err(NativeHalt::Interrupt(Any::new())),
             Ok(WalkResult::InterruptWith(payload)) => Err(NativeHalt::Interrupt(payload)),
-            Ok(WalkResult::Advance | WalkResult::Skip) => Ok(()),
             Err(error) => Err(with_value_context(error.into(), value)),
         }
     }
@@ -1378,7 +1392,7 @@ unsafe fn visit_reflected_field<C: ChildVisit>(
         ));
     }
 
-    let borrowed = raw_of_owned(&child);
+    let borrowed = StructuralView::from_any(&child);
     let child_region = field_def_region(field, inherited_region);
     visitor
         .visit_child(borrowed, child_region)
@@ -1555,19 +1569,30 @@ unsafe fn rust_vtable_visit_impl(
     };
     let context = context_guard.context;
     let raw = *value.as_raw_ffi_any();
-    let outcome = catch_unwind(AssertUnwindSafe(|| {
-        let kind = def_region_from_raw((*visitor).def_region_mode)?;
-        callback(context, raw, kind)
-    }));
+    let outcome = catch_unwind(AssertUnwindSafe(
+        #[inline(always)]
+        || {
+            let result = def_region_from_raw((*visitor).def_region_mode)
+                .map_err(NativeHalt::Error)
+                .and_then(|kind| callback(context, raw, kind));
+            native_result_into_raw(result)
+        },
+    ));
     match outcome {
-        Ok(result) => native_result_into_raw(result),
-        Err(payload) => {
-            (*visitor).panic = Some(payload);
-            native_result_into_raw(Err(NativeHalt::Error(runtime_error(
-                "panic in structural visitor callback",
-            ))))
-        }
+        Ok(result) => result,
+        Err(payload) => visit_panic_result(visitor, payload),
     }
+}
+
+#[cold]
+unsafe fn visit_panic_result(
+    visitor: StructuralVisitorHandle,
+    payload: Box<dyn std::any::Any + Send>,
+) -> TVMFFIAny {
+    (*visitor).panic = Some(payload);
+    native_result_into_raw(Err(NativeHalt::Error(runtime_error(
+        "panic in structural visitor callback",
+    ))))
 }
 
 thread_local! {
@@ -1654,18 +1679,8 @@ fn with_current_visitor_context(
     context: *mut c_void,
     callback: impl FnOnce() -> NativeResult,
 ) -> NativeResult {
-    let active = active_structural_visitor_state(visitor)
-        .ok_or_else(|| inactive_structural_visitor_error(visitor, "helper"))?;
+    let active = checked_visitor_context(visitor, context)?;
     unsafe {
-        if (*active).context_identity != context {
-            return Err(
-                runtime_error("structural visitor helper called on a non-active visitor").into(),
-            );
-        }
-        if !(*active).context.is_null() {
-            return Err(runtime_error("structural visitor context is already exposed").into());
-        }
-
         (*active).context = context;
         struct HideContext {
             active: *mut ActiveStructuralVisitor,
@@ -1680,45 +1695,33 @@ fn with_current_visitor_context(
     }
 }
 
+fn checked_visitor_context(
+    visitor: StructuralVisitorHandle,
+    context: *mut c_void,
+) -> Result<*mut ActiveStructuralVisitor> {
+    let active = active_structural_visitor_state(visitor)
+        .ok_or_else(|| inactive_structural_visitor_error(visitor, "helper"))?;
+    unsafe {
+        if (*active).context_identity != context {
+            return Err(runtime_error(
+                "structural visitor helper called on a non-active visitor",
+            ));
+        }
+        if !(*active).context.is_null() {
+            return Err(runtime_error(
+                "structural visitor context is already exposed",
+            ));
+        }
+        Ok(active)
+    }
+}
+
 #[inline(always)]
 unsafe fn runtime_walk<V: NativeVisit, const PRE_ORDER: bool>(
     context: *mut c_void,
     raw: TVMFFIAny,
     def_region_kind: DefRegionKind,
 ) -> NativeResult {
-    if raw.type_index == TVMFFITypeIndex::kTVMFFINone as i32 {
-        return Ok(());
-    }
-    if !V::CUSTOM_DESCENT && raw.type_index < TVMFFITypeIndex::kTVMFFIStaticObjectBegin as i32 {
-        let visitor = &mut *context.cast::<V>();
-        if PRE_ORDER {
-            match visitor.visit(&StructuralView::from_raw(raw), def_region_kind) {
-                Ok(WalkResult::Advance) => {}
-                Ok(WalkResult::Skip) => return Ok(()),
-                Ok(WalkResult::Interrupt) => return Err(NativeHalt::Interrupt(Any::new())),
-                Ok(WalkResult::InterruptWith(payload)) => {
-                    return Err(NativeHalt::Interrupt(payload));
-                }
-                Err(error) => return Err(with_value_context(error.into(), raw)),
-            }
-            if !has_registered_visit_hook(raw.type_index) {
-                return Ok(());
-            }
-            let children = &mut WalkChildren::<V, PRE_ORDER> { visitor };
-            return visit_children_raw(raw, children, context, def_region_kind)
-                .map_err(|halt| with_value_context(halt, raw));
-        }
-        // Post-order inline values have no children unless their type
-        // registered a visit hook. Handle the common case directly here.
-        if !has_registered_visit_hook(raw.type_index) {
-            return match visitor.visit(&StructuralView::from_raw(raw), def_region_kind) {
-                Ok(WalkResult::Advance | WalkResult::Skip) => Ok(()),
-                Ok(WalkResult::Interrupt) => Err(NativeHalt::Interrupt(Any::new())),
-                Ok(WalkResult::InterruptWith(payload)) => Err(NativeHalt::Interrupt(payload)),
-                Err(error) => Err(with_value_context(error.into(), raw)),
-            };
-        }
-    }
     visit_raw::<V, PRE_ORDER>(raw, &mut *context.cast::<V>(), def_region_kind)
 }
 
@@ -1890,18 +1893,25 @@ fn visit_result_from_any(value: Any) -> NativeResult {
     }
 }
 
+#[inline(always)]
 fn with_visit_region<T>(
     kind: DefRegionKind,
     callback: impl FnOnce(DefRegionKind) -> Result<T>,
 ) -> Result<T> {
     let active = active_structural_visitor()?;
-    with_visitor_def_region(active, kind, || {
-        // SAFETY: the active invocation keeps this thread's ABI visitor alive.
-        let kind = def_region_from_raw(unsafe { (*active).def_region_mode })?;
-        callback(kind)
-    })
+    with_visitor_def_region(
+        active,
+        kind,
+        #[inline(always)]
+        || {
+            // SAFETY: the active invocation keeps this thread's ABI visitor alive.
+            let kind = def_region_from_raw(unsafe { (*active).def_region_mode })?;
+            callback(kind)
+        },
+    )
 }
 
+#[inline(always)]
 fn with_visitor_def_region<T>(
     visitor: StructuralVisitorHandle,
     kind: DefRegionKind,
@@ -1910,17 +1920,18 @@ fn with_visitor_def_region<T>(
     unsafe {
         let previous = (*visitor).def_region_mode;
         // Precedence: a pattern region propagates; entering any kind inside it has no effect.
-        if previous == DefRegionKind::Pattern as i32 {
-            return callback();
+        if previous != DefRegionKind::Pattern as i32 {
+            (*visitor).def_region_mode = kind as i32;
         }
-        (*visitor).def_region_mode = kind as i32;
         struct Restore {
             visitor: StructuralVisitorHandle,
             previous: i32,
         }
         impl Drop for Restore {
             fn drop(&mut self) {
-                unsafe { (*self.visitor).def_region_mode = self.previous };
+                if self.previous != DefRegionKind::Pattern as i32 {
+                    unsafe { (*self.visitor).def_region_mode = self.previous };
+                }
             }
         }
         let _restore = Restore { visitor, previous };
@@ -1938,6 +1949,7 @@ fn def_region_from_raw(kind: i32) -> Result<DefRegionKind> {
     }
 }
 
+#[cold]
 fn with_value_context(halt: NativeHalt, value: TVMFFIAny) -> NativeHalt {
     if value.type_index < TVMFFITypeIndex::kTVMFFIStaticObjectBegin as i32 {
         halt
@@ -2028,6 +2040,7 @@ pub(crate) fn free_var_child_region(
     }
 }
 
+#[cold]
 fn with_error_context(halt: NativeHalt, frame: &str) -> NativeHalt {
     match halt {
         NativeHalt::Error(error) => {
@@ -2129,9 +2142,4 @@ unsafe fn visit_field_level<B>(
 #[inline]
 fn raw_of(view: AnyView<'_>) -> TVMFFIAny {
     *view.as_raw_ffi_any()
-}
-
-#[inline]
-fn raw_of_owned(any: &Any) -> TVMFFIAny {
-    *any.as_raw_ffi_any()
 }

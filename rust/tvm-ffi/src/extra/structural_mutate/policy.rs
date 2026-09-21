@@ -72,6 +72,7 @@ impl<State, Outer: MutContextPolicy<State>, Inner: MutContextPolicy<State>> MutC
     }
 }
 
+#[inline(always)]
 pub(super) fn mutate_with_policy<State>(
     driver: &mut dyn MutateContextDriver<State>,
     policy: &impl MutContextPolicy<State>,
@@ -79,15 +80,19 @@ pub(super) fn mutate_with_policy<State>(
     kind: DefRegionKind,
 ) -> Result<Any> {
     let raw = value.value.raw();
-    with_mutation_region(kind, |kind| {
-        let mut ctx = MutateContext {
-            driver,
-            def_region_kind: kind,
-            inplace_mode: value.inplace_mode(),
-            _not_send_sync: PhantomData,
-        };
-        policy.default_mutate(value, &mut ctx).map(Any::from)
-    })
+    with_mutation_region(
+        kind,
+        #[inline(always)]
+        |kind| {
+            let mut ctx = MutateContext {
+                driver,
+                def_region_kind: kind,
+                inplace_mode: value.inplace_mode(),
+                _not_send_sync: PhantomData,
+            };
+            policy.default_mutate(value, &mut ctx).map(Any::from)
+        },
+    )
     .map_err(|error| with_value_context(error, raw))
 }
 
@@ -146,22 +151,17 @@ impl<State, Driver: MutationDriver + MutateCallbackState<State>> MutateContextDr
         self.driver.callback_state_mut()
     }
     fn mutate_borrowed(&mut self, value: AnyView<'_>, kind: DefRegionKind) -> Result<Any> {
-        with_mutation_region(kind, |kind| {
-            self.driver
-                .dispatch_raw(*value.as_raw_ffi_any(), kind, Permit::Copy)
-        })
+        self.driver
+            .dispatch_raw(*value.as_raw_ffi_any(), kind, Permit::Copy)
     }
     fn mutate_owned(&mut self, value: Any, kind: DefRegionKind, mode: InplaceMode) -> Result<Any> {
         let raw = *value.as_raw_ffi_any();
-        let result = with_mutation_region(kind, |kind| {
-            self.driver.dispatch_raw(raw, kind, mode.permit())
-        })?;
+        let result = self.driver.dispatch_raw(raw, kind, mode.permit())?;
         Ok(if is_unchanged(&result) { value } else { result })
     }
     fn default_mutate_borrowed(&mut self, value: AnyView<'_>, kind: DefRegionKind) -> Result<Any> {
-        with_mutation_region(kind, |kind| {
-            default_mutate_driver(self.driver, *value.as_raw_ffi_any(), kind, Permit::Copy)
-        })
+        // The policy context has already installed this definition region.
+        default_mutate_driver(self.driver, *value.as_raw_ffi_any(), kind, Permit::Copy)
     }
     fn default_mutate_value(
         &mut self,
@@ -170,9 +170,7 @@ impl<State, Driver: MutationDriver + MutateCallbackState<State>> MutateContextDr
         mode: InplaceMode,
     ) -> Result<Any> {
         let permit = value.permit(mode);
-        with_mutation_region(kind, |kind| {
-            default_mutate_driver(self.driver, value.value.raw(), kind, permit)
-        })
+        default_mutate_driver(self.driver, value.value.raw(), kind, permit)
     }
     fn var_remap_get(&mut self, var: &StructuralView) -> Result<Option<Any>> {
         self.driver.var_remap_get_raw(var.raw())
@@ -182,7 +180,9 @@ impl<State, Driver: MutationDriver + MutateCallbackState<State>> MutateContextDr
     }
 }
 
-impl<D, Policy> MutateCallbackState<D> for NativeMapper<'_, D, Policy> {
+impl<D, Policy, const PRE_ORDER: bool> MutateCallbackState<D>
+    for NativeMapper<'_, D, Policy, PRE_ORDER>
+{
     fn callback_state(&self) -> &D {
         self.dispatch
     }
@@ -231,15 +231,7 @@ impl<Mapper: MapDispatch, Policy: MutContextPolicy<Mapper>> NativeMap
     for MapWithContextPolicy<Mapper, Policy>
 {
     fn map_root(&mut self, root: Any, order: WalkOrder) -> Result<Any> {
-        run_structural_mutator(
-            root,
-            &mut NativeMapper {
-                dispatch: &mut self.mapper,
-                order,
-                policy: Some(self.policy.clone()),
-                remap: StructuralVarRemap::default(),
-            },
-        )
+        run_native_mapper(root, &mut self.mapper, Some(self.policy.clone()), order)
     }
 }
 
