@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import importlib
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, ClassVar, Generic, TypeVar, overload
 
 from ..core import MISSING, TypeSchema
@@ -144,6 +144,10 @@ class Field:
     kw_only : bool | None
         Whether this field is keyword-only in ``__init__``.
         ``None`` means "inherit from the decorator-level *kw_only* flag".
+    metadata : Mapping[str, Any] | None
+        Extension metadata, copied into a fresh mutable dictionary. Field
+        copies also receive a fresh dictionary; nested values are shared.
+        The runtime assigns no semantics to keys or values.
     structural_eq : str | None
         Structural equality/hashing annotation for this field.  Valid
         values are:
@@ -166,6 +170,9 @@ class Field:
     converter : Callable[[Any], Any]
         Static-analysis marker for field conversion. Runtime conversion is
         still handled by the FFI type converter.
+    extra_kwargs
+        Extension options retained for field-resolution callbacks to consume.
+        ``@py_class`` rejects options left unconsumed after all callbacks.
 
     """
 
@@ -176,10 +183,12 @@ class Field:
         "default",
         "default_factory",
         "doc",
+        "extra_kwargs",
         "frozen",
         "hash",
         "init",
         "kw_only",
+        "metadata",
         "name",
         "repr",
         "structural_eq",
@@ -197,6 +206,8 @@ class Field:
     compare: bool
     converter: Callable[[Any], Any]
     kw_only: bool | None
+    metadata: dict[str, Any]
+    extra_kwargs: dict[str, Any]
     structural_eq: str | None
     doc: str | None
 
@@ -215,16 +226,18 @@ class Field:
         _ty_schema: TypeSchema | None = None,
         *,
         default: object = MISSING,
-        default_factory: Callable[[], object] | None = MISSING,  # type: ignore[assignment]
+        default_factory: Callable[[], object] | None = MISSING,  # ty: ignore[invalid-parameter-default]
         frozen: bool = False,
         init: bool = True,
         repr: bool = True,
         hash: bool | None = True,
         compare: bool = False,
         kw_only: bool | None = False,
+        metadata: Mapping[str, Any] | None = None,
         structural_eq: str | None = None,
         doc: str | None = None,
         converter: Callable[[Any], Any] = _field_converter,
+        **extra_kwargs: Any,
     ) -> None:
         # MISSING means "parameter not provided".
         # An explicit None from the user fails the callable() check,
@@ -254,23 +267,42 @@ class Field:
         self.compare = compare
         self.converter = converter
         self.kw_only = kw_only
+        self.metadata = dict(metadata) if metadata is not None else {}
         self.structural_eq = structural_eq
         self.doc = doc
+        self.extra_kwargs = dict(extra_kwargs)
+
+    def __copy__(self) -> Field:
+        result = object.__new__(type(self))
+        if hasattr(self, "__dict__"):
+            result.__dict__.update(self.__dict__)
+        for cls in type(self).__mro__:
+            slots = cls.__dict__.get("__slots__", ())
+            if isinstance(slots, str):
+                slots = (slots,)
+            for name in slots:
+                if name not in {"__dict__", "__weakref__"} and hasattr(self, name):
+                    setattr(result, name, getattr(self, name))
+        result.metadata = dict(self.metadata)
+        result.extra_kwargs = dict(self.extra_kwargs)
+        return result
 
 
 def field(  # noqa: PLR0913
     *,
     default: object = MISSING,
-    default_factory: Callable[[], object] | None = MISSING,  # type: ignore[assignment]
+    default_factory: Callable[[], object] | None = MISSING,  # ty: ignore[invalid-parameter-default]
     frozen: bool = False,
     init: bool = True,
     repr: bool = True,
     hash: bool | None = None,
     compare: bool = True,
     kw_only: bool | None = None,
+    metadata: Mapping[str, Any] | None = None,
     structural_eq: str | None = None,
     doc: str | None = None,
     converter: Callable[[Any], Any] = _field_converter,
+    **extra_kwargs: Any,
 ) -> Any:
     """Customize a field in a ``@py_class``-decorated class.
 
@@ -306,6 +338,10 @@ def field(  # noqa: PLR0913
     kw_only
         Whether this field is keyword-only in ``__init__``.
         ``None`` means "inherit from the decorator-level ``kw_only`` flag".
+    metadata
+        Extension metadata copied into a fresh mutable dictionary. Nested
+        values are shared; extensions own key semantics and may update it in
+        field-resolution callbacks.
     structural_eq
         Structural equality/hashing annotation. ``None`` (default) means
         the field participates normally. ``"ignore"`` excludes the field
@@ -320,6 +356,9 @@ def field(  # noqa: PLR0913
     converter
         Static-analysis marker for field conversion. Runtime conversion is
         still handled by the FFI type converter.
+    extra_kwargs
+        Extension options retained on ``Field.extra_kwargs``. Field-resolution
+        callbacks must consume them; any remaining options cause a TypeError.
 
     Returns
     -------
@@ -352,7 +391,9 @@ def field(  # noqa: PLR0913
         hash=hash,
         compare=compare,
         kw_only=kw_only,
+        metadata=metadata,
         structural_eq=structural_eq,
         doc=doc,
         converter=converter,
+        **extra_kwargs,
     )

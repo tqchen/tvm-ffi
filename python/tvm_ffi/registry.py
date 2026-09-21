@@ -457,7 +457,7 @@ def _install_ffi_init_attr(cls: type, type_info: TypeInfo, ffi_init: Function) -
     missing = core.MISSING
     type_name = cls.__name__
 
-    def __ffi_init__(self: Any, *args: Any, **kwargs: Any) -> None:
+    def __ffi_init__(self: Any, /, *args: Any, **kwargs: Any) -> None:
         if type_info is not type(self).__tvm_ffi_type_info__:
             raise TypeError(
                 f"Calling `{type_name}.__ffi_init__()` on a `{type(self).__name__}` "

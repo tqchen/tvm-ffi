@@ -26,7 +26,7 @@ import itertools
 import math
 import sys
 import types
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, cast
 
 import pytest
 import tvm_ffi
@@ -188,6 +188,35 @@ class TestBasicRegistration:
         obj = InstCheck(x=42)
         assert isinstance(obj, InstCheck)
         assert isinstance(obj, Object)
+
+    def test_fields_resolved_hook(self) -> None:
+        @py_class(_unique_key("HookBase"))
+        class HookBase(Object):
+            seen: ClassVar[list[tuple[type, str, tuple[str, ...]]]] = []
+
+            def __ffi_hook__(type_info: TypeInfo, own_fields: Any) -> None:
+                cls = type_info.type_cls
+                assert cls is not None
+                # The hook runs before the fields reach the C layer, so their
+                # schemas come from the resolved ``Field`` objects rather than
+                # from ``type_info.fields``, which is still empty here.
+                assert not type_info.fields
+                schemas = tuple(f._ty_schema for f in own_fields)
+                assert all(isinstance(schema, TypeSchema) for schema in schemas)
+                getattr(cls, "seen").append(
+                    (cls, type_info.type_key, tuple(str(schema) for schema in schemas))
+                )
+
+            __ffi_hook__.__ffi_on_fields_resolved__ = True  # ty: ignore[unresolved-attribute]
+
+        @py_class(_unique_key("HookChild"))
+        class HookChild(HookBase):
+            x: int
+
+        assert HookBase.seen == [
+            (HookBase, _get_type_info(HookBase).type_key, ()),
+            (HookChild, _get_type_info(HookChild).type_key, ("int",)),
+        ]
 
 
 # ###########################################################################
@@ -419,6 +448,78 @@ class TestClassVar:
 
         assert CVPres.tag == "hello"
 
+    def test_custom_metadata_classvar_registered_as_type_attr(self) -> None:
+        @py_class(_unique_key("CVCustomMetadata"))
+        class CVCustomMetadata(Object):
+            __ffi_type_attr_names__ = ("__custom_metadata__",)
+            __custom_metadata__: ClassVar[Tuple[str, str]] = (
+                "test",
+                "CVCustomMetadata",
+            )
+            x: int
+
+        info = _get_type_info(CVCustomMetadata)
+        field_names = [f.name for f in info.fields]
+
+        assert CVCustomMetadata.__custom_metadata__ == ("test", "CVCustomMetadata")
+        assert "__custom_metadata__" not in field_names
+        assert tuple(core._lookup_type_attr(info.type_index, "__custom_metadata__")) == (
+            "test",
+            "CVCustomMetadata",
+        )
+
+    def test_custom_metadata_is_not_registered_as_type_method(self) -> None:
+        @py_class(_unique_key("CVCustomMetadataNoMethod"))
+        class CVCustomMetadataNoMethod(Object):
+            __ffi_type_attr_names__ = ("__custom_metadata__",)
+            __custom_metadata__: ClassVar[Tuple[str, str]] = (
+                "test",
+                "CVCustomMetadataNoMethod",
+            )
+            x: int
+
+        info = _get_type_info(CVCustomMetadataNoMethod)
+
+        assert "__custom_metadata__" not in [method.name for method in info.methods]
+        assert tuple(core._lookup_type_attr(info.type_index, "__custom_metadata__")) == (
+            "test",
+            "CVCustomMetadataNoMethod",
+        )
+
+    def test_custom_metadata_allows_non_tuple_value(self) -> None:
+        @py_class(_unique_key("CVCustomMetadataBadInt"))
+        class CVCustomMetadataBadInt(Object):
+            __ffi_type_attr_names__ = ("__custom_metadata__",)
+            __custom_metadata__: ClassVar[int] = 1
+            x: int
+
+        info = _get_type_info(CVCustomMetadataBadInt)
+        assert core._lookup_type_attr(info.type_index, "__custom_metadata__") == 1
+
+    def test_custom_metadata_allows_bad_tuple_value(self) -> None:
+        @py_class(_unique_key("CVCustomMetadataBadTuple"))
+        class CVCustomMetadataBadTuple(Object):
+            __ffi_type_attr_names__ = ("__custom_metadata__",)
+            x: int
+            __custom_metadata__: ClassVar[Tuple[str, int]] = ("test", 1)
+
+        info = _get_type_info(CVCustomMetadataBadTuple)
+        assert tuple(core._lookup_type_attr(info.type_index, "__custom_metadata__")) == (
+            "test",
+            1,
+        )
+
+    def test_custom_metadata_allows_staticmethod_value(self) -> None:
+        @py_class(_unique_key("CVCustomMetadataBadStatic"))
+        class CVCustomMetadataBadStatic(Object):
+            __ffi_type_attr_names__ = ("__custom_metadata__",)
+            x: int
+            __custom_metadata__ = staticmethod(lambda: ("test", "Bad"))
+            x: int
+
+        info = _get_type_info(CVCustomMetadataBadStatic)
+        assert core._lookup_type_attr(info.type_index, "__custom_metadata__") is not None
+
 
 # ###########################################################################
 #  6. Init generation
@@ -494,7 +595,7 @@ class TestInit:
 
         @py_class(_unique_key("ReqChild"))
         class ReqChild(OptParent):
-            z: int
+            z: int  # ty: ignore[dataclass-field-order]
 
         sig = inspect.signature(ReqChild.__init__)
         param_names = [n for n in sig.parameters if n != "self"]
@@ -635,7 +736,7 @@ class TestInitProperty:
         _ = obj.computed
         assert call_count == 1  # second access reads C++ field, not recomputed
         # Verify the field is registered in C++ type metadata.
-        type_info = _Cached.__tvm_ffi_type_info__
+        type_info = _Cached.__tvm_ffi_type_info__  # ty: ignore[unresolved-attribute]
         field_names = [f.name for f in type_info.fields]
         assert "computed" in field_names
         ip_field = next(f for f in type_info.fields if f.name == "computed")
@@ -1663,7 +1764,7 @@ class TestInitReorderingAdversarial:
 
         @py_class(_unique_key("C1"))
         class C1(P1):
-            c: int  # required
+            c: int  # required  # ty: ignore[dataclass-field-order]
 
         sig = inspect.signature(C1.__init__)
         param_names = [n for n in sig.parameters if n != "self"]
@@ -4789,7 +4890,7 @@ class TestInheritanceWithDefaults:
 
         @py_class(_unique_key("DerivedIL"))
         class DerivedIL(BaseIL):
-            c: int
+            c: int  # ty: ignore[dataclass-field-order]
             d: Optional[str] = "default"
 
         obj = DerivedIL(a=1, c=2)
@@ -4810,7 +4911,7 @@ class TestInheritanceWithDefaults:
 
         @py_class(_unique_key("L3D"))
         class L3D(L2D):
-            d: str
+            d: str  # ty: ignore[dataclass-field-order]
 
         obj = L3D(a=1, d="world")
         assert obj.a == 1
@@ -4975,7 +5076,7 @@ class TestDerivedDerivedContainers:
 
         @py_class(_unique_key("DD_L3"))
         class L3(L2):
-            e: str
+            e: str  # ty: ignore[dataclass-field-order]
 
         obj = L3(a=1, e="world", b=[1, 2])
         assert obj.a == 1
@@ -4995,7 +5096,7 @@ class TestDerivedDerivedContainers:
 
         @py_class(_unique_key("DD2_L3"))
         class L3(L2):
-            c: str
+            c: str  # ty: ignore[dataclass-field-order]
 
         obj = L3(a=1, c="x")
         assert obj.a == 1
@@ -5686,7 +5787,7 @@ class TestSuperInitPattern:
             pass
 
         with pytest.raises(TypeError):
-            Plain()  # type: ignore[missing-argument]
+            Plain()  # ty: ignore[missing-argument]
 
     def test_super_init_isinstance(self) -> None:
         """Objects created via super().__init__() pattern have correct isinstance."""
@@ -6128,3 +6229,274 @@ class TestPyClassNoLeak:
         obj = Mismatch(99)
         assert obj.value == 99
         assert obj.ref is None
+
+
+def test_selected_parent_type_attrs_are_registered_exactly() -> None:
+    @py_class(_unique_key("AttrParent"))
+    class Parent(Object):
+        __ffi_type_attr_names__ = ("__test_hook__", "__test_metadata__")
+        __ffi_inherit_type_attrs__ = ("__test_hook__",)
+        __test_metadata__ = 42
+
+        def __test_hook__(self) -> int:
+            return 11
+
+    @py_class(_unique_key("AttrChild"))
+    class Child(Parent):
+        value: int
+
+    info = _get_type_info(Child)
+    assert core._lookup_type_attr(info.type_index, "__test_hook__")(Child(7)) == 11
+    assert core._lookup_type_attr(info.type_index, "__test_metadata__") is None
+
+    @py_class(_unique_key("AttrOverride"))
+    class Override(Child):
+        def __test_hook__(self) -> int:
+            return self.value
+
+    assert (
+        core._lookup_type_attr(_get_type_info(Override).type_index, "__test_hook__")(Override(9))
+        == 9
+    )
+
+    @py_class(_unique_key("AttrOptOut"))
+    class OptOut(Parent):
+        __ffi_inherit_type_attrs__ = ()
+
+    assert core._lookup_type_attr(_get_type_info(OptOut).type_index, "__test_hook__") is None
+
+    @py_class(_unique_key("AttrNone"))
+    class NoneOverride(Parent):
+        __test_hook__ = None
+
+    assert core._lookup_type_attr(_get_type_info(NoneOverride).type_index, "__test_hook__") is None
+
+    @py_class(_unique_key("AttrNoneGrandchild"))
+    class NoneGrandchild(NoneOverride):
+        pass
+
+    assert (
+        core._lookup_type_attr(_get_type_info(NoneGrandchild).type_index, "__test_hook__") is None
+    )
+
+
+def test_parent_structural_hooks_register_after_deferred_fields() -> None:
+    @py_class(_unique_key("StructuralParent"))
+    class Parent(Object):
+        value: int
+
+        def __s_equal__(self, other: Any, compare: Any) -> bool:
+            return self.value % 2 == other.value % 2
+
+        def __s_hash__(self, seed: int, hash_value: Any) -> int:
+            return self.value % 2
+
+    @py_class(_unique_key("StructuralChild"))
+    class Child(Parent):
+        pending: DeferredAttrTarget
+
+    @py_class(_unique_key("DeferredAttrTarget"))
+    class DeferredAttrTarget(Object):
+        value: int
+
+    left = Child(1, DeferredAttrTarget(3))
+    right = Child(5, DeferredAttrTarget(7))
+    assert core._lookup_type_attr(_get_type_info(Child).type_index, "__s_equal__") is not None
+    assert tvm_ffi.structural_equal(left, right)
+    assert tvm_ffi.structural_hash(left) == tvm_ffi.structural_hash(right)
+
+    @py_class(_unique_key("StructuralOverride"))
+    class Override(Parent):
+        def __s_equal__(self, other: Any, compare: Any) -> bool:
+            return self.value == other.value
+
+    assert not tvm_ffi.structural_equal(Override(1), Override(5))
+
+
+def test_selected_parent_serialization_attrs_are_exact_entries() -> None:
+    @py_class(_unique_key("SerializeParent"))
+    class Parent(Object):
+        value: int
+
+        def __data_to_json__(self) -> str:
+            return str(self.value)
+
+        @staticmethod
+        def __data_from_json__(data: str) -> Object:
+            return Child(int(data))
+
+    @py_class(_unique_key("SerializeChild"))
+    class Child(Parent):
+        pass
+
+    info = _get_type_info(Child)
+    assert core._lookup_type_attr(info.type_index, "__data_to_json__") is not None
+    assert core._lookup_type_attr(info.type_index, "__data_from_json__") is not None
+    restored = tvm_ffi.serialization.from_json_graph_str(
+        tvm_ffi.serialization.to_json_graph_str(Child(17))
+    )
+    assert type(restored) is Child
+    assert restored.value == 17
+
+
+class _AnnotationMarker:
+    """An extension-owned annotation marker, without runtime semantics."""
+
+
+class _OtherAnnotationMarker:
+    """A second marker exercises explicit selection and ordering."""
+
+
+def test_extension_field_markers_record_positions_and_inherit() -> None:
+    observed: dict[type, Any] = {}
+
+    @py_class(_unique_key("MarkerBase"))
+    class Base(Object):
+        __ffi_field_markers__ = (_AnnotationMarker, _OtherAnnotationMarker)
+        first: int
+        before: _AnnotationMarker
+        second: int
+        after: _OtherAnnotationMarker = cast(Any, "extension-owned value")
+
+        def __ffi_marker_hook__(info: TypeInfo, own_fields: Any) -> None:
+            assert info.type_cls is not None
+            observed[info.type_cls] = info._decorator_args["field_markers"]
+            assert [f.name for f in own_fields] == (
+                ["first", "second"] if info.type_cls.__name__ == "Base" else ["third"]
+            )
+
+        setattr(__ffi_marker_hook__, "__ffi_on_fields_resolved__", True)
+
+    @py_class(_unique_key("MarkerChild"))
+    class Child(Base):
+        middle: _AnnotationMarker
+        third: int
+
+    assert observed[Base] == (
+        (_AnnotationMarker, Base, "before", 1),
+        (_OtherAnnotationMarker, Base, "after", 2),
+    )
+    assert observed[Child] == (*observed[Base], (_AnnotationMarker, Child, "middle", 2))
+    assert Base.after == "extension-owned value"
+    assert [f.name for f in fields(Child)] == ["first", "second", "third"]
+    # Runtime marker annotations do not participate in the generated initializer.
+    assert cast(Any, Child)(1, 2, 3).third == 3
+
+
+def test_extension_field_markers_wait_for_parent_fields() -> None:
+    @py_class(_unique_key("MarkerDeferredParent"))
+    class Parent(Object):
+        __ffi_field_markers__ = (_AnnotationMarker,)
+        first: MarkerLaterValue
+        boundary: _AnnotationMarker
+
+    @py_class(_unique_key("MarkerDeferredChild"))
+    class Child(Parent):
+        second: int
+        boundary2: _AnnotationMarker
+
+    @py_class(_unique_key("MarkerLaterValue"))
+    class MarkerLaterValue(Object):
+        value: int
+
+    value = cast(Any, Child)(MarkerLaterValue(1), 2)
+    assert value.second == 2
+    assert _get_type_info(Child)._decorator_args["field_markers"] == (
+        (_AnnotationMarker, Parent, "boundary", 1),
+        (_AnnotationMarker, Child, "boundary2", 2),
+    )
+
+
+def test_field_metadata_is_copied_and_available_to_extensions() -> None:
+    source: dict[str, Any] = {"example.option": 1, "nested": []}
+    f = field(metadata=source)
+    source["example.option"] = 2
+    assert f.metadata["example.option"] == 1
+    assert f.metadata["nested"] is source["nested"]
+    copied = copy.copy(f)
+    copied.metadata["example.option"] = 3
+    assert f.metadata["example.option"] == 1
+    assert field().metadata == {}
+    assert Field(metadata={"example.option": 4}).metadata == {"example.option": 4}
+
+    @py_class(_unique_key("MetadataHook"))
+    class WithMetadata(Object):
+        value: int = field(metadata={"example.option": 5})
+
+        def __ffi_metadata_hook__(info: TypeInfo, own_fields: Any) -> None:
+            own_fields[0].metadata["example.resolved"] = info.type_key
+
+        setattr(__ffi_metadata_hook__, "__ffi_on_fields_resolved__", True)
+
+    resolved = fields(WithMetadata)[0]
+    assert resolved.metadata == {
+        "example.option": 5,
+        "example.resolved": _get_type_info(WithMetadata).type_key,
+    }
+    assert WithMetadata(7).value == 7
+
+
+def test_mixin_field_metadata_changes_do_not_leak_between_classes() -> None:
+    class Mixin:
+        value: int = field(metadata={"example.option": 1})
+
+    @py_class(_unique_key("MetadataMixinA"))
+    class First(Mixin, Object):
+        pass
+
+    @py_class(_unique_key("MetadataMixinB"))
+    class Second(Mixin, Object):
+        pass
+
+    first = fields(First)[0]
+    first.metadata["example.option"] = 9
+    assert fields(Second)[0].metadata["example.option"] == 1
+    assert vars(Mixin)["value"].metadata["example.option"] == 1
+
+
+def test_extension_field_keywords_are_consumed_by_hooks() -> None:
+    @py_class(_unique_key("KeywordBase"))
+    class Base(Object):
+        def __ffi_keyword_hook__(info: TypeInfo, own_fields: Any) -> None:
+            for f in own_fields:
+                if "custom_option" in f.extra_kwargs:
+                    f.metadata["example.option"] = f.extra_kwargs.pop("custom_option")
+
+        setattr(__ffi_keyword_hook__, "__ffi_on_fields_resolved__", True)
+
+    @py_class(_unique_key("KeywordChild"))
+    class Child(Base):
+        value: int = field(custom_option=None)
+
+    assert fields(Child)[0].metadata == {"example.option": None}
+    assert fields(Child)[0].extra_kwargs == {}
+    assert Child(1).value == 1
+
+    with pytest.raises(TypeError, match=r"Broken[.]value: unrecognized field options: typo"):
+
+        @py_class(_unique_key("KeywordBroken"))
+        class Broken(Base):
+            value: int = field(custom_option=1, typo=2)
+
+    with pytest.raises(
+        TypeError, match=r"Plain[.]value: unrecognized field options: custom_option"
+    ):
+
+        @py_class(_unique_key("KeywordPlain"))
+        class Plain(Object):
+            value: int = field(custom_option=1)
+
+    original = Field(custom_option=3)
+    copied = copy.copy(original)
+    assert copied.extra_kwargs.pop("custom_option") == 3
+    assert original.extra_kwargs == {"custom_option": 3}
+
+
+def test_raw_initializer_accepts_field_named_self() -> None:
+    @py_class(_unique_key("FieldNamedSelf"), init=False)
+    class Record(Object):
+        self: int
+
+    value = Object.__new__(Record)
+    getattr(Record, "__ffi_init__")(value, self=7)
+    assert value.self == 7

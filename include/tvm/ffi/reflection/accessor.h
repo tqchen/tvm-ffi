@@ -230,25 +230,44 @@ inline Function GetMethod(std::string_view type_key, const char* method_name) {
 }
 
 /*!
- * \brief Set a field to its default value, calling the factory if applicable.
+ * \brief Set a field to its default value, returning the setter's status code.
  *
  * When kTVMFFIFieldFlagBitMaskDefaultFromFactory is set, extracts the
  * Function from default_value_or_factory, calls it with no arguments,
  * and uses the result. Otherwise, passes default_value_or_factory directly
  * to the setter.
  *
+ * A default is converted by the same setter as an explicitly passed value, so
+ * a default whose type does not match the field fails here exactly as that
+ * value would.  Callers must not drop the status: the setter reports failure
+ * through the safe-call slot rather than by throwing, so ignoring it leaves
+ * the field at its zero-initialized value -- a silently null object field --
+ * and strands the raised error for an unrelated call to pick up.
+ *
  * \param field_info The field info (must have kTVMFFIFieldFlagBitMaskHasDefault set).
  * \param field_addr The address of the field in the object.
+ *
+ * \return 0 on success, non-zero if the setter rejected the default value.
  */
-inline void SetFieldToDefault(const TVMFFIFieldInfo* field_info, void* field_addr) {
+inline int CallFieldSetterToDefault(const TVMFFIFieldInfo* field_info, void* field_addr) {
   if (field_info->flags & kTVMFFIFieldFlagBitMaskDefaultFromFactory) {
     Function factory =
         AnyView::CopyFromTVMFFIAny(field_info->default_value_or_factory).cast<Function>();
     Any default_val = factory();
-    CallFieldSetter(field_info, field_addr, reinterpret_cast<const TVMFFIAny*>(&default_val));
-  } else {
-    CallFieldSetter(field_info, field_addr, &(field_info->default_value_or_factory));
+    return CallFieldSetter(field_info, field_addr,
+                           reinterpret_cast<const TVMFFIAny*>(&default_val));
   }
+  return CallFieldSetter(field_info, field_addr, &(field_info->default_value_or_factory));
+}
+
+/*!
+ * \brief Set a field to its default value, throwing if the default is rejected.
+ *
+ * \param field_info The field info (must have kTVMFFIFieldFlagBitMaskHasDefault set).
+ * \param field_addr The address of the field in the object.
+ */
+inline void SetFieldToDefault(const TVMFFIFieldInfo* field_info, void* field_addr) {
+  TVM_FFI_CHECK_SAFE_CALL(CallFieldSetterToDefault(field_info, field_addr));
 }
 
 /*!

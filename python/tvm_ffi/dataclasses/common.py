@@ -19,10 +19,13 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable
-from typing import Any, TypeVar
+from collections import namedtuple
+from collections.abc import Callable, Iterable
+from functools import wraps
+from typing import Any, TypeVar, cast
 
 from ..container import Array, Dict, List, Map
+from ..core import TypeSchema, _to_py_class_value
 from .field import Field
 
 __all__ = ["asdict", "astuple", "fields", "is_dataclass", "replace"]
@@ -91,6 +94,49 @@ def fields(obj_or_cls: Any) -> tuple[Field, ...]:
             if tf.dataclass_field is not None:
                 out.append(tf.dataclass_field)
     return tuple(out)
+
+
+def _make_namedtuple(typename: str, fields: tuple[Field, ...]) -> Any:
+    """Build a native named tuple with FFI conversion for each resolved Field.
+
+    All supplied fields are required, in input order, including ``init=False``
+    fields. Source defaults and initialization hooks do not participate. Schemas
+    are cached in the constructor closure without changing the input metadata.
+
+    For example, ``Values = _make_namedtuple("Values", fields(Source))`` creates
+    a tuple class whose construction, ``_make``, and ``_replace`` convert values
+    just as the source fields do, without constructing a ``Source`` instance.
+    """
+    # Field names and constructor signatures are supplied at runtime.
+    tuple_cls = cast(Any, namedtuple(typename, [f.name for f in fields]))
+    names = tuple_cls._fields
+    schemas = tuple(
+        f._ty_schema if f._ty_schema is not None else TypeSchema.from_annotation(f.type)
+        for f in fields
+    )
+    tuple_cls.__annotations__ = {f.name: f.type for f in fields if f.type is not None}
+    native_new = tuple_cls.__new__
+    native_make = tuple_cls._make.__func__
+
+    @wraps(native_new)
+    def checked_new(cls: type, /, *args: Any, **kwargs: Any) -> tuple[Any, ...]:
+        raw = native_new(cls, *args, **kwargs)
+        converted = []
+        for name, schema, value in zip(names, schemas, raw):
+            try:
+                converted.append(_to_py_class_value(schema.convert(value)))
+            except TypeError as exc:
+                raise TypeError(f"{typename}.{name}: {exc}") from exc
+        return native_new(cls, *converted)
+
+    @classmethod
+    def checked_make(cls: Any, iterable: Iterable[Any]) -> tuple[Any, ...]:
+        # Native _make bypasses __new__; reuse its length check before conversion.
+        return cls(*native_make(cls, iterable))
+
+    tuple_cls.__new__ = staticmethod(checked_new)
+    tuple_cls._make = checked_make
+    return tuple_cls
 
 
 def replace(obj: _T, /, **changes: Any) -> _T:

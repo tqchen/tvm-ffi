@@ -674,7 +674,7 @@ class TestAutoInitCopyBehavior:
     @requires_py313
     def test_replace(self) -> None:
         obj = _TestCxxAutoInit(1, c=3)
-        replaced = copy.replace(obj, a=100, c=300)  # type: ignore[attr-defined]
+        replaced = copy.replace(obj, a=100, c=300)  # ty: ignore[unresolved-attribute]
         assert replaced.a == 100
         assert replaced.b == 42
         assert replaced.c == 300
@@ -710,7 +710,7 @@ class TestAutoInitCopyBehavior:
     @requires_py313
     def test_replace_kw_only_defaults(self) -> None:
         obj = _TestCxxAutoInitKwOnlyDefaults(1, k_required=2)
-        replaced = copy.replace(obj, k_required=99, p_default=88)  # type: ignore[attr-defined]
+        replaced = copy.replace(obj, k_required=99, p_default=88)  # ty: ignore[unresolved-attribute]
         assert replaced.p_required == 1
         assert replaced.p_default == 88
         assert replaced.k_required == 99
@@ -1109,11 +1109,19 @@ class _PyClassWithDefault(core.Object):
     b: int = 42
 
 
+@py_class("testing.PyClassWithBadDefault")
+class _PyClassWithBadDefault(core.Object):
+    """A declared default that cannot convert to the field it belongs to."""
+
+    a: int
+    b: TestIntPair = 5  # ty: ignore[invalid-assignment]
+
+
 class TestPyClassAnnotationDiscovery:
     """Regression: @py_class must discover fields on Python 3.14+ (PEP 749)."""
 
     def test_fields_registered(self) -> None:
-        ti: core.TypeInfo = _PyClassSimple.__tvm_ffi_type_info__  # type: ignore[unresolved-attribute]
+        ti: core.TypeInfo = _PyClassSimple.__tvm_ffi_type_info__  # ty: ignore[unresolved-attribute]
         names = [f.name for f in ti.fields]
         assert names == ["x", "y"]
 
@@ -1136,3 +1144,16 @@ class TestPyClassAnnotationDiscovery:
         obj = _PyClassWithDefault(a=1, b=2)
         assert obj.a == 1
         assert obj.b == 2
+
+    def test_unconvertible_default_raises(self) -> None:
+        # A default is converted by the same setter as a passed value, so it
+        # must fail the same way.  The setter reports failure through the
+        # safe-call slot instead of throwing, so dropping its status used to
+        # leave `b` zero-initialized -- reading back as None -- and strand the
+        # raised error for an unrelated call to pick up.
+        with pytest.raises(TypeError, match=r"default for field 'b'"):
+            _PyClassWithBadDefault(a=1)
+
+    def test_unconvertible_default_matches_the_explicit_error(self) -> None:
+        with pytest.raises(TypeError, match=r"field 'b'"):
+            _PyClassWithBadDefault(a=1, b=5)  # ty: ignore[invalid-argument-type]

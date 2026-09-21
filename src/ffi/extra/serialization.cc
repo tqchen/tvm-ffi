@@ -432,8 +432,11 @@ class ObjectGraphDeserializer {
       void* field_addr = reinterpret_cast<char*>(ptr.get()) + field_info->offset;
       if (data_object.count(field_name) != 0) {
         Any field_value = decode_field_value(field_info, data_object[field_name]);
-        reflection::CallFieldSetter(field_info, field_addr,
-                                    reinterpret_cast<const TVMFFIAny*>(&field_value));
+        // A payload whose type does not match the field must fail loudly:
+        // the setter reports that through the safe-call slot, so dropping the
+        // status would decode the field as null and carry on.
+        TVM_FFI_CHECK_SAFE_CALL(reflection::CallFieldSetter(
+            field_info, field_addr, reinterpret_cast<const TVMFFIAny*>(&field_value)));
       } else if (field_info->flags & kTVMFFIFieldFlagBitMaskHasDefault) {
         reflection::SetFieldToDefault(field_info, field_addr);
       } else {
