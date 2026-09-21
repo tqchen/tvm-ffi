@@ -133,8 +133,8 @@ def method(fn: Any) -> Any:
     Decorate any staticmethod or plain instance method on a ``@py_class``
     body to have it collected during class registration.  Ordinary names land
     in the C-level ``TVMFFITypeInfo.methods[]`` table.  Names reserved for
-    TypeAttrColumn dispatch, such as ``__ffi_repr__``, are routed to the
-    type-attribute table instead.
+    TypeAttrColumn dispatch, such as ``__ffi_repr__``, are routed to the type-attribute table
+    instead.
 
     Once registered as a TypeMethod, the method is resolvable by name from any
     FFI consumer — Python-side reflection via ``TypeInfo.methods``, C++, Rust —
@@ -312,7 +312,8 @@ def on_fields_resolved(  # noqa: PLR0912, PLR0915
 
     ``_resolve_fields`` supplies owner classes and their resolved type hints.
     This function turns those hints into :class:`Field` objects, applies
-    decorator-level defaults stored on ``type_info._decorator_args``, registers
+    decorator-level defaults stored on ``type_info._decorator_args``, invokes
+    marked ``__ffi_on_fields_resolved__`` hooks over those fields, registers
     field metadata and structural-equality kind with the Cython layer, registers
     Python-defined TypeMethods and TypeAttrColumn values, restores any deferred
     user ``__init__``, and installs the dataclass-style dunder methods.
@@ -321,30 +322,27 @@ def on_fields_resolved(  # noqa: PLR0912, PLR0915
     assert cls is not None
     params = type_info._decorator_args
     owners, hints_by_owner = resolved_fields
+    field_hooks = [
+        hook
+        for base in reversed(cls.__mro__)
+        for hook in base.__dict__.values()
+        if callable(hook) and getattr(hook, "__ffi_on_fields_resolved__", False) is True
+    ]
 
     fields_map: dict[str, Field] = {}
     ip_funcs: dict[str, Any] = {}
     kw_only_active = params["kw_only"]
     for owner in owners:
-        own_annotations = _resolve_fields.own_annotations(owner)
-        for name in own_annotations:
-            resolved_type = hints_by_owner[owner].get(name)
+        for name, resolved_type in hints_by_owner[owner].items():
             # Skip ClassVar.
-            if (
-                resolved_type is None
-                or resolved_type is ClassVar
-                or typing.get_origin(resolved_type) is ClassVar
-            ):
+            if resolved_type is ClassVar or typing.get_origin(resolved_type) is ClassVar:
                 continue
 
             # KW_ONLY sentinel.
             if resolved_type is KW_ONLY:
                 kw_only_active = True
                 if owner is cls and name in cls.__dict__:
-                    try:
-                        delattr(cls, name)
-                    except AttributeError:
-                        pass
+                    delattr(cls, name)
                 continue
 
             # Extract Field from class dict (inline of _pop_field_from_class).
@@ -366,10 +364,7 @@ def on_fields_resolved(  # noqa: PLR0912, PLR0915
             else:
                 f = field()
             if owner is cls and class_val is not MISSING:
-                try:
-                    delattr(cls, name)
-                except AttributeError:
-                    pass
+                delattr(cls, name)
 
             # Fill in name, schema, and resolved type.
             f.name = name
@@ -396,8 +391,16 @@ def on_fields_resolved(  # noqa: PLR0912, PLR0915
         setattr(cls, "__ffi_init_property_funcs__", ip_funcs)
     py_methods = _collect_py_methods(cls, globalns)
 
+    # Run marked hooks over the resolved fields.  This happens before the
+    # fields reach the C layer so a hook can still settle metadata that
+    # registration freezes, such as a field's structural-equality treatment.
+    # ``type_info.fields`` is therefore not populated yet, which is why the
+    # hook is handed ``own_fields`` directly.
+    for hook in field_hooks:
+        hook(type_info, own_fields)
+
     # Register fields and type-level structural eq/hash kind with the C layer.
-    structure_kind = _STRUCTURE_KIND_MAP.get(params.get("structural_eq"))
+    structure_kind = _STRUCTURE_KIND_MAP[params["structural_eq"]]
     type_info._register_fields(own_fields, structure_kind)
     # Attach the user's Field sentinel to each TypeField so the
     # ``tvm_ffi.dataclasses.fields()`` compat layer can recover defaults
@@ -618,7 +621,10 @@ def py_class(  # noqa: PLR0913
         globalns = getattr(sys.modules.get(cls.__module__, None), "__dict__", {})
 
         info = _resolve_fields.register_type_without_fields(cls, effective_type_key)
-        info._decorator_args = params
+        # Copy per class: one decorator object can decorate several classes,
+        # and a fields-resolved hook may adjust these arguments for its own
+        # class before they are read back.
+        info._decorator_args = dict(params)
 
         try:
             resolved = _resolve_fields.resolve_type_hints_by_owner(cls, globalns)

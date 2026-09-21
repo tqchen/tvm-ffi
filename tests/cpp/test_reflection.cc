@@ -522,6 +522,27 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def_ro("count", &TestObjWithFactory::count, refl::default_value(static_cast<int64_t>(0)));
 }
 
+// A declared default that cannot convert to the field it belongs to.  The
+// auto-generated init has to reject it exactly as it rejects a passed value of
+// that type: the setter reports failure through the safe-call slot rather than
+// by throwing, so dropping its status left the field zero-initialized -- an
+// object field reading back as null -- and left the error raised but never
+// delivered, for an unrelated call to trip over.
+struct TestObjWithBadDefault : public Object {
+  Array<ObjectRef> items;
+
+  explicit TestObjWithBadDefault(UnsafeInit) {}
+
+  [[maybe_unused]] static constexpr bool _type_mutable = true;
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("test.TestObjWithBadDefault", TestObjWithBadDefault, Object);
+};
+
+TVM_FFI_STATIC_INIT_BLOCK() {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectDef<TestObjWithBadDefault>().def_ro("items", &TestObjWithBadDefault::items,
+                                                  refl::default_value(static_cast<int64_t>(5)));
+}
+
 struct TestObjWithAny : public Object {
   Any value;
   explicit TestObjWithAny(Any value) : value(std::move(value)) {}
@@ -585,6 +606,25 @@ TEST(Reflection, DefaultFactoryFlag) {
   const TVMFFIFieldInfo* info_count = reflection::GetFieldInfo("test.TestObjWithFactory", "count");
   EXPECT_TRUE(info_count->flags & kTVMFFIFieldFlagBitMaskHasDefault);
   EXPECT_FALSE(info_count->flags & kTVMFFIFieldFlagBitMaskDefaultFromFactory);
+}
+
+TEST(Reflection, InitRejectsUnconvertibleDefault) {
+  Function init = GetInitAttr("test.TestObjWithBadDefault");
+  // The field is omitted, so its declared default is what fails.
+  EXPECT_THROW(init(), Error);
+}
+
+TEST(Reflection, CreatorRejectsUnconvertibleDefault) {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectCreator creator("test.TestObjWithBadDefault");
+  EXPECT_THROW(creator(Map<String, Any>()), Error);
+}
+
+TEST(Reflection, CreatorRejectsUnconvertibleFieldValue) {
+  namespace refl = tvm::ffi::reflection;
+  refl::ObjectCreator creator("test.TestObjWithFactory");
+  // `items` is an Array field; an int cannot convert to it.
+  EXPECT_THROW(creator(Map<String, Any>({{"items", static_cast<int64_t>(5)}})), Error);
 }
 
 TEST(Reflection, DefaultFactoryCreation) {

@@ -22,7 +22,7 @@ import inspect
 from typing import TYPE_CHECKING, Any, Callable
 
 from . import core
-from .core import TypeInfo, object_repr
+from .core import Object, TypeInfo, object_repr
 
 if TYPE_CHECKING:
     from .core import Function
@@ -122,6 +122,80 @@ def _make_init(
     __init__.__qualname__ = f"{type_cls.__qualname__}.__init__"
     __init__.__module__ = type_cls.__module__
     return __init__
+
+
+def _make_constructor(
+    cls: type[Object],
+    *,
+    positional_fields: list[str] | None = None,
+    field_normalizers: dict[str, Callable[[Any], Any]] | None = None,
+) -> Callable[..., Object]:
+    """Restore registered fields without replaying Python initialization hooks.
+
+    By default every field accepts positional arguments in schema order. When
+    supplied, ``positional_fields`` gives the positional argument order and
+    makes every remaining field keyword-only. ``field_normalizers`` restores
+    values whose text representation needs conversion before FFI initialization.
+    """
+    from . import dataclasses as dc  # noqa: PLC0415
+
+    fields = dc.fields(cls)
+    _, native_fields = _init_normalization_fields(getattr(cls, "__tvm_ffi_type_info__"))
+
+    # Keep real objects in globals; defaults never become source expressions.
+    env: dict[str, Any] = {}
+    names = {field.name for field in fields} | {"construct"}
+
+    def bind(name: str, value: Any) -> str:
+        while name in names:
+            name = "_" + name
+        names.add(name)
+        env[name] = value
+        return name
+
+    object_name = bind("__tvm_ffi_Object__", Object)
+    class_name = bind("__tvm_ffi_class__", cls)
+    missing_name = bind("__tvm_ffi_missing__", dc.MISSING)
+    result_name = bind("__tvm_ffi_result__", None)
+
+    # MISSING lets native initialization check required fields and run factories.
+    parameters_by_name = {}
+    for field in fields:
+        default_name = bind(f"__tvm_ffi_default_{field.name}__", field.default)
+        parameters_by_name[field.name] = f"{field.name}={default_name}"
+    if positional_fields is None:
+        parameters = list(parameters_by_name.values())
+    else:
+        parameters = [parameters_by_name.pop(name) for name in positional_fields]
+        if parameters_by_name:
+            parameters.extend(["*", *parameters_by_name.values()])
+
+    normalizers = dict(field_normalizers or {})
+    for native_field in native_fields.values():
+        if native_field._is_payload_enum_field():
+            normalizers[native_field.name] = native_field.normalize_value
+    body = []
+    for name, normalize in normalizers.items():
+        normalize_name = bind(f"__tvm_ffi_normalize_{name}__", normalize)
+        body.extend(
+            [
+                f"    if {name} is not {missing_name}:",
+                f"        {name} = {normalize_name}({name})",
+            ]
+        )
+    body.append(f"    {result_name} = {object_name}.__new__({class_name})")
+    arguments = ", ".join(f"{field.name}={field.name}" for field in fields)
+    body.append(
+        f"    {class_name}.__ffi_init__({result_name}{', ' if arguments else ''}{arguments})"
+    )
+    body.append(f"    return {result_name}")
+    source = f"def construct({', '.join(parameters)}):\n" + "\n".join(body) + "\n"
+    exec(compile(source, f"<field constructor {cls.__qualname__}>", "exec"), env)
+    construct = env["construct"]
+    construct.__name__ = cls.__name__
+    construct.__qualname__ = cls.__qualname__
+    construct.__module__ = cls.__module__
+    return construct
 
 
 def _collect_init_property_funcs(type_cls: type) -> list[tuple[str, Callable[..., Any]]]:

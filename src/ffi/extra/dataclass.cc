@@ -2006,23 +2006,42 @@ void BindFieldArgs(Object* obj, const AutoInitInfo& info, const TVMFFIAny* raw_a
   const ObjectRef& kwargs_sentinel = GetKwargsSentinel();
   std::vector<bool> field_set(info.all_fields.size(), false);
 
+  // `what` names the position the value came from: an argument the caller
+  // passed, or the field's declared default.
+  auto rethrow_setter_error = [&](size_t fi, const char* what) {
+    const TVMFFIFieldInfo* field_info = info.all_fields[fi].info;
+    Error err = details::MoveFromSafeCallRaised();
+    auto field_name = std::string_view(field_info->name.data, field_info->name.size);
+    std::string message;
+    message.reserve(info.type_key.size() + field_name.size() + err.message().size() + 48);
+    message.append(info.type_key);
+    message.append(".__ffi_init__() ");
+    message.append(what);
+    message.append(" '");
+    message.append(field_name);
+    message.append("'");
+    AppendNestedErrorMessage(&message, err.message());
+    throw Error(err.kind(), std::move(message), err.backtrace(), err, std::nullopt);
+  };
+
   auto set_field = [&](size_t fi, const TVMFFIAny* value) {
     const TVMFFIFieldInfo* field_info = info.all_fields[fi].info;
     void* addr = reinterpret_cast<char*>(obj) + field_info->offset;
-    int ret_code = refl::CallFieldSetter(field_info, addr, value);
-    if (ret_code != 0) {
-      Error err = details::MoveFromSafeCallRaised();
-      auto field_name = std::string_view(field_info->name.data, field_info->name.size);
-      std::string message;
-      message.reserve(info.type_key.size() + field_name.size() + err.message().size() + 32);
-      message.append(info.type_key);
-      message.append(".__ffi_init__() field '");
-      message.append(field_name);
-      message.append("'");
-      AppendNestedErrorMessage(&message, err.message());
-      throw Error(err.kind(), std::move(message), err.backtrace(), err, std::nullopt);
+    if (refl::CallFieldSetter(field_info, addr, value) != 0) {
+      rethrow_setter_error(fi, "field");
     }
     field_set[fi] = true;
+  };
+
+  // A default goes through the same setter as a passed value.  Dropping its
+  // status would leave the field zero-initialized -- reading back as `None`
+  // for an object field -- and leave the error raised but never delivered.
+  auto set_field_to_default = [&](size_t fi) {
+    const TVMFFIFieldInfo* field_info = info.all_fields[fi].info;
+    void* addr = reinterpret_cast<char*>(obj) + field_info->offset;
+    if (refl::CallFieldSetterToDefault(field_info, addr) != 0) {
+      rethrow_setter_error(fi, "default for field");
+    }
   };
 
   // ---- 1. Find KWARGS sentinel position ------------------------------------
@@ -2088,8 +2107,7 @@ void BindFieldArgs(Object* obj, const AutoInitInfo& info, const TVMFFIAny* raw_a
   for (size_t fi = 0; fi < info.all_fields.size(); ++fi) {
     if (field_set[fi]) continue;
     if (info.all_fields[fi].has_default) {
-      void* addr = reinterpret_cast<char*>(obj) + info.all_fields[fi].info->offset;
-      refl::SetFieldToDefault(info.all_fields[fi].info, addr);
+      set_field_to_default(fi);
     } else if (info.all_fields[fi].init) {
       auto fname = std::string_view(info.all_fields[fi].info->name.data,
                                     info.all_fields[fi].info->name.size);

@@ -293,7 +293,26 @@ def resolve_type_hints_by_owner(
     Returns ``(owners, hints_by_owner)`` when every annotation can be resolved.
     Returns :data:`None` when a forward reference is still unavailable, signaling
     that the caller should defer field registration and retry later.
+
+    A parent can exist while its field types are unresolved. Finalize its
+    schema before the child computes its layout and inherited metadata.
+    Assigning a forward alias does not flush pending classes; the first
+    construction resolves the parent before resolving the child.
     """
+    # Field order and inherited boundaries require the parent's complete schema,
+    # including when a forward alias becomes available only at first construction.
+    info = _registered_type_info(cls)
+    if info is not None:
+        parent = info.parent_type_info
+        if parent is not None and parent.fields is None:
+            resolved_parent = resolve_type_hints_by_owner(parent.type_cls, globalns)
+            if resolved_parent is None:
+                return None
+            from .py_class import on_fields_resolved  # noqa: PLC0415
+
+            on_fields_resolved(parent, resolved_parent)
+            _remove_from_pending(parent.type_cls)
+
     # Resolve string annotations to types; return None (defer) on NameError.
     #
     # First try with module-scoped localns (standard Python name resolution).
@@ -436,14 +455,14 @@ def _install_deferred_init(
     # Save user-defined __init__ before overwriting.
     user_init = cls.__dict__.get("__init__")
     if user_init is not None:
-        cls._py_class_user_init = user_init  # type: ignore[attr-defined]
+        cls._py_class_user_init = user_init  # ty: ignore[unresolved-attribute]
 
-    cls.__init__ = _make_temporary_init(  # type: ignore[assignment]
+    cls.__init__ = _make_temporary_init(  # ty: ignore[invalid-assignment]
         cls,
         type_info,
         globalns,
     )
-    cls.__ffi_py_class_is_deferred_init__ = True  # type: ignore[attr-defined]
+    cls.__ffi_py_class_is_deferred_init__ = True  # ty: ignore[unresolved-attribute]
 
 
 def defer_field_registration(

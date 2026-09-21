@@ -189,6 +189,35 @@ class TestBasicRegistration:
         assert isinstance(obj, InstCheck)
         assert isinstance(obj, Object)
 
+    def test_fields_resolved_hook(self) -> None:
+        @py_class(_unique_key("HookBase"))
+        class HookBase(Object):
+            seen: ClassVar[list[tuple[type, str, tuple[str, ...]]]] = []
+
+            def __ffi_hook__(type_info: TypeInfo, own_fields: Any) -> None:
+                cls = type_info.type_cls
+                assert cls is not None
+                # The hook runs before the fields reach the C layer, so their
+                # schemas come from the resolved ``Field`` objects rather than
+                # from ``type_info.fields``, which is still empty here.
+                assert not type_info.fields
+                schemas = tuple(f._ty_schema for f in own_fields)
+                assert all(isinstance(schema, TypeSchema) for schema in schemas)
+                getattr(cls, "seen").append(
+                    (cls, type_info.type_key, tuple(str(schema) for schema in schemas))
+                )
+
+            __ffi_hook__.__ffi_on_fields_resolved__ = True  # ty: ignore[unresolved-attribute]
+
+        @py_class(_unique_key("HookChild"))
+        class HookChild(HookBase):
+            x: int
+
+        assert HookBase.seen == [
+            (HookBase, _get_type_info(HookBase).type_key, ()),
+            (HookChild, _get_type_info(HookChild).type_key, ("int",)),
+        ]
+
 
 # ###########################################################################
 #  2. Field parsing
@@ -494,7 +523,7 @@ class TestInit:
 
         @py_class(_unique_key("ReqChild"))
         class ReqChild(OptParent):
-            z: int
+            z: int  # ty: ignore[dataclass-field-order]
 
         sig = inspect.signature(ReqChild.__init__)
         param_names = [n for n in sig.parameters if n != "self"]
@@ -635,7 +664,7 @@ class TestInitProperty:
         _ = obj.computed
         assert call_count == 1  # second access reads C++ field, not recomputed
         # Verify the field is registered in C++ type metadata.
-        type_info = _Cached.__tvm_ffi_type_info__
+        type_info = _Cached.__tvm_ffi_type_info__  # ty: ignore[unresolved-attribute]
         field_names = [f.name for f in type_info.fields]
         assert "computed" in field_names
         ip_field = next(f for f in type_info.fields if f.name == "computed")
@@ -1663,7 +1692,7 @@ class TestInitReorderingAdversarial:
 
         @py_class(_unique_key("C1"))
         class C1(P1):
-            c: int  # required
+            c: int  # required  # ty: ignore[dataclass-field-order]
 
         sig = inspect.signature(C1.__init__)
         param_names = [n for n in sig.parameters if n != "self"]
@@ -4789,7 +4818,7 @@ class TestInheritanceWithDefaults:
 
         @py_class(_unique_key("DerivedIL"))
         class DerivedIL(BaseIL):
-            c: int
+            c: int  # ty: ignore[dataclass-field-order]
             d: Optional[str] = "default"
 
         obj = DerivedIL(a=1, c=2)
@@ -4810,7 +4839,7 @@ class TestInheritanceWithDefaults:
 
         @py_class(_unique_key("L3D"))
         class L3D(L2D):
-            d: str
+            d: str  # ty: ignore[dataclass-field-order]
 
         obj = L3D(a=1, d="world")
         assert obj.a == 1
@@ -4975,7 +5004,7 @@ class TestDerivedDerivedContainers:
 
         @py_class(_unique_key("DD_L3"))
         class L3(L2):
-            e: str
+            e: str  # ty: ignore[dataclass-field-order]
 
         obj = L3(a=1, e="world", b=[1, 2])
         assert obj.a == 1
@@ -4995,7 +5024,7 @@ class TestDerivedDerivedContainers:
 
         @py_class(_unique_key("DD2_L3"))
         class L3(L2):
-            c: str
+            c: str  # ty: ignore[dataclass-field-order]
 
         obj = L3(a=1, c="x")
         assert obj.a == 1
@@ -5686,7 +5715,7 @@ class TestSuperInitPattern:
             pass
 
         with pytest.raises(TypeError):
-            Plain()  # type: ignore[missing-argument]
+            Plain()  # ty: ignore[missing-argument]
 
     def test_super_init_isinstance(self) -> None:
         """Objects created via super().__init__() pattern have correct isinstance."""
@@ -6128,3 +6157,13 @@ class TestPyClassNoLeak:
         obj = Mismatch(99)
         assert obj.value == 99
         assert obj.ref is None
+
+
+def test_raw_initializer_accepts_field_named_self() -> None:
+    @py_class(_unique_key("FieldNamedSelf"), init=False)
+    class Record(Object):
+        self: int
+
+    value = Object.__new__(Record)
+    Record.__ffi_init__(value, self=7)
+    assert value.self == 7
