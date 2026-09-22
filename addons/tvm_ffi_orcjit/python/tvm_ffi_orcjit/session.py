@@ -119,10 +119,11 @@ class ExecutionSession(Object):
         slab_size : int
             Per-slab capacity in bytes for the JIT memory manager. Linux only —
             ignored on macOS and Windows, where the slab allocator is compiled
-            out. 0 = arch default (64 MB; initial slab halves on mmap failure
-            down to 8 MB under RLIMIT_AS / container limits), >0 = custom size,
-            <0 = disable slab allocator (LLJIT uses its default scattered-mmap
-            allocator).
+            out. 0 = 64 MB default (the initial slab halves on mmap failure
+            down to 8 MB under RLIMIT_AS / container limits), >=4 MB = custom
+            size, <0 = disable the slab allocator (LLJIT uses its default
+            scattered-mmap allocator). Positive values below 4 MB are rejected
+            because both allocation pools need a 2 MB commit chunk.
 
             The session holds a growable pool of slabs: a fresh slab is mmap'd
             on demand when no existing one can fit a graph. Graphs that don't
@@ -190,8 +191,8 @@ class ExecutionSession(Object):
         ``keep_module_alive`` mirrors :func:`tvm_ffi.load_module`'s option of
         the same name. When True, the module is inserted into the runtime's
         process-global module registry, so its JITDylib — and every function
-        pointer, deleter, and static allocation it owns — stays mapped until
-        the interpreter unloads ``libtvm_ffi``. Use this when Objects produced
+        pointer, deleter, and static allocation it owns — stays mapped for the
+        duration of the process. Use this when Objects produced
         by the module may outlive the local ``mod`` reference (e.g., a
         JIT-allocated ``String`` or ``Array`` returned to Python and held past
         ``del mod``). When False (default), the caller owns the module's
@@ -243,10 +244,9 @@ class ExecutionSession(Object):
         Fresh slabs that have never been allocated on are preserved, so
         the session remains ready to accept new work.
 
-        Safety: call when no JIT work is in flight on another thread. From
-        single-threaded Python this is always safe; once ``del lib`` has
-        returned, the C++ destructor has finished and the slab's live count
-        reflects the drop.
+        The operation is serialized with JIT allocation and module teardown,
+        so it is safe to call while other host threads use the same session.
+        Only fully drained slabs are reclaimed.
 
         Returns
         -------
@@ -267,9 +267,10 @@ def default_session() -> ExecutionSession:
     """Return the process-wide shared execution session.
 
     A single leaked, never-destroyed session shared by all callers in the
-    process, so they share one LLVM ``ExecutionSession`` — hence process
-    symbols, the slab arena, and cross-library linking. Created on first call
-    and cached for the lifetime of the process.
+    process, so they share one LLVM ``ExecutionSession`` — hence process-symbol
+    resolution, the slab pool, and synchronization infrastructure. Separate
+    loaded modules remain isolated symbol namespaces. Created on first call and
+    cached for the lifetime of the process.
 
     The session uses the ORC runtime embedded in the extension (no on-disk path
     lookup). For an isolated session or a tuned arena, construct an
