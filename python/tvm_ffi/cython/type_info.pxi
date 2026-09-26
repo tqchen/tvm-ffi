@@ -168,6 +168,7 @@ class TypeSchema:
     origin: str
     args: tuple["TypeSchema", ...] | None = None
     origin_type_index: int = dataclasses.field(default=_ORIGIN_TYPE_INDEX_UNKNOWN, repr=False)
+    fallback: "TypeSchema | None" = None
 
     def __post_init__(self):
         origin = self.origin
@@ -270,8 +271,9 @@ class TypeSchema:
             )
         origin = obj["type"]
         origin = _TYPE_SCHEMA_ORIGIN_CONVERTER.get(origin, origin)
+        fallback = TypeSchema.from_json_obj(obj["fallback"]) if "fallback" in obj else None
         if "args" not in obj:
-            return TypeSchema(origin)
+            return TypeSchema(origin, fallback=fallback)
         raw_args = obj["args"]
         if not isinstance(raw_args, (list, tuple)):
             raw_args = ()
@@ -279,7 +281,7 @@ class TypeSchema:
             TypeSchema.from_json_obj(a) for a in raw_args
             if isinstance(a, dict)
         )
-        return TypeSchema(origin, args)
+        return TypeSchema(origin, args, fallback=fallback)
 
     @staticmethod
     def from_json_str(s: str) -> "TypeSchema":
@@ -573,6 +575,11 @@ class TypeSchema:
         input_mode: bool,
         expanded_convert_types: "frozenset[int]",
     ) -> str:
+        # A fallback changes only the binding annotation. Keep the primary
+        # schema intact for runtime type checking and conversion.
+        if (self.fallback is not None and self.origin_type_index == _ORIGIN_TYPE_INDEX_UNKNOWN
+                and self.origin not in ("tuple", "list", "dict")):
+            return self.fallback._repr_impl(ty_map, input_mode, expanded_convert_types)
         if input_mode and self.origin_type_index >= kTVMFFIStaticObjectBegin:
             if self.origin_type_index not in expanded_convert_types:
                 raw_convert_schema = _lookup_type_attr(
@@ -613,11 +620,15 @@ class TypeSchema:
     def to_json(self) -> dict[str, Any]:
         """Convert a TypeSchema to a JSON-compatible dict."""
         if self.args is not None and (self.args or self.origin == "tuple"):
-            return {
+            result = {
                 "type": self.origin,
                 "args": [a.to_json() for a in self.args],
             }
-        return {"type": self.origin}
+        else:
+            result = {"type": self.origin}
+        if self.fallback is not None:
+            result["fallback"] = self.fallback.to_json()
+        return result
 
 
 def _annotation_union(args):

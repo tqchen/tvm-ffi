@@ -3527,6 +3527,15 @@ class TestTypeSchemaAnnotationRendering:
         assert schema.input_repr(_input_ty_map) == "Mapping[str, Sequence[int]]"
         assert schema.repr(_output_ty_map) == schema.output_repr(_output_ty_map)
 
+    def test_named_schema_fallback(self) -> None:
+        schema = TypeSchema.from_json_obj(
+            {
+                "type": "example.PositiveInt",
+                "fallback": {"type": "int"},
+            }
+        )
+        assert schema.output_repr() == "int"
+
     def test_object_convert_type_schema_attr_widens_input_only(self) -> None:
         """__ffi_convert_type_schema__ affects input annotations only."""
         type_key = _unique_type_key("ConvertTypeSchema")

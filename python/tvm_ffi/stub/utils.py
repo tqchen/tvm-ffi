@@ -131,7 +131,12 @@ class NamedTypeSchema(TypeSchema):
         frozen: bool = False,
     ) -> None:
         """Initialize a `NamedTypeSchema` with the given name, schema and field facts."""
-        super().__init__(origin=schema.origin, args=schema.args)
+        super().__init__(
+            origin=schema.origin,
+            args=schema.args,
+            origin_type_index=schema.origin_type_index,
+            fallback=schema.fallback,
+        )
         self.name = name
         self.size = size
         self.alignment = alignment
