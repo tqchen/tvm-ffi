@@ -72,7 +72,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
       - name: Set up uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
       - name: Set up Python environment
         run: uv sync --group dev --no-install-project
       - name: Run pre-commit
@@ -89,7 +89,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
       - name: Set up uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           python-version: 3.13
       - uses: ./.github/actions/detect-env-vars
@@ -112,7 +112,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
       - name: Set up uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           python-version: 3.13
       - name: Generate docs
@@ -183,7 +183,7 @@ jobs:
 
       # Run Python tests
       - name: Setup Python ${{ matrix.python_version }}
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           python-version: ${{ matrix.python_version }}
           activate-environment: true

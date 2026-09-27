@@ -84,6 +84,21 @@ def _make_str_enum_type() -> typing.Any:
 A = TypeSchema.from_annotation
 
 
+def test_named_args_round_trip() -> None:
+    payload = TypeSchema("custom.Payload", fallback=TypeSchema("int"))
+    function = TypeSchema(
+        "Callable",
+        named_args={"return": (A(tuple[int, str]),), "params": (payload,)},
+    )
+    schema = TypeSchema("custom.Wrapper", named_args={"members": (function,), "empty": ()})
+    assert TypeSchema.from_json_obj(schema.to_json()) == schema
+    assert function.input_repr() == "Callable[[int], tuple[int, str]]"
+    assert A(Callable[[], int]).to_json()["named_args"]["params"] == []
+    assert "params" not in A(Callable[..., int]).to_json()["named_args"]
+    with pytest.raises(TypeError):
+        TypeSchema.from_json_obj({"type": "int", "named_args": {"member": {"type": "str"}}})
+
+
 # ---------------------------------------------------------------------------
 # Category 1: POD type exact match (check_value)
 # ---------------------------------------------------------------------------
@@ -3488,9 +3503,10 @@ class TestSTLOriginParsing:
     def test_std_function(self) -> None:
         """std::function maps to Callable."""
         s = TypeSchema.from_json_str(
-            '{"type":"std::function","args":[{"type":"int"},{"type":"str"}]}'
+            '{"type":"std::function","args":[{"type":"int"},[{"type":"str"}]]}'
         )
         assert s.origin == "Callable"
+        assert s.to_json()["named_args"]["params"] == [{"type": "str"}]
 
     def test_object_rvalue_ref_origin(self) -> None:
         """ObjectRValueRef maps to Object."""
@@ -4213,7 +4229,9 @@ class TestFromAnnotationCallable:
 
     def test_no_params(self) -> None:
         """Callable[[], int]."""
-        assert A(Callable[[], int]) == S("Callable", S("int"))
+        assert A(Callable[[], int]) == TypeSchema(
+            "Callable", named_args={"return": (S("int"),), "params": ()}
+        )
 
 
 class TestFromAnnotationList:

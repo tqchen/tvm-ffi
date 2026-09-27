@@ -161,14 +161,15 @@ _TYPE_INDEX_TO_ORIGIN[kTVMFFIBigInt] = "int"
 class TypeSchema:
     """Type schema that describes a TVM FFI type.
 
-    The schema is expressed using a compact JSON-compatible structure
-    and can be rendered as a Python typing string with
-    :py:meth:`repr`.
+    ``args`` holds positional type arguments. ``named_args`` maps each name
+    to an ordered list of complete type schemas. A typed function uses
+    ``return`` and ``params`` as named groups.
     """
     origin: str
     args: tuple["TypeSchema", ...] | None = None
     origin_type_index: int = dataclasses.field(default=_ORIGIN_TYPE_INDEX_UNKNOWN, repr=False)
     fallback: "TypeSchema | None" = None
+    named_args: "dict[str, tuple[TypeSchema, ...]] | None" = None
 
     def __post_init__(self):
         origin = self.origin
@@ -176,9 +177,39 @@ class TypeSchema:
         if args is not None and not isinstance(args, tuple):
             args = tuple(args)
             self.args = args
+        if not isinstance(origin, str) or not origin:
+            raise ValueError("schema type must be a nonempty string")
         if origin != "tuple" and args is None:
             args = ()
             self.args = args
+        if args is not None and any(not isinstance(a, TypeSchema) for a in args):
+            raise TypeError("schema arguments must be TypeSchema instances")
+        named_args = self.named_args
+        if named_args is not None:
+            if not isinstance(named_args, dict):
+                raise TypeError("named_args must be a map of names to type lists")
+            normalized = {}
+            for name, values in named_args.items():
+                if not isinstance(name, str) or not name:
+                    raise ValueError("named_args keys must be nonempty strings")
+                if not isinstance(values, (list, tuple)):
+                    raise TypeError("named_args values must be lists of type schemas")
+                if any(not isinstance(value, TypeSchema) for value in values):
+                    raise TypeError("named_args values must contain type schemas")
+                normalized[name] = tuple(values)
+            self.named_args = named_args = normalized
+        if origin == "Callable":
+            if args and named_args is None:
+                # Legacy flat schemas retain return-only unknown parameters.
+                self.named_args = named_args = {"return": (args[0],)}
+                if len(args) > 1:
+                    named_args["params"] = args[1:]
+                self.args = args = ()
+            if named_args is not None:
+                if args or set(named_args) - {"return", "params"}:
+                    raise ValueError("Callable uses only named return and params groups")
+                if "return" not in named_args or len(named_args["return"]) != 1:
+                    raise ValueError("Callable return group must contain exactly one type")
         if origin == "Union":
             if len(args) < 2:
                 raise ValueError("Union must have at least two arguments")
@@ -270,18 +301,39 @@ class TypeSchema:
                 f"expected schema dict with 'type' key, got {type(obj).__name__}"
             )
         origin = obj["type"]
+        if not isinstance(origin, str):
+            raise TypeError("schema type must be a string")
         origin = _TYPE_SCHEMA_ORIGIN_CONVERTER.get(origin, origin)
         fallback = TypeSchema.from_json_obj(obj["fallback"]) if "fallback" in obj else None
+        raw_named = obj.get("named_args")
+        named_args = None
+        if "named_args" in obj:
+            if not isinstance(raw_named, dict):
+                raise TypeError("named_args must be a map of names to type lists")
+            named_args = {}
+            for name, values in raw_named.items():
+                if not isinstance(name, str) or not name or not isinstance(values, list):
+                    raise TypeError("named_args must map names to type lists")
+                if any(not isinstance(value, dict) for value in values):
+                    raise TypeError("named_args lists must contain type schemas")
+                named_args[name] = tuple(TypeSchema.from_json_obj(value) for value in values)
         if "args" not in obj:
-            return TypeSchema(origin, fallback=fallback)
+            return TypeSchema(origin, fallback=fallback, named_args=named_args)
         raw_args = obj["args"]
+        if (obj["type"] == "std::function" and isinstance(raw_args, (list, tuple))
+                and len(raw_args) == 2 and isinstance(raw_args[1], (list, tuple))):
+            # Legacy std::function encoded parameters as a bare JSON array.
+            ret = TypeSchema.from_json_obj(raw_args[0])
+            params = tuple(TypeSchema.from_json_obj(value) for value in raw_args[1])
+            return TypeSchema(origin, fallback=fallback,
+                              named_args={"return": (ret,), "params": params})
         if not isinstance(raw_args, (list, tuple)):
             raw_args = ()
         args = tuple(
             TypeSchema.from_json_obj(a) for a in raw_args
             if isinstance(a, dict)
         )
-        return TypeSchema(origin, args, fallback=fallback)
+        return TypeSchema(origin, args, fallback=fallback, named_args=named_args)
 
     @staticmethod
     def from_json_str(s: str) -> "TypeSchema":
@@ -420,13 +472,15 @@ class TypeSchema:
                 params, ret = targs
                 ret_schema = TypeSchema.from_annotation(ret)
                 if isinstance(params, list):
-                    # Callable[[P1, P2], R] → (R, P1, P2)
+                    # Callable[[P1, P2], R] → named return and params groups.
                     param_schemas = tuple(
                         TypeSchema.from_annotation(p) for p in params
                     )
-                    return TypeSchema("Callable", (ret_schema,) + param_schemas)
+                    return TypeSchema(
+                        "Callable", named_args={"return": (ret_schema,), "params": param_schemas}
+                    )
                 # Callable[..., R]
-                return TypeSchema("Callable", (ret_schema,))
+                return TypeSchema("Callable", named_args={"return": (ret_schema,)})
             return TypeSchema("Callable")
 
         # --- Parameterised CObject subclasses (Array[int], Dict[str, V], …) ---
@@ -547,8 +601,9 @@ class TypeSchema:
             s = TypeSchema.from_json_str('{"type":"Optional","args":[{"type":"int"}]}')
             assert s.repr() == "int | None"
 
-            # Callable where the first arg is return type, remaining are parameters
-            s = TypeSchema("Callable", (TypeSchema("int"), TypeSchema("str")))
+            # Named return and parameter groups
+            s = TypeSchema("Callable", named_args={"return": (TypeSchema("int"),),
+                                                   "params": (TypeSchema("str"),)})
             assert s.repr() == "Callable[[str], int]"
 
             # Container types from C++ FFI schemas
@@ -594,6 +649,19 @@ class TypeSchema:
 
         origin = self.origin if ty_map is None else ty_map(self.origin)
         schema_args = self.args
+        if origin == "Callable":
+            if not self.named_args:
+                return "Callable[..., Any]"
+            ret = self.named_args["return"][0]._repr_impl(
+                ty_map, input_mode, expanded_convert_types
+            )
+            if "params" not in self.named_args:
+                return f"Callable[..., {ret}]"
+            params = ", ".join(
+                arg._repr_impl(ty_map, input_mode, expanded_convert_types)
+                for arg in self.named_args["params"]
+            )
+            return f"Callable[[{params}], {ret}]"
         args = [
             i._repr_impl(ty_map, input_mode, expanded_convert_types)
             for i in (() if schema_args is None else schema_args)
@@ -602,13 +670,6 @@ class TypeSchema:
             return " | ".join(args)
         elif origin == "Optional":
             return args[0] + " | None"
-        elif origin == "Callable":
-            if not args:
-                return "Callable[..., Any]"
-            else:
-                ret = args[0]
-                args = ", ".join(args[1:])
-                return f"Callable[[{args}], {ret}]"
         elif origin == "tuple" and schema_args == ():
             return "tuple[()]"
         elif not args:
@@ -626,6 +687,11 @@ class TypeSchema:
             }
         else:
             result = {"type": self.origin}
+        if self.named_args is not None:
+            result["named_args"] = {
+                name: [value.to_json() for value in values]
+                for name, values in self.named_args.items()
+            }
         if self.fallback is not None:
             result["fallback"] = self.fallback.to_json()
         return result

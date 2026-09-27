@@ -20,9 +20,11 @@
 #include <tvm/ffi/c_api.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/map.h>
+#include <tvm/ffi/container/tuple.h>
 #include <tvm/ffi/container/variant.h>
 #include <tvm/ffi/dtype.h>
 #include <tvm/ffi/extra/json.h>
+#include <tvm/ffi/extra/stl.h>
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/object.h>
 #include <tvm/ffi/optional.h>
@@ -71,70 +73,85 @@ TEST(Schema, GlobalFuncTypeSchema) {
     return ParseMetadataToSchema(metadata);
   };
   // Simple IDs
-  EXPECT_EQ(fetch("testing.schema_id_int"),
-            R"({"type":"ffi.Function","args":[{"type":"int"},{"type":"int"}]})");
-  EXPECT_EQ(fetch("testing.schema_id_float"),
-            R"({"type":"ffi.Function","args":[{"type":"float"},{"type":"float"}]})");
-  EXPECT_EQ(fetch("testing.schema_id_bool"),
-            R"({"type":"ffi.Function","args":[{"type":"bool"},{"type":"bool"}]})");
-  EXPECT_EQ(fetch("testing.schema_id_device"),
-            R"({"type":"ffi.Function","args":[{"type":"Device"},{"type":"Device"}]})");
-  EXPECT_EQ(fetch("testing.schema_id_dtype"),
-            R"({"type":"ffi.Function","args":[{"type":"DataType"},{"type":"DataType"}]})");
-  EXPECT_EQ(fetch("testing.schema_id_string"),
-            R"({"type":"ffi.Function","args":[{"type":"ffi.String"},{"type":"ffi.String"}]})");
-  EXPECT_EQ(fetch("testing.schema_id_bytes"),
-            R"({"type":"ffi.Function","args":[{"type":"ffi.Bytes"},{"type":"ffi.Bytes"}]})");
-  EXPECT_EQ(fetch("testing.schema_id_func"),
-            R"({"type":"ffi.Function","args":[{"type":"ffi.Function"},{"type":"ffi.Function"}]})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_int"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"int"}],"params":[{"type":"int"}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_float"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"float"}],"params":[{"type":"float"}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_bool"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"bool"}],"params":[{"type":"bool"}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_device"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"Device"}],"params":[{"type":"Device"}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_dtype"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"DataType"}],"params":[{"type":"DataType"}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_string"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.String"}],"params":[{"type":"ffi.String"}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_bytes"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Bytes"}],"params":[{"type":"ffi.Bytes"}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_func"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Function"}],"params":[{"type":"ffi.Function"}]}})");
   EXPECT_EQ(
       fetch("testing.schema_id_func_typed"),
-      R"({"type":"ffi.Function","args":[{"type":"ffi.Function","args":[{"type":"None"},{"type":"int"},{"type":"float"},{"type":"ffi.Function"}]},{"type":"ffi.Function","args":[{"type":"None"},{"type":"int"},{"type":"float"},{"type":"ffi.Function"}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Function","named_args":{"return":[{"type":"None"}],"params":[{"type":"int"},{"type":"float"},{"type":"ffi.Function"}]}}],"params":[{"type":"ffi.Function","named_args":{"return":[{"type":"None"}],"params":[{"type":"int"},{"type":"float"},{"type":"ffi.Function"}]}}]}})");
 
-  EXPECT_EQ(fetch("testing.schema_id_any"),
-            R"({"type":"ffi.Function","args":[{"type":"Any"},{"type":"Any"}]})");
-  EXPECT_EQ(fetch("testing.schema_id_object"),
-            R"({"type":"ffi.Function","args":[{"type":"ffi.Object"},{"type":"ffi.Object"}]})");
-  EXPECT_EQ(fetch("testing.schema_id_dltensor"),
-            R"({"type":"ffi.Function","args":[{"type":"DLTensor*"},{"type":"DLTensor*"}]})");
-  EXPECT_EQ(fetch("testing.schema_id_tensor"),
-            R"({"type":"ffi.Function","args":[{"type":"ffi.Tensor"},{"type":"ffi.Tensor"}]})");
-  EXPECT_EQ(fetch("testing.schema_tensor_view_input"),
-            R"({"type":"ffi.Function","args":[{"type":"None"},{"type":"DLTensor*"}]})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_any"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"Any"}],"params":[{"type":"Any"}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_object"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Object"}],"params":[{"type":"ffi.Object"}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_dltensor"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"DLTensor*"}],"params":[{"type":"DLTensor*"}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_tensor"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Tensor"}],"params":[{"type":"ffi.Tensor"}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_tensor_view_input"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"None"}],"params":[{"type":"DLTensor*"}]}})");
   EXPECT_EQ(
       fetch("testing.schema_id_opt_int"),
-      R"({"type":"ffi.Function","args":[{"type":"Optional","args":[{"type":"int"}]},{"type":"Optional","args":[{"type":"int"}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"Optional","args":[{"type":"int"}]}],"params":[{"type":"Optional","args":[{"type":"int"}]}]}})");
   EXPECT_EQ(
       fetch("testing.schema_id_opt_str"),
-      R"({"type":"ffi.Function","args":[{"type":"Optional","args":[{"type":"ffi.String"}]},{"type":"Optional","args":[{"type":"ffi.String"}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"Optional","args":[{"type":"ffi.String"}]}],"params":[{"type":"Optional","args":[{"type":"ffi.String"}]}]}})");
   EXPECT_EQ(
       fetch("testing.schema_id_opt_obj"),
-      R"({"type":"ffi.Function","args":[{"type":"Optional","args":[{"type":"ffi.Object"}]},{"type":"Optional","args":[{"type":"ffi.Object"}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"Optional","args":[{"type":"ffi.Object"}]}],"params":[{"type":"Optional","args":[{"type":"ffi.Object"}]}]}})");
   EXPECT_EQ(
       fetch("testing.schema_id_arr_int"),
-      R"({"type":"ffi.Function","args":[{"type":"ffi.Array","args":[{"type":"int"}]},{"type":"ffi.Array","args":[{"type":"int"}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Array","args":[{"type":"int"}]}],"params":[{"type":"ffi.Array","args":[{"type":"int"}]}]}})");
   EXPECT_EQ(
       fetch("testing.schema_id_arr_str"),
-      R"({"type":"ffi.Function","args":[{"type":"ffi.Array","args":[{"type":"ffi.String"}]},{"type":"ffi.Array","args":[{"type":"ffi.String"}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Array","args":[{"type":"ffi.String"}]}],"params":[{"type":"ffi.Array","args":[{"type":"ffi.String"}]}]}})");
   EXPECT_EQ(
       fetch("testing.schema_id_arr_obj"),
-      R"({"type":"ffi.Function","args":[{"type":"ffi.Array","args":[{"type":"ffi.Object"}]},{"type":"ffi.Array","args":[{"type":"ffi.Object"}]}]})");
-  EXPECT_EQ(fetch("testing.schema_id_arr"),
-            R"({"type":"ffi.Function","args":[{"type":"ffi.Array"},{"type":"ffi.Array"}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Array","args":[{"type":"ffi.Object"}]}],"params":[{"type":"ffi.Array","args":[{"type":"ffi.Object"}]}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_arr"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Array"}],"params":[{"type":"ffi.Array"}]}})");
   EXPECT_EQ(
       fetch("testing.schema_id_map_str_int"),
-      R"({"type":"ffi.Function","args":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"int"}]},{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"int"}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"int"}]}],"params":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"int"}]}]}})");
   EXPECT_EQ(
       fetch("testing.schema_id_map_str_str"),
-      R"({"type":"ffi.Function","args":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.String"}]},{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.String"}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.String"}]}],"params":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.String"}]}]}})");
   EXPECT_EQ(
       fetch("testing.schema_id_map_str_obj"),
-      R"({"type":"ffi.Function","args":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Object"}]},{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Object"}]}]})");
-  EXPECT_EQ(fetch("testing.schema_id_map"),
-            R"({"type":"ffi.Function","args":[{"type":"ffi.Map"},{"type":"ffi.Map"}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Object"}]}],"params":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Object"}]}]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_id_map"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Map"}],"params":[{"type":"ffi.Map"}]}})");
   EXPECT_EQ(
       fetch("testing.schema_id_variant_int_str"),
-      R"({"type":"ffi.Function","args":[{"type":"Variant","args":[{"type":"int"},{"type":"ffi.String"}]},{"type":"Variant","args":[{"type":"int"},{"type":"ffi.String"}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"Variant","args":[{"type":"int"},{"type":"ffi.String"}]}],"params":[{"type":"Variant","args":[{"type":"int"},{"type":"ffi.String"}]}]}})");
 
   // Packed function registered via def_packed: schema is plain ffi.Function
   EXPECT_EQ(fetch("testing.schema_packed"), R"({"type":"ffi.Function"})");
@@ -142,18 +159,31 @@ TEST(Schema, GlobalFuncTypeSchema) {
   // Mixed containers and optionals
   EXPECT_EQ(
       fetch("testing.schema_arr_map_opt"),
-      R"({"type":"ffi.Function","args":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]},{"type":"ffi.Array","args":[{"type":"Optional","args":[{"type":"int"}]}]},{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]},{"type":"Optional","args":[{"type":"ffi.String"}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]}],"params":[{"type":"ffi.Array","args":[{"type":"Optional","args":[{"type":"int"}]}]},{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]},{"type":"Optional","args":[{"type":"ffi.String"}]}]}})");
 
   EXPECT_EQ(
       fetch("testing.schema_variant_mix"),
-      R"({"type":"ffi.Function","args":[{"type":"Variant","args":[{"type":"int"},{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]},{"type":"Variant","args":[{"type":"int"},{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"Variant","args":[{"type":"int"},{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]}],"params":[{"type":"Variant","args":[{"type":"int"},{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]}]}})");
 
   // No-arg and no-return combinations
-  EXPECT_EQ(fetch("testing.schema_no_args"), R"({"type":"ffi.Function","args":[{"type":"int"}]})");
-  EXPECT_EQ(fetch("testing.schema_no_return"),
-            R"({"type":"ffi.Function","args":[{"type":"None"},{"type":"int"}]})");
+  EXPECT_EQ(fetch("testing.schema_no_args"),
+            R"({"type":"ffi.Function","named_args":{"return":[{"type":"int"}],"params":[]}})");
+  EXPECT_EQ(
+      fetch("testing.schema_no_return"),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"None"}],"params":[{"type":"int"}]}})");
   EXPECT_EQ(fetch("testing.schema_no_args_no_return"),
-            R"({"type":"ffi.Function","args":[{"type":"None"}]})");
+            R"({"type":"ffi.Function","named_args":{"return":[{"type":"None"}],"params":[]}})");
+}
+
+TEST(Schema, TypedFunctionGroups) {
+  EXPECT_EQ(
+      (TypedFunction<Tuple<int, String>()>::TypeSchema()),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"Tuple","args":[{"type":"int"},{"type":"ffi.String"}]}],"params":[]}})");
+  EXPECT_EQ(
+      (TypeTraits<std::function<int(int)>>::TypeSchema()),
+      R"({"type":"std::function","named_args":{"return":[{"type":"int"}],"params":[{"type":"int"}]}})");
+  EXPECT_EQ((TypeTraits<std::function<int()>>::TypeSchema()),
+            R"({"type":"std::function","named_args":{"return":[{"type":"int"}],"params":[]}})");
 }
 
 TEST(Schema, FieldTypeSchemas) {
@@ -199,34 +229,36 @@ TEST(Schema, MethodTypeSchemas) {
   // Instance methods
   EXPECT_EQ(
       method_schema("add_int"),
-      R"({"type":"ffi.Function","args":[{"type":"int"},{"type":"testing.SchemaAllTypes"},{"type":"int"}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"int"}],"params":[{"type":"testing.SchemaAllTypes"},{"type":"int"}]}})");
   EXPECT_EQ(
       method_schema("append_int"),
-      R"({"type":"ffi.Function","args":[{"type":"ffi.Array","args":[{"type":"int"}]},{"type":"testing.SchemaAllTypes"},{"type":"ffi.Array","args":[{"type":"int"}]},{"type":"int"}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Array","args":[{"type":"int"}]}],"params":[{"type":"testing.SchemaAllTypes"},{"type":"ffi.Array","args":[{"type":"int"}]},{"type":"int"}]}})");
   EXPECT_EQ(
       method_schema("maybe_concat"),
-      R"({"type":"ffi.Function","args":[{"type":"Optional","args":[{"type":"ffi.String"}]},{"type":"testing.SchemaAllTypes"},{"type":"Optional","args":[{"type":"ffi.String"}]},{"type":"Optional","args":[{"type":"ffi.String"}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"Optional","args":[{"type":"ffi.String"}]}],"params":[{"type":"testing.SchemaAllTypes"},{"type":"Optional","args":[{"type":"ffi.String"}]},{"type":"Optional","args":[{"type":"ffi.String"}]}]}})");
   EXPECT_EQ(
       method_schema("merge_map"),
-      R"({"type":"ffi.Function","args":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]},{"type":"testing.SchemaAllTypes"},{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]},{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]}],"params":[{"type":"testing.SchemaAllTypes"},{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]},{"type":"ffi.Map","args":[{"type":"ffi.String"},{"type":"ffi.Array","args":[{"type":"int"}]}]}]}})");
 
   // Static method make_with: return type is the object type itself.
   // Build expected JSON as ffi.Function with return type = type_key and args = (int, float, str)
   EXPECT_EQ(
       method_schema("make_with"),
-      R"({"type":"ffi.Function","args":[{"type":"testing.SchemaAllTypes"},{"type":"int"},{"type":"float"},{"type":"ffi.String"}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"testing.SchemaAllTypes"}],"params":[{"type":"int"},{"type":"float"},{"type":"ffi.String"}]}})");
 }
 
 TEST(Schema, DLLExportedFuncMetadata) {
   // Minimal sanity check that DLL export metadata mechanism works.
-  EXPECT_EQ(ParseMetadataToSchema(CallMetadataFunc(__tvm_ffi__metadata_testing_dll_schema_id_int)),
-            R"({"type":"ffi.Function","args":[{"type":"int"},{"type":"int"}]})");
+  EXPECT_EQ(
+      ParseMetadataToSchema(CallMetadataFunc(__tvm_ffi__metadata_testing_dll_schema_id_int)),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"int"}],"params":[{"type":"int"}]}})");
 }
 
 TEST(Schema, DLLExportedFuncDocumentation) {
-  EXPECT_EQ(ParseMetadataToSchema(
-                CallMetadataFunc(__tvm_ffi__metadata_testing_dll_test_add_with_docstring)),
-            R"({"type":"ffi.Function","args":[{"type":"int"},{"type":"int"},{"type":"int"}]})");
+  EXPECT_EQ(
+      ParseMetadataToSchema(
+          CallMetadataFunc(__tvm_ffi__metadata_testing_dll_test_add_with_docstring)),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"int"}],"params":[{"type":"int"},{"type":"int"}]}})");
   String doc = CallMetadataFunc(__tvm_ffi__doc_testing_dll_test_add_with_docstring);
   std::string doc_str(doc);
   EXPECT_EQ(doc_str,

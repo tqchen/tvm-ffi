@@ -289,7 +289,9 @@ def _method_type_schema_json(
 
     ret_annotation = hints.get("return", Any)
     ret_schema = TypeSchema.from_annotation(ret_annotation)
-    schema = TypeSchema("Callable", (ret_schema, *arg_schemas))
+    schema = TypeSchema(
+        "Callable", named_args={"return": (ret_schema,), "params": tuple(arg_schemas)}
+    )
     return json.dumps({"type_schema": schema.to_json()})
 
 

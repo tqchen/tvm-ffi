@@ -196,6 +196,28 @@ def test_funcinfo_gen_variants() -> None:
     assert render_func_signature(func, ty_map, indent=2) == "  def no_args(*args: Any) -> Any: ..."
     assert called == ["Any"]
 
+    return_only = FuncInfo.from_schema("demo.unknown", TypeSchema("Callable", (TypeSchema("int"),)))
+    assert (
+        render_func_signature(return_only, _identity_ty_map, indent=0)
+        == "def unknown(*args: Any) -> int: ..."
+    )
+
+    grouped = TypeSchema.from_json_obj(
+        {
+            "type": "ffi.Function",
+            "named_args": {
+                "return": [{"type": "Tuple", "args": [{"type": "int"}, {"type": "str"}]}],
+                "params": [],
+            },
+        }
+    )
+    copied = NamedTypeSchema("demo.grouped", grouped)
+    assert copied.named_args == grouped.named_args
+    assert (
+        render_func_signature(FuncInfo.from_schema("demo.grouped", copied), _identity_ty_map, 0)
+        == "def grouped() -> tuple[int, str]: ..."
+    )
+
     schema_member = NamedTypeSchema(
         "pkg.Class.method",
         TypeSchema(
@@ -236,7 +258,12 @@ def test_objectinfo_gen_fields_and_methods() -> None:
         ],
         methods=[
             FuncInfo(
-                schema=NamedTypeSchema("demo.static", TypeSchema("Callable", (TypeSchema("int"),))),
+                schema=NamedTypeSchema(
+                    "demo.static",
+                    TypeSchema(
+                        "Callable", named_args={"return": (TypeSchema("int"),), "params": ()}
+                    ),
+                ),
                 is_member=False,
             ),
             FuncInfo(
@@ -274,7 +301,7 @@ def test_objectinfo_gen_overloaded_static_methods() -> None:
             ),
             FuncInfo.from_schema(
                 "demo.Factory.reset",
-                TypeSchema("Callable", (TypeSchema("None"),)),
+                TypeSchema("Callable", named_args={"return": (TypeSchema("None"),), "params": ()}),
                 is_member=False,
             ),
             FuncInfo.from_schema(
@@ -462,8 +489,9 @@ def test_py_class_method_metadata_renders_stub_signature() -> None:
     describe_schema = methods["describe"].schema
 
     assert describe_schema.origin == "Callable"
-    assert [arg.origin for arg in describe_schema.args] == [
-        "str",
+    assert describe_schema.named_args is not None
+    assert [arg.origin for arg in describe_schema.named_args["return"]] == ["str"]
+    assert [arg.origin for arg in describe_schema.named_args["params"]] == [
         MethodMetadata.__tvm_ffi_type_info__.type_key,  # ty: ignore[unresolved-attribute]
         "List",
         "str",
@@ -522,7 +550,9 @@ def test_generate_global_funcs_imports_enum_from_dataclasses() -> None:
         FuncInfo(
             schema=NamedTypeSchema(
                 "demo.get_enum",
-                TypeSchema("Callable", (TypeSchema("ffi.Enum"),)),
+                TypeSchema(
+                    "Callable", named_args={"return": (TypeSchema("ffi.Enum"),), "params": ()}
+                ),
             ),
             is_member=False,
         )
@@ -661,7 +691,7 @@ def test_generate_object_with_methods() -> None:
             ),
             FuncInfo.from_schema(
                 "demo.IntPair.sum",
-                TypeSchema("Callable", (TypeSchema("int"),)),
+                TypeSchema("Callable", named_args={"return": (TypeSchema("int"),), "params": ()}),
                 is_member=True,
             ),
         ],

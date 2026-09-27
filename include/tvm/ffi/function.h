@@ -891,8 +891,8 @@ class TypedFunction<R(Args...)> {
   /*! \return Whether the packed function is not nullptr */
   bool operator!=(std::nullptr_t null) const { return packed_ != nullptr; }
   /*!
-   * \brief Get the type schema of `TypedFunction<R(Args...)>` in json format.
-   * \return The type schema of the function in json format.
+   * \brief Get the JSON type schema of `TypedFunction<R(Args...)>`.
+   * \return An `ffi.Function` schema with named `return` and `params` type lists.
    */
   static std::string TypeSchema() { return details::FuncFunctorImpl<R, Args...>::TypeSchema(); }
 

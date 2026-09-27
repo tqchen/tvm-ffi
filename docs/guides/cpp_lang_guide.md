@@ -330,7 +330,20 @@ signature validation without calling the function.
 
 The metadata contains:
 
-- **type_schema**: JSON string describing function signature (return type and argument types)
+- **type_schema**: JSON string describing the function signature.
+
+A type schema has a nonempty `type` and may have positional `args`, named
+`named_args`, and `fallback`. `named_args` maps each group name to a list of
+complete type schemas; the list may be empty, and types in it may have their
+own `args`, `named_args`, or `fallback`. A function uses a one-element `return`
+list and an ordered `params` list:
+
+```json
+{"type":"ffi.Function","named_args":{"return":[{"type":"int"}],"params":[{"type":"int"}]}}
+```
+
+An empty `params` list represents a known zero-argument function. A bare
+`{"type":"ffi.Function"}` leaves the signature unspecified.
 
 ```cpp
 ffi::Module mod = ffi::Module::LoadFromFile("path/to/export_lib.so");
