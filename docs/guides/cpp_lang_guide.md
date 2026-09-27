@@ -330,7 +330,28 @@ signature validation without calling the function.
 
 The metadata contains:
 
-- **type_schema**: JSON string describing function signature (return type and argument types)
+- **type_schema**: JSON string describing the function signature.
+
+A type schema has a nonempty `type` and may have positional `args`, named
+`named_args`, and `fallback`. `named_args` maps each group name to a list of
+complete type schemas; the list may be empty, and types in it may have their
+own `args`, `named_args`, or `fallback`. A function uses a one-element `return`
+list and an ordered `params` list, with no positional `args`:
+
+```json
+{"type":"ffi.Function","named_args":{"return":[{"type":"int"}],"params":[{"type":"int"}]}}
+```
+
+This describes `int(int)`. A typed zero-argument function has an explicit empty
+`params` list, `{"type":"ffi.Function","named_args":{"return":[{"type":"int"}],"params":[]}}`.
+The bare `{"type":"ffi.Function"}` means that the signature is unspecified.
+A `return` group without `params` retains a known return type with unspecified
+parameters, as in Python's `Callable[..., R]`; it is distinct from `params: []`.
+A tuple return occupies one element of the `return` list:
+
+```json
+{"type":"ffi.Function","named_args":{"return":[{"type":"Tuple","args":[{"type":"int"},{"type":"str"}]}],"params":[]}}
+```
 
 ```cpp
 ffi::Module mod = ffi::Module::LoadFromFile("path/to/export_lib.so");

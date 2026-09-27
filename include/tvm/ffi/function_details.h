@@ -99,10 +99,13 @@ struct FuncFunctorImpl {
   }
   TVM_FFI_INLINE static std::string TypeSchema() {
     std::ostringstream oss;
-    oss << R"({"type":")" << StaticTypeKey::kTVMFFIFunction << R"(","args":[)";
+    oss << R"({"type":")" << StaticTypeKey::kTVMFFIFunction << R"(","named_args":{"return":[)";
     oss << details::TypeSchema<R>::v();
-    ((oss << "," << details::TypeSchema<Args>::v()), ...);
-    oss << "]}";
+    oss << R"(],"params":[)";
+    const char* sep = "";
+    ((oss << sep << details::TypeSchema<Args>::v(), sep = ","), ...);
+    (void)sep;
+    oss << "]}}";
     return oss.str();
   }
 };

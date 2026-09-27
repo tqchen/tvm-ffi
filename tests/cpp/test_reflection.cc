@@ -226,8 +226,9 @@ TEST(Reflection, ObjectPtrMethod) {
 
   const TVMFFIMethodInfo* info = reflection::GetMethodInfo("test.ObjectPtrHolder", "identity");
   Map<String, Any> metadata = json::Parse(String(info->metadata)).cast<Map<String, Any>>();
-  EXPECT_EQ(metadata["type_schema"].cast<String>(),
-            R"({"type":"ffi.Function","args":[{"type":"test.Int"},{"type":"test.Int"}]})");
+  EXPECT_EQ(
+      metadata["type_schema"].cast<String>(),
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"test.Int"}],"params":[{"type":"test.Int"}]}})");
 
   const TVMFFIMethodInfo* optional_info =
       reflection::GetMethodInfo("test.ObjectPtrHolder", "optional_identity");
@@ -235,7 +236,7 @@ TEST(Reflection, ObjectPtrMethod) {
       json::Parse(String(optional_info->metadata)).cast<Map<String, Any>>();
   EXPECT_EQ(
       optional_metadata["type_schema"].cast<String>(),
-      R"({"type":"ffi.Function","args":[{"type":"Optional","args":[{"type":"test.Int"}]},{"type":"Optional","args":[{"type":"test.Int"}]}]})");
+      R"({"type":"ffi.Function","named_args":{"return":[{"type":"Optional","args":[{"type":"test.Int"}]}],"params":[{"type":"Optional","args":[{"type":"test.Int"}]}]}})");
 }
 
 TEST(Reflection, FieldInfo) {

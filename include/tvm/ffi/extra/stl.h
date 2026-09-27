@@ -453,6 +453,7 @@ struct TypeTraits<std::variant<Args...>> : public TypeTraitsBase {
     os << R"({"type":"std::variant","args":[)";
     const char* sep = "";
     ((os << sep << details::TypeSchema<Args>::v(), sep = ", "), ...);
+    (void)sep;
     os << "]}";
     return std::move(os).str();
   }
@@ -641,10 +642,12 @@ struct TypeTraits<std::function<Ret(Args...)>> : TypeTraitsBase {
 
   TVM_FFI_INLINE static std::string TypeSchema() {
     std::ostringstream os;
-    os << R"({"type":"std::function","args":[)" << details::TypeSchema<Ret>::v() << ",[";
+    os << R"({"type":"std::function","named_args":{"return":[)" << details::TypeSchema<Ret>::v()
+       << R"(],"params":[)";
     const char* sep = "";
     ((os << sep << details::TypeSchema<Args>::v(), sep = ", "), ...);
-    os << "]]}";
+    (void)sep;
+    os << "]}}";
     return std::move(os).str();
   }
 };

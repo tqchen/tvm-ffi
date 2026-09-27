@@ -113,12 +113,16 @@ def render_func_signature(
     buf.write(f"def {func_name}(")
     if func.schema.origin != "Callable":
         raise ValueError(f"Expected Callable type schema, but got: {func.schema}")
-    if not func.schema.args:
+    if not func.schema.named_args:
         ty_map("Any")
         buf.write("*args: Any) -> Any: ...")
         return buf.getvalue()
-    arg_ret = func.schema.args[0]
-    arg_args = func.schema.args[1:]
+    arg_ret = func.schema.named_args["return"][0]
+    if "params" not in func.schema.named_args:
+        ty_map("Any")
+        buf.write(f"*args: Any) -> {arg_ret.output_repr(ty_map)}: ...")
+        return buf.getvalue()
+    arg_args = func.schema.named_args["params"]
     for i, arg in enumerate(arg_args):
         if func.is_member and i == 0:
             buf.write("self, ")
@@ -192,12 +196,15 @@ def _render_ffi_init_from_method(
         input_ty_map = ty_map
     indent_str = " " * indent
     schema = method.schema
-    if schema.origin != "Callable" or not schema.args:
+    if schema.origin != "Callable" or not schema.named_args:
         ty_map("Any")
         return f"{indent_str}def __ffi_init__(self, *args: Any) -> None: ..."
-    # schema.args[0] is return type, schema.args[1:] are param types.
+    if "params" not in schema.named_args:
+        ty_map("Any")
+        return f"{indent_str}def __ffi_init__(self, *args: Any) -> None: ..."
+    # Function parameters are an ordered list in named_args["params"].
     parts: list[str] = []
-    for i, arg in enumerate(schema.args[1:]):
+    for i, arg in enumerate(schema.named_args["params"]):
         parts.append(f"_{i}: {arg.input_repr(input_ty_map)}")
     if parts:
         params = ", ".join(parts)

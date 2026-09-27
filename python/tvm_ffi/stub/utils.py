@@ -136,6 +136,7 @@ class NamedTypeSchema(TypeSchema):
             args=schema.args,
             origin_type_index=schema.origin_type_index,
             fallback=schema.fallback,
+            named_args=schema.named_args,
         )
         self.name = name
         self.size = size
