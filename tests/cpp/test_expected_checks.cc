@@ -98,28 +98,23 @@ TEST(ExpectedChecks, ReturnChecks) {
   // NOLINTEND(google-readability-braces-around-statements)
 }
 
-template <typename Return>
-Return UnsafeMutateAssign(Expected<Any> result, int* evaluations) noexcept {
+Expected<int> UnsafeMutateAssign(Expected<Any> result, int* evaluations) noexcept {
   TVM_FFI_UNSAFE_S_MUTATE_ASSIGN_OR_RETURN(int, value, (++*evaluations, std::move(result)));
-  if constexpr (std::is_same_v<Return, TVMFFIAny>) {
-    return AnyView(value + 1).CopyToTVMFFIAny();
-  } else {
-    return value + 1;
-  }
+  return value + 1;
 }
 
 TEST(ExpectedChecks, UnsafeAssignment) {
   int evaluations = 0;
-  EXPECT_EQ(UnsafeMutateAssign<Expected<int>>(Any(41), &evaluations).value(), 42);
+  EXPECT_EQ(UnsafeMutateAssign(Any(41), &evaluations).value(), 42);
   auto raw_ok = details::ExpectedUnsafe::MoveFromTVMFFIAny<int>(
-      UnsafeMutateAssign<TVMFFIAny>(Any(41), &evaluations));
+      details::ExpectedUnsafe::MoveToTVMFFIAny(UnsafeMutateAssign(Any(41), &evaluations)));
   EXPECT_EQ(raw_ok.value(), 42);
   Error error("ValueError", "unsafe assign", "");
-  auto typed_error = UnsafeMutateAssign<Expected<int>>(error, &evaluations);
+  auto typed_error = UnsafeMutateAssign(error, &evaluations);
   ASSERT_TRUE(typed_error.is_err());
   EXPECT_EQ(typed_error.error().message(), "unsafe assign");
   auto raw_error = details::ExpectedUnsafe::MoveFromTVMFFIAny<int>(
-      UnsafeMutateAssign<TVMFFIAny>(error, &evaluations));
+      details::ExpectedUnsafe::MoveToTVMFFIAny(UnsafeMutateAssign(error, &evaluations)));
   ASSERT_TRUE(raw_error.is_err());
   EXPECT_EQ(raw_error.error().message(), "unsafe assign");
   EXPECT_EQ(evaluations, 4);

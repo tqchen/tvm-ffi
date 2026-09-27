@@ -171,9 +171,10 @@ Expected<Any> StructuralMutateExpected(
  * \return The mutated sequence, or an Error.
  */
 template <typename SeqObj>
-TVM_FFI_INLINE TVMFFIAny MutateSeqContainerChanged(StructuralMutatorObj* mutator,
-                                                   const SeqObj* self, int64_t index,
-                                                   Any first) noexcept {
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateSeqContainerChanged(StructuralMutatorObj* mutator,
+                                                                    const SeqObj* self,
+                                                                    int64_t index,
+                                                                    Any first) noexcept {
   int64_t size = static_cast<int64_t>(self->size());
   const Any* items = self->begin();
   ObjectPtr<SeqObj> output = SeqObj::CreateRepeated(size, Any());
@@ -186,7 +187,7 @@ TVM_FFI_INLINE TVMFFIAny MutateSeqContainerChanged(StructuralMutatorObj* mutator
                                       mutator->MutateExpected(item, InplaceMode::kDisallow));
     output->SetItemAfterCheck(i, std::move(mapped_value).ValueOrUnchanged(AnyView(item)));
   }
-  return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
+  return output;
 }
 
 /*!
@@ -198,7 +199,8 @@ TVM_FFI_INLINE TVMFFIAny MutateSeqContainerChanged(StructuralMutatorObj* mutator
  * \return The mutated sequence, or an Error.
  */
 template <typename SeqObj>
-TVMFFIAny MutateSeqContainerRaw(StructuralMutatorObj* mutator, const SeqObj* self) noexcept {
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateSeqContainerRaw(StructuralMutatorObj* mutator,
+                                                                const SeqObj* self) noexcept {
   int64_t size = static_cast<int64_t>(self->size());
   const Any* items = self->begin();
 
@@ -210,7 +212,7 @@ TVMFFIAny MutateSeqContainerRaw(StructuralMutatorObj* mutator, const SeqObj* sel
       return MutateSeqContainerChanged(mutator, self, i, std::move(mapped_value).ValueUnchecked());
     }
   }
-  return Unchanged().CopyToTVMFFIAny();
+  return Unchanged();
 }
 
 /*!
@@ -222,7 +224,8 @@ TVMFFIAny MutateSeqContainerRaw(StructuralMutatorObj* mutator, const SeqObj* sel
  * \return The mutated sequence, or an Error.
  */
 template <typename SeqObj>
-TVMFFIAny MaybeInplaceMutateSeqContainerRaw(StructuralMutatorObj* mutator, SeqObj* self) noexcept {
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MaybeInplaceMutateSeqContainerRaw(
+    StructuralMutatorObj* mutator, SeqObj* self) noexcept {
   for (int64_t i = 0; i < static_cast<int64_t>(self->size()); ++i) {
     const Any& item = self->begin()[i];
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, mapped_value,
@@ -231,7 +234,7 @@ TVMFFIAny MaybeInplaceMutateSeqContainerRaw(StructuralMutatorObj* mutator, SeqOb
       self->SetItemAfterCheck(i, std::move(mapped_value).ValueUnchecked());
     }
   }
-  return Unchanged().CopyToTVMFFIAny();
+  return Unchanged();
 }
 
 /*!
@@ -246,10 +249,10 @@ TVMFFIAny MaybeInplaceMutateSeqContainerRaw(StructuralMutatorObj* mutator, SeqOb
  * \return The mutated map, or an Error.
  */
 template <typename MapObjType>
-TVM_FFI_INLINE TVMFFIAny MutateMapValuesChanged(StructuralMutatorObj* mutator,
-                                                const MapObjType* self,
-                                                MapBaseObj::iterator source_it, size_t index,
-                                                Any first) noexcept {
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateMapValuesChanged(StructuralMutatorObj* mutator,
+                                                                 const MapObjType* self,
+                                                                 MapBaseObj::iterator source_it,
+                                                                 size_t index, Any first) noexcept {
   ObjectPtr<Object> output = MapObjType::ShallowCopy(self);
   auto output_it = static_cast<MapBaseObj*>(output.get())->begin();
   for (size_t i = 0; i < index; ++i) {
@@ -267,7 +270,7 @@ TVM_FFI_INLINE TVMFFIAny MutateMapValuesChanged(StructuralMutatorObj* mutator,
       output_it->second = std::move(new_value).ValueUnchecked();
     }
   }
-  return AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(output)));
+  return output;
 }
 
 /*!
@@ -279,7 +282,8 @@ TVM_FFI_INLINE TVMFFIAny MutateMapValuesChanged(StructuralMutatorObj* mutator,
  * \return The mutated map, or an Error.
  */
 template <typename MapObjType>
-TVMFFIAny MutateMapValuesRaw(StructuralMutatorObj* mutator, const MapObjType* self) noexcept {
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateMapValuesRaw(StructuralMutatorObj* mutator,
+                                                             const MapObjType* self) noexcept {
   size_t index = 0;
   for (auto source_it = self->begin(); source_it != self->end(); ++source_it, ++index) {
     const Any& old_value = source_it->second;
@@ -290,7 +294,7 @@ TVMFFIAny MutateMapValuesRaw(StructuralMutatorObj* mutator, const MapObjType* se
                                     std::move(new_value).ValueUnchecked());
     }
   }
-  return Unchanged().CopyToTVMFFIAny();
+  return Unchanged();
 }
 
 /*!
@@ -302,7 +306,8 @@ TVMFFIAny MutateMapValuesRaw(StructuralMutatorObj* mutator, const MapObjType* se
  * \return The mutated map, or an Error.
  */
 template <typename MapObjType>
-TVMFFIAny MaybeInplaceMutateMapValuesRaw(StructuralMutatorObj* mutator, MapObjType* self) noexcept {
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MaybeInplaceMutateMapValuesRaw(
+    StructuralMutatorObj* mutator, MapObjType* self) noexcept {
   for (auto it = self->begin(); it != self->end(); ++it) {
     const Any& old_value = it->second;
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, new_value,
@@ -311,61 +316,71 @@ TVMFFIAny MaybeInplaceMutateMapValuesRaw(StructuralMutatorObj* mutator, MapObjTy
       it->second = std::move(new_value).ValueUnchecked();
     }
   }
-  return Unchanged().CopyToTVMFFIAny();
+  return Unchanged();
 }
 
 /*! \brief Identity structural mutation hook for immutable String and Bytes leaves. */
-TVMFFIAny MutateImmutableLeaf(StructuralMutatorObj*, AnyView) noexcept {
-  return Unchanged().CopyToTVMFFIAny();
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateImmutableLeaf(StructuralMutatorObj*,
+                                                              AnyView) noexcept {
+  return Unchanged();
 }
 
-/*! \brief Structural mutation hook for ArrayObj. */
-TVMFFIAny MutateArray(StructuralMutatorObj* mutator, AnyView value) noexcept {
+/*! \brief Typed structural mutation hook for ArrayObj. */
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateArray(StructuralMutatorObj* mutator,
+                                                      AnyView value) noexcept {
   return MutateSeqContainerRaw(
       mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const ArrayObj>(value));
 }
 
-/*! \brief Maybe-in-place structural mutation hook for ArrayObj. */
-TVMFFIAny MaybeInplaceMutateArray(StructuralMutatorObj* mutator, AnyView value) noexcept {
+/*! \brief Typed structural mutation hook for ArrayObj. */
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MaybeInplaceMutateArray(StructuralMutatorObj* mutator,
+                                                                  AnyView value) noexcept {
   return MaybeInplaceMutateSeqContainerRaw(
       mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<ArrayObj>(value));
 }
 
-/*! \brief Structural mutation hook for ListObj. */
-TVMFFIAny MutateList(StructuralMutatorObj* mutator, AnyView value) noexcept {
+/*! \brief Typed structural mutation hook for ListObj. */
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateList(StructuralMutatorObj* mutator,
+                                                     AnyView value) noexcept {
   return MutateSeqContainerRaw(
       mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const ListObj>(value));
 }
 
-/*! \brief Maybe-in-place structural mutation hook for ListObj. */
-TVMFFIAny MaybeInplaceMutateList(StructuralMutatorObj* mutator, AnyView value) noexcept {
+/*! \brief Typed structural mutation hook for ListObj. */
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MaybeInplaceMutateList(StructuralMutatorObj* mutator,
+                                                                 AnyView value) noexcept {
   return MaybeInplaceMutateSeqContainerRaw(
       mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<ListObj>(value));
 }
 
-/*! \brief Structural mutation hook for MapObj. */
-TVMFFIAny MutateMap(StructuralMutatorObj* mutator, AnyView value) noexcept {
+/*! \brief Typed structural mutation hook for MapObj. */
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateMap(StructuralMutatorObj* mutator,
+                                                    AnyView value) noexcept {
   return MutateMapValuesRaw(
       mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const MapObj>(value));
 }
 
-/*! \brief Maybe-in-place structural mutation hook for MapObj. */
-TVMFFIAny MaybeInplaceMutateMap(StructuralMutatorObj* mutator, AnyView value) noexcept {
+/*! \brief Typed structural mutation hook for MapObj. */
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MaybeInplaceMutateMap(StructuralMutatorObj* mutator,
+                                                                AnyView value) noexcept {
   return MaybeInplaceMutateMapValuesRaw(
       mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<MapObj>(value));
 }
 
-/*! \brief Structural mutation hook for DictObj. */
-TVMFFIAny MutateDict(StructuralMutatorObj* mutator, AnyView value) noexcept {
+/*! \brief Typed structural mutation hook for DictObj. */
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MutateDict(StructuralMutatorObj* mutator,
+                                                     AnyView value) noexcept {
   return MutateMapValuesRaw(
       mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const DictObj>(value));
 }
 
-/*! \brief Maybe-in-place structural mutation hook for DictObj. */
-TVMFFIAny MaybeInplaceMutateDict(StructuralMutatorObj* mutator, AnyView value) noexcept {
+/*! \brief Typed structural mutation hook for DictObj. */
+TVM_FFI_INLINE Expected<UnchangedOr<Any>> MaybeInplaceMutateDict(StructuralMutatorObj* mutator,
+                                                                 AnyView value) noexcept {
   return MaybeInplaceMutateMapValuesRaw(
       mutator, details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<DictObj>(value));
 }
+
 }  // namespace details
 
 // ---------------------------------------------------------------------------
@@ -422,43 +437,39 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMaybeInplaceMutate);
   refl::TypeAttrDef<details::BigIntObj>()
       .attr(refl::type_attr::kStructuralMutate,
-            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateImmutableLeaf)))
+            FStructuralMutate::FromNative<&details::MutateImmutableLeaf>())
       .attr(refl::type_attr::kStructuralMaybeInplaceMutate,
-            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateImmutableLeaf)));
+            FStructuralMutate::FromNative<&details::MutateImmutableLeaf>());
   refl::TypeAttrDef<details::StringObj>()
       .attr(refl::type_attr::kStructuralMutate,
-            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateImmutableLeaf)))
+            FStructuralMutate::FromNative<&details::MutateImmutableLeaf>())
       .attr(refl::type_attr::kStructuralMaybeInplaceMutate,
-            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateImmutableLeaf)));
+            FStructuralMutate::FromNative<&details::MutateImmutableLeaf>());
   refl::TypeAttrDef<details::BytesObj>()
       .attr(refl::type_attr::kStructuralMutate,
-            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateImmutableLeaf)))
+            FStructuralMutate::FromNative<&details::MutateImmutableLeaf>())
       .attr(refl::type_attr::kStructuralMaybeInplaceMutate,
-            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateImmutableLeaf)));
+            FStructuralMutate::FromNative<&details::MutateImmutableLeaf>());
   refl::TypeAttrDef<ArrayObj>()
       .attr(refl::type_attr::kStructuralMutate,
-            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateArray)))
+            FStructuralMutate::FromNative<&details::MutateArray>())
       .attr(refl::type_attr::kStructuralMaybeInplaceMutate,
-            reinterpret_cast<void*>(
-                static_cast<FStructuralMutate>(&details::MaybeInplaceMutateArray)));
+            FStructuralMutate::FromNative<&details::MaybeInplaceMutateArray>());
   refl::TypeAttrDef<ListObj>()
       .attr(refl::type_attr::kStructuralMutate,
-            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateList)))
+            FStructuralMutate::FromNative<&details::MutateList>())
       .attr(refl::type_attr::kStructuralMaybeInplaceMutate,
-            reinterpret_cast<void*>(
-                static_cast<FStructuralMutate>(&details::MaybeInplaceMutateList)));
+            FStructuralMutate::FromNative<&details::MaybeInplaceMutateList>());
   refl::TypeAttrDef<MapObj>()
       .attr(refl::type_attr::kStructuralMutate,
-            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateMap)))
-      .attr(
-          refl::type_attr::kStructuralMaybeInplaceMutate,
-          reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MaybeInplaceMutateMap)));
+            FStructuralMutate::FromNative<&details::MutateMap>())
+      .attr(refl::type_attr::kStructuralMaybeInplaceMutate,
+            FStructuralMutate::FromNative<&details::MaybeInplaceMutateMap>());
   refl::TypeAttrDef<DictObj>()
       .attr(refl::type_attr::kStructuralMutate,
-            reinterpret_cast<void*>(static_cast<FStructuralMutate>(&details::MutateDict)))
+            FStructuralMutate::FromNative<&details::MutateDict>())
       .attr(refl::type_attr::kStructuralMaybeInplaceMutate,
-            reinterpret_cast<void*>(
-                static_cast<FStructuralMutate>(&details::MaybeInplaceMutateDict)));
+            FStructuralMutate::FromNative<&details::MaybeInplaceMutateDict>());
 }
 
 }  // namespace ffi

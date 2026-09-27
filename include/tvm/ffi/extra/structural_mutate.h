@@ -91,7 +91,7 @@ class StructuralMutateEngine;
  *       already established the type; allocation failure and violated container invariants
  *       remain fatal.
  */
-using FStructuralMutate = TVMFFIAny (*)(StructuralMutatorObj* mutator, AnyView value) noexcept;
+using FStructuralMutateABI = TVMFFIAny (*)(StructuralMutatorObj* mutator, AnyView value) noexcept;
 
 /*!
  * \brief ABI callback type for looking up an identity substitution.
@@ -133,7 +133,7 @@ struct StructuralMutatorVTable {
    * \param value The borrowed value to mutate.
    * \return Raw ``TVMFFIAny`` carrying a replacement, the unchanged marker, or Error.
    */
-  FStructuralMutate mutate = nullptr;
+  FStructuralMutateABI mutate = nullptr;
   /*!
    * \brief Mutate a value, permitting an in-place implementation when it is safe.
    *
@@ -144,7 +144,7 @@ struct StructuralMutatorVTable {
    * The returned value may refer to the same object as \p value when the implementation mutates
    * that object in place.
    */
-  FStructuralMutate maybe_inplace_mutate = nullptr;
+  FStructuralMutateABI maybe_inplace_mutate = nullptr;
   /*!
    * \brief Look up the replacement for a variable identity.
    *
@@ -163,6 +163,10 @@ struct StructuralMutatorVTable {
    */
   FStructuralVarRemapSet var_remap_set = nullptr;
 };
+
+/*! \brief Borrowed structural mutation hook at attribute lookup and call. */
+using FStructuralMutate =
+    reflection::NativeFunctionView<Expected<UnchangedOr<Any>>(StructuralMutatorObj*, AnyView)>;
 
 namespace details {
 template <typename Parent>
@@ -423,9 +427,9 @@ namespace details {
 // Takes nothing on purpose. Naming the offending type in the message would keep the result live
 // across the predicted-not-taken guard in the hot path. The declared type is already present in
 // the source line to which the diagnostic points.
-TVM_FFI_COLD_CODE inline UnexpectedReturnHelper SMutateDeclaredTypeError() noexcept {
-  return UnexpectedReturnHelper(Unexpected(
-      Error("TypeError", "structural mutate result does not match the declared type", "")));
+TVM_FFI_COLD_CODE inline Unexpected<Error> SMutateDeclaredTypeError() noexcept {
+  return Unexpected(
+      Error("TypeError", "structural mutate result does not match the declared type", ""));
 }
 }  // namespace details
 
@@ -448,7 +452,7 @@ class StructuralMutatorObj : public Object {
    *       only when inplace_mode is InplaceMode::kAllow and the current value is uniquely owned.
    *       See \ref MutateExpected for the full permission and error semantics.
    *
-   * Use \ref TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN in Expected-returning helpers or raw hooks to
+   * Use \ref TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN in Expected-returning hooks and helpers to
    * preserve checked typed mutation results and the fixed mismatch diagnostic. At a throwing
    * boundary, an explicit cast may instead report its own TypeError:
    * \code{.cpp}
@@ -599,7 +603,7 @@ class StructuralMutatorObj : public Object {
    */
   TVM_FFI_COLD_CODE static Expected<Any> BadStructuralMutateHookError() noexcept {
     return Unexpected(
-        Error("TypeError", "__s_mutate__ must be an opaque function pointer or ffi.Function", ""));
+        Error("TypeError", "__s_mutate__ must be a direct hook pointer or ffi.Function", ""));
   }
 
   // Convention: the ABI boundary is a raw TVMFFIAny; mutation results inside a callback or hook
@@ -622,7 +626,7 @@ class StructuralMutatorObj : public Object {
     // dispatching into `value`, so both exits below name it here and nowhere else.
     TVMFFIAny result;
     if (TVM_FFI_PREDICT_TRUE(attr.type_index() == TypeIndex::kTVMFFIOpaquePtr)) {
-      result = (*reinterpret_cast<FStructuralMutate>(attr.cast<void*>()))(this, value);
+      result = (*reinterpret_cast<FStructuralMutateABI>(attr.cast<void*>()))(this, value);
     } else {
       result = DefaultMutateRawTail(value, attr);
     }
@@ -642,7 +646,7 @@ class StructuralMutatorObj : public Object {
   /*! \brief The cold remainder of DefaultMutateRaw: an ffi.Function hook, or no hook at all. */
   TVMFFIAny DefaultMutateRawTail(AnyView value, AnyView attr) noexcept {
     if (attr.type_index() != TypeIndex::kTVMFFINone) {
-      // Registered, but as an ffi.Function rather than an opaque pointer.
+      // Registered as a typed function pointer or ffi.Function.
       if (attr.type_index() == TypeIndex::kTVMFFIFunction) {
         return details::ExpectedUnsafe::MoveToTVMFFIAny(
             attr.cast<Function>().CallExpected<Any>(this, value));
@@ -707,7 +711,7 @@ class StructuralMutatorObj : public Object {
       // This is the engine dispatching into `value`; hooks propagate errors untouched, so the
       // node is named here. The fall-through re-dispatches the same node through
       // DefaultMutateRaw, which names it there instead -- exactly one frame either way.
-      TVMFFIAny result = (*reinterpret_cast<FStructuralMutate>(attr.cast<void*>()))(this, value);
+      TVMFFIAny result = (*reinterpret_cast<FStructuralMutateABI>(attr.cast<void*>()))(this, value);
       if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
         return AttachVisitErrorContextRaw(result, value);
       }
@@ -896,15 +900,13 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
 
 namespace details {
 /// \cond Doxygen_Suppress
-// Return an error from the current raw or Expected mutation function.
-// The rvalue-only helper lets the enclosing return type select the representation.
-#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result)                   \
-  do {                                                                \
-    auto&& tvm_ffi_res_ = (Result);                                   \
-    if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.is_err())) {               \
-      return ::tvm::ffi::details::UnexpectedReturnHelper(             \
-          ::tvm::ffi::Unexpected(::std::move(tvm_ffi_res_).error())); \
-    }                                                                 \
+// Return an error from the current Expected-returning mutation function.
+#define TVM_FFI_S_MUTATE_MAYBE_EARLY_RETURN(Result)                     \
+  do {                                                                  \
+    auto&& tvm_ffi_res_ = (Result);                                     \
+    if (TVM_FFI_PREDICT_FALSE(tvm_ffi_res_.is_err())) {                 \
+      return ::tvm::ffi::Unexpected(::std::move(tvm_ffi_res_).error()); \
+    }                                                                   \
   } while (0)
 
 /// \endcond
@@ -928,16 +930,16 @@ namespace details {
  * \brief Unwrap a successful mutation result into a newly declared value or return its error.
  *
  * ``Type`` must be concrete; use a type alias when it contains a top-level comma. A type mismatch
- * returns ``TypeError`` through the surrounding raw or ``Expected`` function without throwing,
+ * returns ``TypeError`` through the surrounding ``Expected`` function without throwing,
  * reported with a fixed string. The check is omitted when the declared type subsumes the result's
- * success type. Its early returns work from either a raw ``TVMFFIAny`` hook or an
- * ``Expected<T>`` helper, including one with a different success type. This macro declares
+ * success type. Its early returns work from an ``Expected<T>`` hook or helper, including one
+ * with a different success type. This macro declares
  * ``Name`` into the enclosing scope and must be used in a braced block, never as an unbraced
  * control-flow body.
  *
  * Example:
  * \code{.cpp}
- * TVMFFIAny FooMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
+ * Expected<UnchangedOr<Any>> FooMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
  *   const FooNode* self =
  *       details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const FooNode>(value);
  *   constexpr InplaceMode inplace_mode = InplaceMode::kDisallow;
@@ -946,12 +948,12 @@ namespace details {
  *   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Expr>, b,
  *                                     mutator->MutateExpected(self->b, inplace_mode));
  *   if (a.UnchangedOrSameAs(self->a) && b.UnchangedOrSameAs(self->b)) {
- *     return Unchanged().CopyToTVMFFIAny();
+ *     return Unchanged();
  *   }
  *   ObjectPtr<FooNode> copy = make_object<FooNode>(*self);
  *   copy->a = std::move(a).ValueOrUnchanged(std::move(copy->a));
  *   copy->b = std::move(b).ValueOrUnchanged(std::move(copy->b));
- *   return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
+ *   return copy;
  * }
  * \endcode
  *
@@ -961,7 +963,7 @@ namespace details {
  * \param Type The concrete successful value type.
  * \param Name The name of the value declared in the enclosing scope.
  * \param ResultExpr An expression producing the ``Expected`` value to unwrap.
- * \sa Unchanged::CopyToTVMFFIAny
+ * \sa Unchanged
  */
 #define TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(Type, Name, ResultExpr)                                  \
   TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN_IMPL_(TVM_FFI_STR_CONCAT(tvm_ffi_mutate_result_, __COUNTER__), \
@@ -1027,9 +1029,8 @@ class StructuralMapEngineBase : public StructuralMutatorObj {
     return Unexpected(Error("TypeError", "structural mutate: descent changed the node type", ""));
   }
 
-  TVM_FFI_COLD_CODE static details::UnexpectedReturnHelper VarRemapKeyTypeError() noexcept {
-    return details::UnexpectedReturnHelper(
-        Unexpected(Error("TypeError", "Variable-remap key must be an object-backed value", "")));
+  TVM_FFI_COLD_CODE static Unexpected<Error> VarRemapKeyTypeError() noexcept {
+    return Unexpected(Error("TypeError", "Variable-remap key must be an object-backed value", ""));
   }
   /// \endcond
 

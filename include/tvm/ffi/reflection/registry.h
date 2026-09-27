@@ -1145,7 +1145,7 @@ class TypeAttrDef : public ReflectionDefBase {
    * \return The TypeAttrDef object.
    */
   template <typename T>
-  TypeAttrDef& attr(const char* name, T value) {
+  TypeAttrDef& attr(const char* name, T value) {  // NOLINT(performance-unnecessary-value-param)
     RegisterTypeAttrValue(type_index_, name, std::move(value));
     return *this;
   }

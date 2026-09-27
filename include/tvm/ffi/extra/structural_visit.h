@@ -35,6 +35,7 @@
 #include <tvm/ffi/function_details.h>
 #include <tvm/ffi/optional.h>
 #include <tvm/ffi/reflection/accessor.h>
+#include <tvm/ffi/reflection/native_function.h>
 
 #include <cstddef>
 #include <exception>
@@ -99,7 +100,7 @@ class StructuralVisitorObj;
  * ``AnyView``. It returns a raw ``TVMFFIAny`` storing
  * ``Expected<Optional<VisitInterrupt>>``.
  */
-using FStructuralVisit = TVMFFIAny (*)(StructuralVisitorObj* visitor, AnyView value) noexcept;
+using FStructuralVisitABI = TVMFFIAny (*)(StructuralVisitorObj* visitor, AnyView value) noexcept;
 
 namespace details {
 
@@ -124,8 +125,12 @@ struct StructuralVisitorVTable {
    * failure, the returned ``TVMFFIAny`` stores ``Error``; on success, it stores
    * either None or ``VisitInterrupt``.
    */
-  FStructuralVisit visit = nullptr;
+  FStructuralVisitABI visit = nullptr;
 };
+
+/*! \brief Borrowed typed structural visit hook at attribute lookup and call. */
+using FStructuralVisit = reflection::NativeFunctionView<Expected<Optional<VisitInterrupt>>(
+    StructuralVisitorObj*, AnyView)>;
 
 /*!
  * \brief Object node of a structural visitor.
@@ -236,7 +241,7 @@ class StructuralVisitorObj : public Object {
     static reflection::TypeAttrColumn column(reflection::type_attr::kStructuralVisit);
     AnyView attr = column[value.type_index()];
     if (TVM_FFI_PREDICT_TRUE(attr.type_index() == TypeIndex::kTVMFFIOpaquePtr)) {
-      return (*reinterpret_cast<FStructuralVisit>(attr.cast<void*>()))(this, value);
+      return (*reinterpret_cast<FStructuralVisitABI>(attr.cast<void*>()))(this, value);
     }
     return DefaultVisitRawTail(value, attr);
   }
@@ -305,19 +310,6 @@ class StructuralVisitor : public ObjectRef {
 };
 
 namespace details {
-
-/*!
- * \brief Return an optional visit result directly or wrap an Expected for return conversion.
- */
-template <typename T>
-TVM_FFI_INLINE auto VisitReturnHelper(T&& result) {
-  if constexpr (std::is_same_v<std::remove_cv_t<std::remove_reference_t<T>>,
-                               Optional<VisitInterrupt>>) {
-    return std::forward<T>(result);
-  } else {
-    return ExpectedReturnHelper(std::forward<T>(result));
-  }
-}
 
 /*!
  * \brief Return true when \p result carries a traversal-stopping interrupt.
@@ -522,21 +514,21 @@ namespace details {
  * \brief Return from a visit hook if \p Result stops traversal.
  *
  * Propagates an ``Error`` or a ``VisitInterrupt`` out of the enclosing function
- * and otherwise falls through. An ``Optional<VisitInterrupt>`` result is returned
- * directly. An ``Expected`` result uses an rvalue-only proxy to select the return
- * representation for raw ``TVMFFIAny`` hooks or typed ``Expected`` helpers.
+ * and otherwise falls through. The stopping result is moved directly into the
+ * enclosing Optional or Expected return type.
  *
  * A registered ``__s_visit__`` hook is one line per traversed field followed by
  * the terminal return. A field skipped on purpose is guarded by a condition and
  * carries a ``// skips:`` note saying why.
  *
  * \code{.cpp}
- * TVMFFIAny FooVisit(StructuralVisitorObj* visitor, AnyView value) noexcept {
+ * Expected<Optional<VisitInterrupt>> FooVisit(StructuralVisitorObj* visitor,
+ *                                             AnyView value) noexcept {
  *   const FooNode* self =
  *       details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const FooNode>(value);
  *   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->a));
  *   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->b));
- *   return AnyView(nullptr).CopyToTVMFFIAny();
+ *   return Optional<VisitInterrupt>(std::nullopt);
  * }
  * \endcode
  *
@@ -547,7 +539,7 @@ namespace details {
     auto&& tvm_ffi_res_ = (Result);                                               \
     if (TVM_FFI_PREDICT_FALSE(                                                    \
             ::tvm::ffi::details::StructuralVisitNeedEarlyReturn(tvm_ffi_res_))) { \
-      return ::tvm::ffi::details::VisitReturnHelper(::std::move(tvm_ffi_res_));   \
+      return ::std::move(tvm_ffi_res_);                                           \
     }                                                                             \
   } while (0)
 
