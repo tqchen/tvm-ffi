@@ -90,7 +90,7 @@ def test_named_args_round_trip() -> None:
         "Callable",
         named_args={"return": (A(tuple[int, str]),), "params": (payload,)},
     )
-    schema = TypeSchema("custom.Wrapper", named_args={"members": [function], "empty": []})
+    schema = TypeSchema("custom.Wrapper", named_args={"members": (function,), "empty": ()})
     assert TypeSchema.from_json_obj(schema.to_json()) == schema
     assert function.input_repr() == "Callable[[int], tuple[int, str]]"
     assert A(Callable[[], int]).to_json()["named_args"]["params"] == []

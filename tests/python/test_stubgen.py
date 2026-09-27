@@ -489,6 +489,7 @@ def test_py_class_method_metadata_renders_stub_signature() -> None:
     describe_schema = methods["describe"].schema
 
     assert describe_schema.origin == "Callable"
+    assert describe_schema.named_args is not None
     assert [arg.origin for arg in describe_schema.named_args["return"]] == ["str"]
     assert [arg.origin for arg in describe_schema.named_args["params"]] == [
         MethodMetadata.__tvm_ffi_type_info__.type_key,  # ty: ignore[unresolved-attribute]
