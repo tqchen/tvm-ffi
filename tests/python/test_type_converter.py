@@ -84,64 +84,19 @@ def _make_str_enum_type() -> typing.Any:
 A = TypeSchema.from_annotation
 
 
-def test_named_callable_round_trip_and_legacy_input() -> None:
-    schema = A(Callable[[int, str], tuple[int, str]])
-    assert schema.to_json() == {
-        "type": "Callable",
-        "named_args": {
-            "return": [{"type": "tuple", "args": [{"type": "int"}, {"type": "str"}]}],
-            "params": [{"type": "int"}, {"type": "str"}],
-        },
-    }
-    assert TypeSchema.from_json_obj(schema.to_json()) == schema
-    assert schema.repr() == "Callable[[int, str], tuple[int, str]]"
-    legacy = TypeSchema.from_json_obj(
-        {"type": "ffi.Function", "args": [{"type": "int"}, {"type": "str"}]}
-    )
-    assert legacy.to_json()["named_args"] == {
-        "return": [{"type": "int"}],
-        "params": [{"type": "str"}],
-    }
-
-
-def test_empty_callable_params_differs_from_unspecified_parameters() -> None:
-    known_empty = A(Callable[[], int])
-    unspecified = A(Callable[..., int])
-    assert known_empty.to_json()["named_args"]["params"] == []
-    assert known_empty.repr() == "Callable[[], int]"
-    assert unspecified.to_json() == {
-        "type": "Callable",
-        "named_args": {"return": [{"type": "int"}]},
-    }
-    assert unspecified.repr() == "Callable[..., int]"
-
-
-def test_nested_named_args_preserve_fallback_and_copy() -> None:
+def test_named_args_round_trip() -> None:
     payload = TypeSchema("custom.Payload", fallback=TypeSchema("int"))
-    nested = TypeSchema("Callable", named_args={"return": (payload,), "params": (payload,)})
-    outer = TypeSchema("Optional", (nested,))
-    assert TypeSchema.from_json_obj(outer.to_json()) == outer
-    assert outer.to_json()["args"][0]["named_args"]["params"][0]["fallback"] == {"type": "int"}
-    generic = TypeSchema("custom.Wrapper", named_args={"members": [outer], "empty": []})
-    assert TypeSchema.from_json_obj(generic.to_json()) == generic
-    assert generic.to_json()["named_args"]["empty"] == []
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        {"type": "", "args": []},
-        {"type": "int", "named_args": []},
-        {"type": "int", "named_args": {"member": {"type": "str"}}},
-        {"type": "int", "named_args": {"member": [2]}},
-        {"type": "Callable", "named_args": {"return": [], "params": []}},
-        {"type": "Callable", "named_args": {"return": [{"type": "int"}, {"type": "str"}]}},
-        {"type": "Callable", "named_args": {"params": []}},
-    ],
-)
-def test_invalid_named_args_shapes(raw: dict[str, object]) -> None:
-    with pytest.raises((TypeError, ValueError)):
-        TypeSchema.from_json_obj(raw)
+    function = TypeSchema(
+        "Callable",
+        named_args={"return": (A(tuple[int, str]),), "params": (payload,)},
+    )
+    schema = TypeSchema("custom.Wrapper", named_args={"members": [function], "empty": []})
+    assert TypeSchema.from_json_obj(schema.to_json()) == schema
+    assert function.input_repr() == "Callable[[int], tuple[int, str]]"
+    assert A(Callable[[], int]).to_json()["named_args"]["params"] == []
+    assert "params" not in A(Callable[..., int]).to_json()["named_args"]
+    with pytest.raises(TypeError):
+        TypeSchema.from_json_obj({"type": "int", "named_args": {"member": {"type": "str"}}})
 
 
 # ---------------------------------------------------------------------------

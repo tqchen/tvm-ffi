@@ -163,9 +163,7 @@ class TypeSchema:
 
     ``args`` holds positional type arguments. ``named_args`` maps each name
     to an ordered list of complete type schemas. A typed function uses
-    ``named_args['return']`` (one type) and ``named_args['params']`` (possibly
-    empty). A bare function leaves its signature unspecified, while a return
-    group without ``params`` leaves only its parameters unspecified.
+    ``return`` and ``params`` as named groups.
     """
     origin: str
     args: tuple["TypeSchema", ...] | None = None
