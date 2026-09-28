@@ -69,10 +69,28 @@ TEST(NativeFunctionView, ErrorAndNullRejection) {
   ASSERT_TRUE(failed.is_err());
   EXPECT_EQ(failed.error().kind(), "ValueError");
 
+  Error packed_error("ValueError", "packed failure", "");
+  TypedFunction<Expected<int>(int)> packed(Function::FromTyped(
+      [packed_error](int) -> Expected<int> { return Unexpected(packed_error); }));
+  auto packed_failed = NativeFunctionView<Expected<int>(int)>(packed)(0);
+  ASSERT_TRUE(packed_failed.is_err());
+  EXPECT_TRUE(packed_failed.error().same_as(packed_error));
+
+  TypedFunction<Expected<void>()> packed_void(Function::FromTyped(
+      []() -> Expected<void> { return Unexpected(Error("ValueError", "void failure", "")); }));
+  auto void_failed = NativeFunctionView<Expected<void>()>(packed_void)();
+  ASSERT_TRUE(void_failed.is_err());
+  EXPECT_EQ(void_failed.error().message(), "void failure");
+
   TypedFunction<Expected<int>(int)> empty(nullptr);
   EXPECT_ANY_THROW(NativeFunctionView<Expected<int>(int)> invalid(empty));
   EXPECT_FALSE(Any(nullptr).try_cast<NativeFunctionView<Expected<int>(int)>>().has_value());
   EXPECT_FALSE(Any(nullptr).try_cast<NativeFunction<Expected<int>(int)>>().has_value());
+  EXPECT_FALSE(Any(static_cast<void*>(nullptr))
+                   .try_cast<NativeFunctionView<Expected<int>(int)>>()
+                   .has_value());
+  EXPECT_FALSE(
+      Any(static_cast<void*>(nullptr)).try_cast<NativeFunction<Expected<int>(int)>>().has_value());
 }
 
 TEST(NativeFunctionView, OwningLifetimeAndAnyRoundtrip) {

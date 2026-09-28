@@ -96,9 +96,11 @@ class NativeFunctionView<Expected<R>(Args...)> {
    */
   template <Expected<R> (*Fn)(Args...) noexcept>
   static NativeFunctionView FromNative() {
+    static_assert(Fn != nullptr, "NativeFunctionView requires a non-null native function");
     TVMFFIAny data;
     data.type_index = TypeIndex::kTVMFFIOpaquePtr;
     data.zero_padding = 0;
+    TVM_FFI_CLEAR_PTR_PADDING_IN_FFI_ANY(&data);
     data.v_ptr = reinterpret_cast<void*>(&NativeABIFuncPtr<Fn>);
     return NativeFunctionView(UnsafeInit{}, data);
   }
@@ -140,6 +142,10 @@ class NativeFunctionView<Expected<R>(Args...)> {
     if (TVM_FFI_PREDICT_FALSE(code != 0)) {
       return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(
           Expected<R>(Unexpected(ffi::details::MoveFromSafeCallRaised())));
+    }
+    if (result.type_index() == TypeIndex::kTVMFFIError) {
+      return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(
+          Expected<R>(Unexpected(std::move(result).template cast<Error>())));
     }
     if constexpr (std::is_same_v<R, Any>) {
       return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<R>(std::move(result)));
@@ -258,8 +264,8 @@ struct TypeTraits<reflection::NativeFunctionView<Signature>> : public TypeTraits
     *result = details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(AnyView::CopyFromTVMFFIAny(src.data_)));
   }
   static bool CheckAnyStrict(const TVMFFIAny* src) {
-    return (src->type_index == TypeIndex::kTVMFFIOpaquePtr ||
-            src->type_index == TypeIndex::kTVMFFIFunction);
+    return (src->type_index == TypeIndex::kTVMFFIOpaquePtr && src->v_ptr != nullptr) ||
+           (src->type_index == TypeIndex::kTVMFFIFunction && src->v_obj != nullptr);
   }
   static View CopyFromAnyViewAfterCheck(const TVMFFIAny* src) { return View(UnsafeInit{}, *src); }
   static View MoveFromAnyAfterCheck(TVMFFIAny* src) { return CopyFromAnyViewAfterCheck(src); }
