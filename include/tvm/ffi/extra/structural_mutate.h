@@ -166,7 +166,7 @@ struct StructuralMutatorVTable {
 
 /*! \brief Borrowed structural mutation hook at attribute lookup and call. */
 using FStructuralMutate =
-    reflection::NativeFunctionView<Expected<UnchangedOr<Any>>(StructuralMutatorObj*, AnyView)>;
+    reflection::NativeFunctionView<UnchangedOr<Any>(StructuralMutatorObj*, AnyView)>;
 
 namespace details {
 template <typename Parent>
@@ -955,6 +955,8 @@ namespace details {
  *   copy->b = std::move(b).ValueOrUnchanged(std::move(copy->b));
  *   return copy;
  * }
+ * FStructuralMutate hook = FStructuralMutate::FromNative<&FooMutate>();
+ * Expected<UnchangedOr<Any>> result = hook.CallExpected(mutator, value);
  * \endcode
  *
  * Keep one statement per traversed field. A field skipped intentionally must be guarded and carry

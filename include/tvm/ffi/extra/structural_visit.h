@@ -129,8 +129,8 @@ struct StructuralVisitorVTable {
 };
 
 /*! \brief Borrowed typed structural visit hook at attribute lookup and call. */
-using FStructuralVisit = reflection::NativeFunctionView<Expected<Optional<VisitInterrupt>>(
-    StructuralVisitorObj*, AnyView)>;
+using FStructuralVisit =
+    reflection::NativeFunctionView<Optional<VisitInterrupt>(StructuralVisitorObj*, AnyView)>;
 
 /*!
  * \brief Object node of a structural visitor.
@@ -530,6 +530,8 @@ namespace details {
  *   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->b));
  *   return Optional<VisitInterrupt>(std::nullopt);
  * }
+ * FStructuralVisit hook = FStructuralVisit::FromNative<&FooVisit>();
+ * Expected<Optional<VisitInterrupt>> result = hook.CallExpected(visitor, value);
  * \endcode
  *
  * \param Result An expression yielding the descent result to inspect.
