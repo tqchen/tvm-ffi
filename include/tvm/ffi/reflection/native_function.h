@@ -144,8 +144,8 @@ class NativeFunctionView<Expected<R>(Args...)> {
           Expected<R>(Unexpected(ffi::details::MoveFromSafeCallRaised())));
     }
     if (result.type_index() == TypeIndex::kTVMFFIError) {
-      return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(
-          Expected<R>(Unexpected(std::move(result).template cast<Error>())));
+      return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<R>(
+          Unexpected(ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(result)))));
     }
     if constexpr (std::is_same_v<R, Any>) {
       return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<R>(std::move(result)));
@@ -265,7 +265,7 @@ struct TypeTraits<reflection::NativeFunctionView<Signature>> : public TypeTraits
   }
   static bool CheckAnyStrict(const TVMFFIAny* src) {
     return (src->type_index == TypeIndex::kTVMFFIOpaquePtr && src->v_ptr != nullptr) ||
-           (src->type_index == TypeIndex::kTVMFFIFunction && src->v_obj != nullptr);
+           src->type_index == TypeIndex::kTVMFFIFunction;
   }
   static View CopyFromAnyViewAfterCheck(const TVMFFIAny* src) { return View(UnsafeInit{}, *src); }
   static View MoveFromAnyAfterCheck(TVMFFIAny* src) { return CopyFromAnyViewAfterCheck(src); }
