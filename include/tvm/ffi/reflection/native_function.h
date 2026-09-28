@@ -27,6 +27,7 @@
 #include <tvm/ffi/expected.h>
 #include <tvm/ffi/function.h>
 
+#include <exception>
 #include <type_traits>
 #include <utility>
 
@@ -40,23 +41,27 @@ class NativeFunctionView;
 /*!
  * \brief Borrowed typed function for reflection attributes with native ABI dispatch.
  *
- * Bind a named `Expected<R>(Args...) noexcept` native target with `FromNative<&Fn>()`. The view
- * stores its C ABI-compatible `TVMFFIAny(Args...) noexcept` adapter pointer.
- * A borrowed `ffi::Function` supports frontend registration and packed fallback. This approach
- * provides efficient native calls for most natively registered hooks while preserving flexibility
- * in how functions are registered.
+ * Bind a named `Expected<R>(Args...) noexcept` or `R(Args...)` target with `FromNative<&Fn>()`.
+ * The view stores its C ABI-compatible `TVMFFIAny(Args...) noexcept` adapter pointer. A target
+ * that may throw is adapted to an Expected result at that ABI boundary.
+ * A borrowed `ffi::Function` supports frontend registration and packed fallback. A compatible
+ * `TypedFunction<R(Args...)>` or `TypedFunction<Expected<R>(Args...)>` lvalue may be borrowed.
+ * This approach provides efficient native calls for most natively registered hooks while
+ * preserving flexibility in how functions are registered.
  *
  * \code{.cpp}
- * TVM_FFI_INLINE tvm::ffi::Expected<int> Increment(int value) noexcept { return value + 1; }
- * using FIncrement = tvm::ffi::reflection::NativeFunctionView<tvm::ffi::Expected<int>(int)>;
+ * TVM_FFI_INLINE int Increment(int value) { return value + 1; }
+ * using FIncrement = tvm::ffi::reflection::NativeFunctionView<int(int)>;
  * FIncrement native = FIncrement::FromNative<&Increment>();
- * tvm::ffi::Expected<int> result = native(3);
+ * int result = native(3);
+ * tvm::ffi::Expected<int> checked = native.CallExpected(3);
  * \endcode
  *
- * \note The original function must remain alive while a borrowed view is used.
+ * \note A borrowed packed function must remain alive while its view is used. Native adapters
+ * have static lifetime.
  */
 template <typename R, typename... Args>
-class NativeFunctionView<Expected<R>(Args...)> {
+class NativeFunctionView<R(Args...)> {
  public:
   static_assert(((std::is_lvalue_reference_v<Args> ||
                   (std::is_standard_layout_v<Args> && std::is_trivially_copyable_v<Args>)) &&
@@ -77,16 +82,22 @@ class NativeFunctionView<Expected<R>(Args...)> {
    *
    * \param packed The function that must outlive this view.
    */
-  NativeFunctionView(const TypedFunction<Expected<R>(Args...)>& packed)  // NOLINT(*)
+  template <typename PackedR,
+            std::enable_if_t<std::is_same_v<PackedR, R> || std::is_same_v<PackedR, Expected<R>>,
+                             int> = 0>
+  NativeFunctionView(const TypedFunction<PackedR(Args...)>& packed)  // NOLINT(*)
       : data_(AnyView(packed.packed()).CopyToTVMFFIAny()) {
     TVM_FFI_CHECK(packed != nullptr, ValueError)
         << "NativeFunctionView requires a non-null typed function";
   }
   /*! \brief Reject a temporary packed function, which would leave a dangling view. */
-  NativeFunctionView(const TypedFunction<Expected<R>(Args...)>&&) = delete;
+  template <
+      typename PackedR,
+      std::enable_if_t<std::is_same_v<PackedR, R> || std::is_same_v<PackedR, Expected<R>>, int> = 0>
+  NativeFunctionView(const TypedFunction<PackedR(Args...)>&&) = delete;
 
   /*!
-   * \brief Bind a named noexcept native function through a context-free ABI adapter.
+   * \brief Bind a named native function through a context-free noexcept ABI adapter.
    *
    * \tparam Fn The native hook function.
    * \return A borrowed view of its static adapter.
@@ -94,33 +105,61 @@ class NativeFunctionView<Expected<R>(Args...)> {
    * to the adapter. This gives the compiler an opportunity to inline it into the adapter;
    * calls and result handling inside `Fn` may still remain.
    */
-  template <Expected<R> (*Fn)(Args...) noexcept>
+  template <auto Fn>
   static NativeFunctionView FromNative() {
     static_assert(Fn != nullptr, "NativeFunctionView requires a non-null native function");
     TVMFFIAny data;
     data.type_index = TypeIndex::kTVMFFIOpaquePtr;
     data.zero_padding = 0;
     TVM_FFI_CLEAR_PTR_PADDING_IN_FFI_ANY(&data);
-    data.v_ptr = reinterpret_cast<void*>(&NativeABIFuncPtr<Fn>);
+    data.v_ptr = reinterpret_cast<void*>(&NativeABIAdapter<Fn>);
     return NativeFunctionView(UnsafeInit{}, data);
   }
 
   /*!
-   * \brief Invoke the hook and return its declared Expected result.
+   * \brief Invoke the hook and return a value or an error.
    *
    * \param args The typed hook arguments.
    * \return A value or an error.
    */
-  TVM_FFI_INLINE Expected<R> operator()(Args... args) const noexcept {
+  TVM_FFI_INLINE Expected<R> CallExpected(Args... args) const noexcept {
     return ffi::details::ExpectedUnsafe::MoveFromTVMFFIAny<R>(CallABI(std::forward<Args>(args)...));
+  }
+
+  /*! \brief Invoke the hook and throw its error on failure. */
+  TVM_FFI_INLINE R operator()(Args... args) const {
+    return CallExpected(std::forward<Args>(args)...).value();
   }
 
  private:
   explicit NativeFunctionView(UnsafeInit, TVMFFIAny data) : data_(data) {}
 
+  template <auto Fn>
+  static TVMFFIAny NativeABIAdapter(Args... args) noexcept {
+    return NativeABIFuncPtr<Fn>(std::forward<Args>(args)...);
+  }
+
   template <Expected<R> (*Fn)(Args...) noexcept>
-  static TVMFFIAny NativeABIFuncPtr(Args... args) noexcept {
+  TVM_FFI_INLINE static TVMFFIAny NativeABIFuncPtr(Args... args) noexcept {
     return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(Fn(std::forward<Args>(args)...));
+  }
+
+  template <R (*Fn)(Args...)>
+  TVM_FFI_INLINE static TVMFFIAny NativeABIFuncPtr(Args... args) noexcept {
+    try {
+      if constexpr (std::is_void_v<R>) {
+        Fn(std::forward<Args>(args)...);
+        return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<void>());
+      } else {
+        return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(
+            Expected<R>(Fn(std::forward<Args>(args)...)));
+      }
+    } catch (const ffi::Error& error) {
+      return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(Expected<R>(Unexpected(error)));
+    } catch (const std::exception& error) {
+      return ffi::details::ExpectedUnsafe::MoveToTVMFFIAny(
+          Expected<R>(Unexpected(ffi::Error("InternalError", error.what(), ""))));
+    }
   }
 
   TVM_FFI_INLINE TVMFFIAny CallABI(Args... args) const noexcept {
@@ -179,17 +218,18 @@ class NativeFunction;
  * The owner stores one `ffi::Any`, which manages the lifetime of packed function objects.
  *
  * \code{.cpp}
- * tvm::ffi::Expected<int> Increment(int value) noexcept { return value + 1; }
- * using FIncrement = tvm::ffi::reflection::NativeFunction<tvm::ffi::Expected<int>(int)>;
+ * int Increment(int value) { return value + 1; }
+ * using FIncrement = tvm::ffi::reflection::NativeFunction<int(int)>;
  * FIncrement owned = FIncrement::FromNative<&Increment>();
- * tvm::ffi::Expected<int> result = owned(3);
+ * int result = owned(3);
+ * tvm::ffi::Expected<int> checked = owned.CallExpected(3);
  * \endcode
  */
 template <typename R, typename... Args>
-class NativeFunction<Expected<R>(Args...)> {
+class NativeFunction<R(Args...)> {
  public:
   /*! \brief The borrowed view with the same callable signature. */
-  using View = NativeFunctionView<Expected<R>(Args...)>;
+  using View = NativeFunctionView<R(Args...)>;
 
   /*!
    * \brief Retain a copy of a borrowed native or packed hook.
@@ -203,7 +243,10 @@ class NativeFunction<Expected<R>(Args...)> {
    *
    * \param packed The typed function to copy.
    */
-  NativeFunction(const TypedFunction<Expected<R>(Args...)>& packed)  // NOLINT(*)
+  template <typename PackedR,
+            std::enable_if_t<std::is_same_v<PackedR, R> || std::is_same_v<PackedR, Expected<R>>,
+                             int> = 0>
+  NativeFunction(const TypedFunction<PackedR(Args...)>& packed)  // NOLINT(*)
       : NativeFunction(View(packed)) {}
 
   /*!
@@ -217,24 +260,30 @@ class NativeFunction<Expected<R>(Args...)> {
   /*!
    * \brief Own a named native hook bound through the same ABI adapter as View.
    *
-   * \tparam Fn The noexcept native hook function.
+   * \tparam Fn The named native hook function.
    * \return An owner of the generated static adapter.
    * \note As with `View::FromNative`, declaring `Fn` with `TVM_FFI_INLINE` helps the compiler
    * inline a visible target into the adapter, without guaranteeing complete call elimination.
    */
-  template <Expected<R> (*Fn)(Args...) noexcept>
+  template <auto Fn>
   static NativeFunction FromNative() {
     return From(View::template FromNative<Fn>());
   }
 
   /*!
-   * \brief Invoke the hook and return its declared Expected result.
+   * \brief Invoke the hook and return a value or an error.
    *
    * \param args The typed hook arguments.
    * \return A value or an error.
    */
-  TVM_FFI_INLINE Expected<R> operator()(Args... args) const noexcept {
-    return View(UnsafeInit{}, AnyView(data_).CopyToTVMFFIAny())(std::forward<Args>(args)...);
+  TVM_FFI_INLINE Expected<R> CallExpected(Args... args) const noexcept {
+    return View(UnsafeInit{}, AnyView(data_).CopyToTVMFFIAny())
+        .CallExpected(std::forward<Args>(args)...);
+  }
+
+  /*! \brief Invoke the hook and throw its error on failure. */
+  TVM_FFI_INLINE R operator()(Args... args) const {
+    return CallExpected(std::forward<Args>(args)...).value();
   }
 
  private:
