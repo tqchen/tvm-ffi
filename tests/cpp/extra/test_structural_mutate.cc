@@ -270,20 +270,21 @@ class TNestedMapHookObj : public Object {
 
   explicit TNestedMapHookObj(AnyArray field) : field(std::move(field)) {}
 
-  static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
+  TVM_FFI_INLINE static Expected<UnchangedOr<Any>> StructuralMutate(StructuralMutatorObj* mutator,
+                                                                    AnyView value) noexcept {
     const auto* self = value.cast<const TNestedMapHookObj*>();
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<Any>, mapped,
                                       mutator->MutateExpected(self->field, InplaceMode::kDisallow));
     if (mapped.UnchangedOrSameAs(Any(self->field))) {
-      return Unchanged().CopyToTVMFFIAny();
+      return Unchanged();
     }
     Any mapped_value = std::move(mapped).ValueOrUnchanged(Any(self->field));
     AnyArray mapped_field = mapped_value.cast<AnyArray>();
-    return details::AnyUnsafe::MoveAnyToTVMFFIAny(
-        Any(make_object<TNestedMapHookObj>(std::move(mapped_field))));
+    return make_object<TNestedMapHookObj>(std::move(mapped_field));
   }
 
-  static TVMFFIAny MaybeInplaceMutate(StructuralMutatorObj*, AnyView value) noexcept {
+  TVM_FFI_INLINE static Expected<UnchangedOr<Any>> MaybeInplaceMutate(StructuralMutatorObj*,
+                                                                      AnyView value) noexcept {
     auto* self = value.cast<TNestedMapHookObj*>();
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(
         Any, mapped,
@@ -291,7 +292,7 @@ class TNestedMapHookObj : public Object {
             Any(std::move(self->field)),
             [](int64_t item) -> Expected<Any> { return Any(item + 1); }));
     self->field = mapped.cast<AnyArray>();
-    return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(value));
+    return Any(value);
   }
 
   static void RegisterReflection() {
@@ -301,9 +302,9 @@ class TNestedMapHookObj : public Object {
     refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMaybeInplaceMutate);
     refl::TypeAttrDef<TNestedMapHookObj>()
         .attr(refl::type_attr::kStructuralMutate,
-              reinterpret_cast<void*>(static_cast<FStructuralMutate>(&StructuralMutate)))
+              FStructuralMutate::FromNative<&TNestedMapHookObj::StructuralMutate>())
         .attr(refl::type_attr::kStructuralMaybeInplaceMutate,
-              reinterpret_cast<void*>(static_cast<FStructuralMutate>(&MaybeInplaceMutate)));
+              FStructuralMutate::FromNative<&TNestedMapHookObj::MaybeInplaceMutate>());
   }
 
   static constexpr bool _type_mutable = true;

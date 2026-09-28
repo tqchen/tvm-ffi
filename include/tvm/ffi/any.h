@@ -337,7 +337,7 @@ class Any {
    * \tparam T The value type of the other
    */
   template <typename T, typename = std::enable_if_t<TypeTraits<T>::convert_enabled>>
-  Any(T other) {  // NOLINT(*)
+  TVM_FFI_INLINE Any(T other) {  // NOLINT(*)
     TypeTraits<T>::MoveToAny(std::move(other), &data_);
   }
   /*!
@@ -562,6 +562,7 @@ static_assert(sizeof(Any) == sizeof(TVMFFIAny));
 // or non-trivial destructor on AnyView would silently regress this
 // calling convention — catch it here at compile time.
 static_assert(std::is_trivially_copyable_v<AnyView>, "AnyView must be trivially copyable.");
+static_assert(std::is_standard_layout_v<AnyView>, "AnyView must have standard layout.");
 
 namespace details {
 

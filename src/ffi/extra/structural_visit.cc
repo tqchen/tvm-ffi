@@ -111,43 +111,25 @@ Expected<Optional<VisitInterrupt>> StructuralVisitExpected(
 }
 
 /*! \brief Visit entries in a sequence container. */
-TVMFFIAny VisitSeqContainer(StructuralVisitorObj* visitor, const SeqBaseObj* self) noexcept {
+template <typename SeqObj>
+TVM_FFI_INLINE Expected<Optional<VisitInterrupt>> VisitSeqContainer(StructuralVisitorObj* visitor,
+                                                                    AnyView value) noexcept {
+  const auto* self = value.cast<const SeqObj*>();
   for (const Any& item : *self) {
     TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(item));
   }
-  return AnyView(nullptr).CopyToTVMFFIAny();
+  return Optional<VisitInterrupt>(std::nullopt);
 }
 
 /*! \brief Visit values in a map container while treating keys as structural anchors. */
-TVMFFIAny VisitMapContainer(StructuralVisitorObj* visitor, const MapBaseObj* self) noexcept {
+template <typename MapObjType>
+TVM_FFI_INLINE Expected<Optional<VisitInterrupt>> VisitMapContainer(StructuralVisitorObj* visitor,
+                                                                    AnyView value) noexcept {
+  const auto* self = value.cast<const MapObjType*>();
   for (const auto& kv : *self) {
     TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(kv.second));
   }
-  return AnyView(nullptr).CopyToTVMFFIAny();
-}
-
-/*! \brief Structural visit hook for ArrayObj. */
-TVMFFIAny VisitArray(StructuralVisitorObj* visitor, AnyView value) noexcept {
-  const auto* array = value.cast<const ArrayObj*>();
-  return VisitSeqContainer(visitor, array);
-}
-
-/*! \brief Structural visit hook for ListObj. */
-TVMFFIAny VisitList(StructuralVisitorObj* visitor, AnyView value) noexcept {
-  const auto* list = value.cast<const ListObj*>();
-  return VisitSeqContainer(visitor, list);
-}
-
-/*! \brief Structural visit hook for MapObj. */
-TVMFFIAny VisitMap(StructuralVisitorObj* visitor, AnyView value) noexcept {
-  const auto* map = value.cast<const MapObj*>();
-  return VisitMapContainer(visitor, map);
-}
-
-/*! \brief Structural visit hook for DictObj. */
-TVMFFIAny VisitDict(StructuralVisitorObj* visitor, AnyView value) noexcept {
-  const auto* dict = value.cast<const DictObj*>();
-  return VisitMapContainer(visitor, dict);
+  return Optional<VisitInterrupt>(std::nullopt);
 }
 
 }  // namespace details
@@ -190,16 +172,16 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralVisit);
   refl::TypeAttrDef<ArrayObj>().attr(
       refl::type_attr::kStructuralVisit,
-      reinterpret_cast<void*>(static_cast<FStructuralVisit>(&details::VisitArray)));
+      FStructuralVisit::FromNative<&details::VisitSeqContainer<ArrayObj>>());
   refl::TypeAttrDef<ListObj>().attr(
       refl::type_attr::kStructuralVisit,
-      reinterpret_cast<void*>(static_cast<FStructuralVisit>(&details::VisitList)));
+      FStructuralVisit::FromNative<&details::VisitSeqContainer<ListObj>>());
   refl::TypeAttrDef<MapObj>().attr(
       refl::type_attr::kStructuralVisit,
-      reinterpret_cast<void*>(static_cast<FStructuralVisit>(&details::VisitMap)));
+      FStructuralVisit::FromNative<&details::VisitMapContainer<MapObj>>());
   refl::TypeAttrDef<DictObj>().attr(
       refl::type_attr::kStructuralVisit,
-      reinterpret_cast<void*>(static_cast<FStructuralVisit>(&details::VisitDict)));
+      FStructuralVisit::FromNative<&details::VisitMapContainer<DictObj>>());
 }
 
 }  // namespace ffi

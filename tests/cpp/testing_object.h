@@ -249,7 +249,8 @@ class TMutatePairObj : public Object {
     return count;
   }
 
-  static TVMFFIAny StructuralMutate(StructuralMutatorObj* mutator, AnyView value) noexcept {
+  TVM_FFI_INLINE static Expected<UnchangedOr<Any>> StructuralMutateHook(
+      StructuralMutatorObj* mutator, AnyView value) noexcept {
     ++StructuralMutateCallCount();
     const TMutatePairObj* self =
         details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const TMutatePairObj>(value);
@@ -258,12 +259,12 @@ class TMutatePairObj : public Object {
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, rhs,
                                       mutator->MutateExpected(self->rhs, InplaceMode::kDisallow));
     if (lhs.UnchangedOrSameAs(self->lhs) && rhs.UnchangedOrSameAs(self->rhs)) {
-      return Unchanged().CopyToTVMFFIAny();
+      return Unchanged();
     }
     ObjectPtr<TMutatePairObj> copy = make_object<TMutatePairObj>(*self);
     copy->lhs = std::move(lhs).ValueOrUnchanged(std::move(copy->lhs));
     copy->rhs = std::move(rhs).ValueOrUnchanged(std::move(copy->rhs));
-    return details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(std::move(copy)));
+    return copy;
   }
 
   static void RegisterReflection() {
@@ -274,7 +275,7 @@ class TMutatePairObj : public Object {
     refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMutate);
     refl::TypeAttrDef<TMutatePairObj>().attr(
         refl::type_attr::kStructuralMutate,
-        reinterpret_cast<void*>(static_cast<FStructuralMutate>(&TMutatePairObj::StructuralMutate)));
+        FStructuralMutate::FromNative<&TMutatePairObj::StructuralMutateHook>());
   }
 
   static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindTreeNode;
@@ -411,15 +412,14 @@ class TFuncObj : public Object {
   TFuncObj(Array<TVar> params, Array<ObjectRef> body, Optional<String> comment)
       : params(params), body(body), comment(comment) {}
 
-  static TVMFFIAny StructuralVisit(StructuralVisitorObj* visitor, AnyView value) noexcept {
+  TVM_FFI_INLINE static Expected<Optional<VisitInterrupt>> StructuralVisitHook(
+      StructuralVisitorObj* visitor, AnyView value) noexcept {
     const auto* self = value.cast<const TFuncObj*>();
 
     TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->WithDefRegionKind(
         kTVMFFIDefRegionKindPattern, [&]() { return visitor->VisitExpected(self->params); }));
 
-    auto body_result = visitor->VisitExpected(self->body);
-    TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(body_result);
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(body_result));
+    return visitor->VisitExpected(self->body);
   }
 
   static void RegisterReflection() {
@@ -431,7 +431,7 @@ class TFuncObj : public Object {
     refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralVisit);
     refl::TypeAttrDef<TFuncObj>().attr(
         refl::type_attr::kStructuralVisit,
-        reinterpret_cast<void*>(static_cast<FStructuralVisit>(&TFuncObj::StructuralVisit)));
+        FStructuralVisit::FromNative<&TFuncObj::StructuralVisitHook>());
   }
 
   static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindTreeNode;
