@@ -48,6 +48,12 @@ class TIntOrFloatRef : public ObjectRef {
   using ContainerType = Object;
 };
 
+class TPositiveIntRef : public ObjectRef {
+ public:
+  static constexpr bool _type_container_is_exact = false;
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TPositiveIntRef, ObjectRef, TIntObj);
+};
+
 }  // namespace testing
 
 template <>
@@ -56,6 +62,15 @@ struct TypeTraits<testing::TIntOrFloatRef>
   TVM_FFI_INLINE static bool CheckAnyStrict(const TVMFFIAny* src) {
     return TypeTraits<testing::TInt>::CheckAnyStrict(src) ||
            TypeTraits<testing::TFloat>::CheckAnyStrict(src);
+  }
+};
+
+template <>
+struct TypeTraits<testing::TPositiveIntRef>
+    : public ObjectRefTypeTraitsBase<testing::TPositiveIntRef> {
+  TVM_FFI_INLINE static bool CheckAnyStrict(const TVMFFIAny* src) {
+    return ObjectRefTypeTraitsBase<testing::TPositiveIntRef>::CheckAnyStrict(src) &&
+           details::ObjectUnsafe::RawObjectPtrFromUnowned<testing::TIntObj>(src->v_obj)->value > 0;
   }
 };
 
@@ -247,6 +262,45 @@ TEST(ObjectRef, AsUsesTypeTraitsCheckAnyStrict) {
   auto float_like = b.as<TIntOrFloatRef>();
   ASSERT_TRUE(float_like.has_value()) << "Expected TIntOrFloatRef cast from TFloat to succeed";
   EXPECT_NE((*float_like).as<TFloatObj>(), nullptr);  // NOLINT(bugprone-unchecked-optional-access)
+}
+
+TEST(ObjectRef, StrictOnlyTraits) {
+  for (int value : {-1, 0}) {
+    Any any = TInt(value);
+    AnyView view = any;
+    const TVMFFIAny* raw = details::AnyUnsafe::TVMFFIAnyPtrFromAny(any);
+    // The runtime kind is correct, but the semantic constraint is not satisfied.
+    EXPECT_TRUE(ObjectRefTypeTraitsBase<TPositiveIntRef>::CheckAnyStrict(raw));
+    EXPECT_FALSE(TypeTraits<TPositiveIntRef>::CheckAnyStrict(raw));
+    EXPECT_FALSE(TypeTraits<TPositiveIntRef>::TryCastFromAnyView(raw).has_value());
+    EXPECT_FALSE(view.as<TPositiveIntRef>().has_value());
+    EXPECT_FALSE(view.try_cast<TPositiveIntRef>().has_value());
+    EXPECT_FALSE(any.try_cast<TPositiveIntRef>().has_value());
+    EXPECT_THROW(view.cast<TPositiveIntRef>(), Error);
+    EXPECT_THROW(any.cast<TPositiveIntRef>(), Error);
+    EXPECT_THROW(std::move(any).cast<TPositiveIntRef>(), Error);
+  }
+
+  TInt value(1);
+  Any any = value;
+  AnyView view = any;
+  const TVMFFIAny* raw = details::AnyUnsafe::TVMFFIAnyPtrFromAny(any);
+  EXPECT_TRUE(TypeTraits<TPositiveIntRef>::CheckAnyStrict(raw));
+  {
+    auto cast = TypeTraits<TPositiveIntRef>::TryCastFromAnyView(raw);
+    ASSERT_TRUE(cast.has_value());
+    EXPECT_EQ(cast.value().get(), value.get());
+    EXPECT_EQ(value.use_count(), 3);
+  }
+  EXPECT_EQ(value.use_count(), 2);
+  EXPECT_EQ(view.cast<TPositiveIntRef>().get(), value.get());
+  EXPECT_EQ(any.cast<TPositiveIntRef>().get(), value.get());
+
+  TPositiveIntRef moved = std::move(any).cast<TPositiveIntRef>();
+  EXPECT_EQ(moved.get(), value.get());
+  EXPECT_EQ(value.use_count(), 2);
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_EQ(any, nullptr);
 }
 
 TEST(ObjectRef, GetRefUsesObjectRefContainment) {
