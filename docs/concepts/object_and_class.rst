@@ -108,27 +108,10 @@ Optionally, define a named managed reference class by inheriting from
 creates the underlying object can wrap :cpp:func:`tvm::ffi::make_object`.
 
  :c:macro:`TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TypeName, ParentType, ObjectName) <TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE>`
-   Define an explicitly nullable reference class for compatibility APIs.
+   Define a nullable reference class.
 
  :c:macro:`TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TypeName, ParentType, ObjectName) <TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE>`
    Define a non-nullable reference class. Use this for ordinary concrete wrappers.
-
-Concrete object references, including ``Array``, ``List``, ``Map``, ``Dict``, ``Tuple``
-and ``Shape``, are non-nullable. Use ``Optional<T>`` when a value may be absent.
-A default-constructed container remains a valid empty container where that default
-is supported; ``None`` is not a valid required-container argument. ``ObjectRef``,
-``Function`` and ``Tensor`` retain nullable handles for compatibility. Container
-nullability is independent of its elements: ``Array<Tensor>`` can still contain
-undefined tensors.
-
-``Optional<T>`` for object references owns one nullable object pointer and does not
-inherit from ``ObjectRef``. Check ``has_value()`` and use ``value()`` or ``operator*``
-to access its reference. Constructing an optional from a null ``ObjectRef``,
-``Function`` or ``Tensor`` yields an empty optional.
-
-A moved-from reference or a reference created with ``UnsafeInit`` may hold an
-internal null pointer. Populate it before use; these states do not make an
-ordinary non-nullable reference accept absence through the FFI.
 
 For example, a non-nullable reference class ``MyObject`` can be defined as follows:
 
