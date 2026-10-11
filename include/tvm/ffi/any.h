@@ -756,7 +756,35 @@ struct AnyHash {
    * \param src The source Any.
    * \return The hash value.
    */
-  TVM_FFI_DLL static uint64_t CallCustomAnyHash(const TVMFFIAny& custom_any_hash, const Any& src);
+  TVM_FFI_INLINE static uint64_t CallCustomAnyHash(const TVMFFIAny& custom_any_hash,
+                                                   const Any& src) {
+    // Use the NativeFunction convention without depending on native_function.h.
+    Any result;
+    if (custom_any_hash.type_index == TypeIndex::kTVMFFIOpaquePtr) {
+      using FCustomAnyHashPtr = TVMFFIAny (*)(const Any&) noexcept;
+      FCustomAnyHashPtr hash_func = reinterpret_cast<FCustomAnyHashPtr>(custom_any_hash.v_ptr);
+      TVM_FFI_ICHECK_NOTNULL(hash_func);
+      result = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(
+          (*hash_func)(src));  // NOLINT(clang-analyzer-core.CallAndMessage)
+    } else {
+      TVM_FFI_ICHECK_EQ(custom_any_hash.type_index, TypeIndex::kTVMFFIFunction);
+      TVMFFIAny arg = src.data_;
+      TVMFFIFunctionCell* func_cell = TVMFFIFunctionGetCellPtr(custom_any_hash.v_obj);
+      if (func_cell->cpp_call != nullptr) {
+        // Fast path: invoke C++ ABI call directly when available.
+        using FCppCall = void (*)(const void*, const TVMFFIAny*, int32_t, TVMFFIAny*);
+        reinterpret_cast<FCppCall>(func_cell->cpp_call)(custom_any_hash.v_obj, &arg, 1,
+                                                        &result.data_);
+      } else if (func_cell->safe_call(custom_any_hash.v_obj, &arg, 1, &result.data_) != 0) {
+        throw details::MoveFromSafeCallRaised();
+      }
+    }
+    if (TVM_FFI_PREDICT_FALSE(result.type_index() == TypeIndex::kTVMFFIError)) {
+      throw details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(result));
+    }
+    TVM_FFI_ICHECK_EQ(result.type_index(), TypeIndex::kTVMFFIInt);
+    return static_cast<uint64_t>(result.data_.v_int64);
+  }
 };
 
 /*! \brief String-aware Any hash functor */
@@ -856,8 +884,35 @@ struct AnyEqual {
    * \param rhs The right-hand side Any.
    * \return The equality result.
    */
-  TVM_FFI_DLL static bool CallCustomAnyEqual(const TVMFFIAny& custom_any_equal, const Any& lhs,
-                                             const Any& rhs);
+  TVM_FFI_INLINE static bool CallCustomAnyEqual(const TVMFFIAny& custom_any_equal, const Any& lhs,
+                                                const Any& rhs) {
+    // Use the NativeFunction convention without depending on native_function.h.
+    Any result;
+    if (custom_any_equal.type_index == TypeIndex::kTVMFFIOpaquePtr) {
+      using FCustomAnyEqualPtr = TVMFFIAny (*)(const Any&, const Any&) noexcept;
+      FCustomAnyEqualPtr equal_func = reinterpret_cast<FCustomAnyEqualPtr>(custom_any_equal.v_ptr);
+      TVM_FFI_ICHECK_NOTNULL(equal_func);
+      result = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(
+          (*equal_func)(lhs, rhs));  // NOLINT(clang-analyzer-core.CallAndMessage)
+    } else {
+      TVM_FFI_ICHECK_EQ(custom_any_equal.type_index, TypeIndex::kTVMFFIFunction);
+      TVMFFIAny args[2] = {lhs.data_, rhs.data_};
+      TVMFFIFunctionCell* func_cell = TVMFFIFunctionGetCellPtr(custom_any_equal.v_obj);
+      if (func_cell->cpp_call != nullptr) {
+        // Fast path: invoke C++ ABI call directly when available.
+        using FCppCall = void (*)(const void*, const TVMFFIAny*, int32_t, TVMFFIAny*);
+        reinterpret_cast<FCppCall>(func_cell->cpp_call)(custom_any_equal.v_obj, args, 2,
+                                                        &result.data_);
+      } else if (func_cell->safe_call(custom_any_equal.v_obj, args, 2, &result.data_) != 0) {
+        throw details::MoveFromSafeCallRaised();
+      }
+    }
+    if (TVM_FFI_PREDICT_FALSE(result.type_index() == TypeIndex::kTVMFFIError)) {
+      throw details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(result));
+    }
+    TVM_FFI_ICHECK_EQ(result.type_index(), TypeIndex::kTVMFFIBool);
+    return result.data_.v_int64 != 0;
+  }
 };
 
 // Defer this definition until any.h so the throwing path can depend on

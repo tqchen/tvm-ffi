@@ -27,7 +27,6 @@
 #include <tvm/ffi/container/tensor.h>
 #include <tvm/ffi/device.h>
 #include <tvm/ffi/function.h>
-#include <tvm/ffi/reflection/native_function.h>
 #include <tvm/ffi/reflection/registry.h>
 
 #include <sstream>
@@ -36,23 +35,6 @@
 
 namespace tvm {
 namespace ffi {
-
-// Keep native function dependencies out of any.h.
-uint64_t AnyHash::CallCustomAnyHash(const TVMFFIAny& custom_any_hash, const Any& src) {
-  using FAnyHash = reflection::NativeFunctionView<Any(const Any&)>;
-  // Preserve the exact result type instead of applying packed integer/bool conversions.
-  Any result = AnyView::CopyFromTVMFFIAny(custom_any_hash).cast<FAnyHash>()(src);
-  TVM_FFI_ICHECK_EQ(result.type_index(), TypeIndex::kTVMFFIInt);
-  return static_cast<uint64_t>(result.data_.v_int64);
-}
-
-bool AnyEqual::CallCustomAnyEqual(const TVMFFIAny& custom_any_equal, const Any& lhs,
-                                  const Any& rhs) {
-  using FAnyEqual = reflection::NativeFunctionView<Any(const Any&, const Any&)>;
-  Any result = AnyView::CopyFromTVMFFIAny(custom_any_equal).cast<FAnyEqual>()(lhs, rhs);
-  TVM_FFI_ICHECK_EQ(result.type_index(), TypeIndex::kTVMFFIBool);
-  return result.data_.v_int64 != 0;
-}
 
 namespace {
 /*!
