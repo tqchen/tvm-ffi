@@ -770,24 +770,28 @@ struct AnyHash {
       Any error = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
       TVM_FFI_ICHECK_EQ(error.type_index(), TypeIndex::kTVMFFIError);
       throw details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(error));
+    } else {
+      // alternatively it can be a ffi.Function object.
+      TVM_FFI_ICHECK_EQ(custom_any_hash.type_index, TypeIndex::kTVMFFIFunction);
+      TVMFFIAny arg = src.data_;
+      TVMFFIAny result;
+      result.type_index = TypeIndex::kTVMFFINone;
+      result.zero_padding = 0;
+      result.v_int64 = 0;
+      TVMFFIFunctionCell* func_cell = TVMFFIFunctionGetCellPtr(custom_any_hash.v_obj);
+      if (func_cell->cpp_call != nullptr) {
+        // Fast path: invoke C++ ABI call directly when available.
+        using FCppCall = void (*)(const void*, const TVMFFIAny*, int32_t, TVMFFIAny*);
+        reinterpret_cast<FCppCall>(func_cell->cpp_call)(custom_any_hash.v_obj, &arg, 1, &result);
+      } else {
+        if (func_cell->safe_call(custom_any_hash.v_obj, &arg, 1, &result) != 0) {
+          throw details::MoveFromSafeCallRaised();
+        }
+      }
+      Any result_any = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
+      TVM_FFI_ICHECK_EQ(result_any.type_index(), TypeIndex::kTVMFFIInt);
+      return static_cast<uint64_t>(result_any.data_.v_int64);
     }
-    Any result;
-    TVM_FFI_ICHECK_EQ(custom_any_hash.type_index, TypeIndex::kTVMFFIFunction);
-    TVMFFIAny arg = src.data_;
-    TVMFFIFunctionCell* func_cell = TVMFFIFunctionGetCellPtr(custom_any_hash.v_obj);
-    if (func_cell->cpp_call != nullptr) {
-      // Fast path: invoke C++ ABI call directly when available.
-      using FCppCall = void (*)(const void*, const TVMFFIAny*, int32_t, TVMFFIAny*);
-      reinterpret_cast<FCppCall>(func_cell->cpp_call)(custom_any_hash.v_obj, &arg, 1,
-                                                      &result.data_);
-    } else if (func_cell->safe_call(custom_any_hash.v_obj, &arg, 1, &result.data_) != 0) {
-      throw details::MoveFromSafeCallRaised();
-    }
-    if (TVM_FFI_PREDICT_FALSE(result.type_index() == TypeIndex::kTVMFFIError)) {
-      throw details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(result));
-    }
-    TVM_FFI_ICHECK_EQ(result.type_index(), TypeIndex::kTVMFFIInt);
-    return static_cast<uint64_t>(result.data_.v_int64);
   }
 };
 
@@ -902,24 +906,28 @@ struct AnyEqual {
       Any error = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
       TVM_FFI_ICHECK_EQ(error.type_index(), TypeIndex::kTVMFFIError);
       throw details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(error));
+    } else {
+      // alternatively it can be a ffi.Function object.
+      TVM_FFI_ICHECK_EQ(custom_any_equal.type_index, TypeIndex::kTVMFFIFunction);
+      TVMFFIAny args[2] = {lhs.data_, rhs.data_};
+      TVMFFIAny result;
+      result.type_index = TypeIndex::kTVMFFINone;
+      result.zero_padding = 0;
+      result.v_int64 = 0;
+      TVMFFIFunctionCell* func_cell = TVMFFIFunctionGetCellPtr(custom_any_equal.v_obj);
+      if (func_cell->cpp_call != nullptr) {
+        // Fast path: invoke C++ ABI call directly when available.
+        using FCppCall = void (*)(const void*, const TVMFFIAny*, int32_t, TVMFFIAny*);
+        reinterpret_cast<FCppCall>(func_cell->cpp_call)(custom_any_equal.v_obj, args, 2, &result);
+      } else {
+        if (func_cell->safe_call(custom_any_equal.v_obj, args, 2, &result) != 0) {
+          throw details::MoveFromSafeCallRaised();
+        }
+      }
+      Any result_any = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
+      TVM_FFI_ICHECK(result_any.type_index() == TypeIndex::kTVMFFIBool);
+      return result_any.data_.v_int64 != 0;
     }
-    Any result;
-    TVM_FFI_ICHECK_EQ(custom_any_equal.type_index, TypeIndex::kTVMFFIFunction);
-    TVMFFIAny args[2] = {lhs.data_, rhs.data_};
-    TVMFFIFunctionCell* func_cell = TVMFFIFunctionGetCellPtr(custom_any_equal.v_obj);
-    if (func_cell->cpp_call != nullptr) {
-      // Fast path: invoke C++ ABI call directly when available.
-      using FCppCall = void (*)(const void*, const TVMFFIAny*, int32_t, TVMFFIAny*);
-      reinterpret_cast<FCppCall>(func_cell->cpp_call)(custom_any_equal.v_obj, args, 2,
-                                                      &result.data_);
-    } else if (func_cell->safe_call(custom_any_equal.v_obj, args, 2, &result.data_) != 0) {
-      throw details::MoveFromSafeCallRaised();
-    }
-    if (TVM_FFI_PREDICT_FALSE(result.type_index() == TypeIndex::kTVMFFIError)) {
-      throw details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(result));
-    }
-    TVM_FFI_ICHECK_EQ(result.type_index(), TypeIndex::kTVMFFIBool);
-    return result.data_.v_int64 != 0;
   }
 };
 
