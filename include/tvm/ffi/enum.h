@@ -63,7 +63,7 @@ class EnumStateObj : public Object {
 class EnumState : public ObjectRef {
  public:
   /// \cond Doxygen_Suppress
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(EnumState, ObjectRef, EnumStateObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(EnumState, ObjectRef, EnumStateObj);
   /// \endcond
 };
 
@@ -140,7 +140,7 @@ class EnumObj : public Object {
 class Enum : public ObjectRef {
  public:
   /// \cond Doxygen_Suppress
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(Enum, ObjectRef, EnumObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(Enum, ObjectRef, EnumObj);
   /// \endcond
 };
 
@@ -160,7 +160,7 @@ class IntEnumObj : public EnumObj {
 class IntEnum : public Enum {
  public:
   /// \cond Doxygen_Suppress
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(IntEnum, Enum, IntEnumObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(IntEnum, Enum, IntEnumObj);
   /// \endcond
 };
 
@@ -180,7 +180,7 @@ class StrEnumObj : public EnumObj {
 class StrEnum : public Enum {
  public:
   /// \cond Doxygen_Suppress
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(StrEnum, Enum, StrEnumObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(StrEnum, Enum, StrEnumObj);
   /// \endcond
 };
 

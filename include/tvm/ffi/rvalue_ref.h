@@ -76,7 +76,9 @@ class RValueRef {
       : data_(details::ObjectUnsafe::ObjectPtrFromObjectRef<ContainerType>(std::move(data))) {}
 
   /*! \brief return the data as rvalue */
-  TObjRef operator*() && { return TObjRef(std::move(data_)); }
+  TObjRef operator*() && {
+    return details::ObjectUnsafe::ObjectRefFromObjectPtr<TObjRef>(std::move(data_));
+  }
 
  private:
   mutable ObjectPtr<ContainerType> data_;

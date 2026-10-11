@@ -120,7 +120,9 @@ class VisitErrorContext : public ObjectRef {
       bool allow_prefix_match = false);
 
   /// \cond Doxygen_Suppress
-  explicit VisitErrorContext(ObjectPtr<VisitErrorContextObj> n) : ObjectRef(std::move(n)) {}
+  explicit VisitErrorContext(ObjectPtr<VisitErrorContextObj> n) : ObjectRef(std::move(n)) {
+    TVM_FFI_ICHECK_NOTNULL(data_.get());
+  }
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(VisitErrorContext, ObjectRef, VisitErrorContextObj);
   /// \endcond
 };

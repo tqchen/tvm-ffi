@@ -47,7 +47,7 @@ class SerializationEnumObj : public EnumObj {
 
 class SerializationEnum : public Enum {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SerializationEnum, Enum, SerializationEnumObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(SerializationEnum, Enum, SerializationEnumObj);
 };
 
 class SerializationIntEnumObj : public IntEnumObj {
@@ -58,8 +58,8 @@ class SerializationIntEnumObj : public IntEnumObj {
 
 class SerializationIntEnum : public IntEnum {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SerializationIntEnum, IntEnum,
-                                             SerializationIntEnumObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(SerializationIntEnum, IntEnum,
+                                                SerializationIntEnumObj);
 };
 
 class SerializationStrEnumObj : public StrEnumObj {
@@ -70,8 +70,8 @@ class SerializationStrEnumObj : public StrEnumObj {
 
 class SerializationStrEnum : public StrEnum {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SerializationStrEnum, StrEnum,
-                                             SerializationStrEnumObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(SerializationStrEnum, StrEnum,
+                                                SerializationStrEnumObj);
 };
 
 TVM_FFI_STATIC_INIT_BLOCK() {

@@ -318,7 +318,7 @@ class TNestedMapHook : public ObjectRef {
     data_ = make_object<TNestedMapHookObj>(std::move(field));
   }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TNestedMapHook, ObjectRef, TNestedMapHookObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TNestedMapHook, ObjectRef, TNestedMapHookObj);
 };
 
 TVM_FFI_STATIC_INIT_BLOCK() {
@@ -800,10 +800,12 @@ TEST(StructuralMap, RegisteredMutateHookUsesAssignOrReturn) {
 
   int nullable_var_callbacks = 0;
   nullable_mapped =
-      StructuralMap<WalkOrder::kPostOrder>(nullable, [&](const TVar& value) -> Expected<Any> {
-        ++nullable_var_callbacks;
-        return value.defined() ? Any(value) : Any(ObjectRef(nullptr));
-      }).cast<TMutatePair>();
+      StructuralMap<WalkOrder::kPostOrder>(nullable,
+                                           [&](const Optional<TVar>& value) -> Expected<Any> {
+                                             ++nullable_var_callbacks;
+                                             return Any(value);
+                                           })
+          .cast<TMutatePair>();
   EXPECT_EQ(nullable_var_callbacks, 2);
   EXPECT_FALSE(nullable_mapped->lhs.defined());
   EXPECT_TRUE(nullable_mapped->rhs.same_as(rhs));

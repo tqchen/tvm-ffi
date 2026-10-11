@@ -276,7 +276,9 @@ class Array : public ObjectRef {
    * \brief Constructor from pointer
    * \param n the container pointer
    */
-  explicit Array(ObjectPtr<Object> n) : ObjectRef(std::move(n)) {}
+  explicit Array(ObjectPtr<Object> n) : ObjectRef(std::move(n)) {
+    TVM_FFI_ICHECK_NOTNULL(data_.get());
+  }
 
   /*!
    * \brief Constructor from iterator
@@ -655,6 +657,7 @@ class Array : public ObjectRef {
   /// \cond Doxygen_Suppress
   using ContainerType = ArrayObj;
   static constexpr bool _type_container_is_exact = false;
+  static constexpr bool _type_is_nullable = false;
   /// \endcond
 
   /*!

@@ -302,7 +302,9 @@ class StructuralVisitor : public ObjectRef {
    * \brief Construct from an existing object pointer.
    * \param n The object pointer to wrap.
    */
-  explicit StructuralVisitor(ObjectPtr<StructuralVisitorObj> n) : ObjectRef(std::move(n)) {}
+  explicit StructuralVisitor(ObjectPtr<StructuralVisitorObj> n) : ObjectRef(std::move(n)) {
+    TVM_FFI_ICHECK_NOTNULL(data_.get());
+  }
 
   /// \cond Doxygen_Suppress
   TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(StructuralVisitor, ObjectRef, StructuralVisitorObj);

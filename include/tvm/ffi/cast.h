@@ -46,8 +46,14 @@ namespace ffi {
  */
 template <typename RefType, typename ObjectType>
 inline RefType GetRef(const ObjectType* ptr) {
-  if constexpr (object_ref_contains_v<RefType, ObjectType>) {
-    if constexpr (is_optional_type_v<RefType> || RefType::_type_is_nullable) {
+  if constexpr (is_optional_type_v<RefType>) {
+    using ValueType = typename RefType::value_type;
+    static_assert(object_ref_contains_v<ValueType, ObjectType>,
+                  "GetRef requires the Optional value type to contain every ObjectType instance");
+    if (ptr == nullptr) return std::nullopt;
+    return RefType(GetRef<ValueType>(ptr));
+  } else if constexpr (object_ref_contains_v<RefType, ObjectType>) {
+    if constexpr (RefType::_type_is_nullable) {
       if (ptr == nullptr) {
         return details::ObjectUnsafe::ObjectRefFromObjectPtr<RefType>(nullptr);
       }

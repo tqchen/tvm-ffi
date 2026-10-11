@@ -69,7 +69,7 @@ class TestIntPair : public tvm::ffi::ObjectRef {
   int64_t Sum() const { return get()->a + get()->b; }
 
   // Required: define object reference methods
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TestIntPair, tvm::ffi::ObjectRef, TestIntPairObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TestIntPair, tvm::ffi::ObjectRef, TestIntPairObj);
 };
 
 class TestFrozenCxxObj : public tvm::ffi::Object {
@@ -103,7 +103,8 @@ class TestEnumVariantObj : public tvm::ffi::EnumObj {
 
 class TestEnumVariant : public tvm::ffi::Enum {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TestEnumVariant, tvm::ffi::Enum, TestEnumVariantObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TestEnumVariant, tvm::ffi::Enum,
+                                                TestEnumVariantObj);
 };
 
 TVM_FFI_STATIC_INIT_BLOCK() {
@@ -125,7 +126,8 @@ class TestCxxIntEnumObj : public tvm::ffi::IntEnumObj {
 
 class TestCxxIntEnum : public tvm::ffi::IntEnum {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TestCxxIntEnum, tvm::ffi::IntEnum, TestCxxIntEnumObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TestCxxIntEnum, tvm::ffi::IntEnum,
+                                                TestCxxIntEnumObj);
 };
 
 class TestCxxStrEnumObj : public tvm::ffi::StrEnumObj {
@@ -137,7 +139,8 @@ class TestCxxStrEnumObj : public tvm::ffi::StrEnumObj {
 
 class TestCxxStrEnum : public tvm::ffi::StrEnum {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TestCxxStrEnum, tvm::ffi::StrEnum, TestCxxStrEnumObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TestCxxStrEnum, tvm::ffi::StrEnum,
+                                                TestCxxStrEnumObj);
 };
 
 TVM_FFI_STATIC_INIT_BLOCK() {
@@ -277,6 +280,8 @@ class TestCxxEnumHolderObj : public Object {
  public:
   TestCxxIntEnum priority;
   TestCxxStrEnum opcode;
+
+  explicit TestCxxEnumHolderObj(UnsafeInit) : priority(UnsafeInit{}), opcode(UnsafeInit{}) {}
 
   static constexpr bool _type_mutable = true;
   TVM_FFI_DECLARE_OBJECT_INFO("testing.TestCxxEnumHolder", TestCxxEnumHolderObj, Object);
@@ -436,7 +441,7 @@ class TestCompareObj : public Object {
 
 class TestCompare : public ObjectRef {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TestCompare, ObjectRef, TestCompareObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TestCompare, ObjectRef, TestCompareObj);
 };
 
 class TestHashObj : public Object {
@@ -454,7 +459,7 @@ class TestHashObj : public Object {
 
 class TestHash : public ObjectRef {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TestHash, ObjectRef, TestHashObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TestHash, ObjectRef, TestHashObj);
 };
 
 class TestCustomHashObj : public Object {
@@ -470,7 +475,7 @@ class TestCustomHashObj : public Object {
 
 class TestCustomHash : public ObjectRef {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TestCustomHash, ObjectRef, TestCustomHashObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TestCustomHash, ObjectRef, TestCustomHashObj);
 };
 
 class TestCustomCompareObj : public Object {
@@ -486,7 +491,7 @@ class TestCustomCompareObj : public Object {
 
 class TestCustomCompare : public ObjectRef {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TestCustomCompare, ObjectRef, TestCustomCompareObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TestCustomCompare, ObjectRef, TestCustomCompareObj);
 };
 
 // Test object with __ffi_eq__ but deliberately no __ffi_hash__.
@@ -504,7 +509,7 @@ class TestEqWithoutHashObj : public Object {
 
 class TestEqWithoutHash : public ObjectRef {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TestEqWithoutHash, ObjectRef, TestEqWithoutHashObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TestEqWithoutHash, ObjectRef, TestEqWithoutHashObj);
 };
 
 // NOLINTNEXTLINE(performance-unnecessary-value-param)
@@ -922,7 +927,10 @@ class SchemaAllTypesObj : public Object {
 
 class SchemaAllTypes : public ObjectRef {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(SchemaAllTypes, ObjectRef, SchemaAllTypesObj);
+  SchemaAllTypes(int64_t vi, double vf, String s)
+      : ObjectRef(make_object<SchemaAllTypesObj>(vi, vf, std::move(s))) {}
+
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(SchemaAllTypes, ObjectRef, SchemaAllTypesObj);
 };
 
 TVM_FFI_STATIC_INIT_BLOCK() {
@@ -959,9 +967,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       // Register static creator (also a static method)
       .def_static(
           "make_with",
-          [](int64_t vi, double vf, String s) {
-            return SchemaAllTypes(make_object<SchemaAllTypesObj>(vi, vf, std::move(s)));
-          },
+          [](int64_t vi, double vf, String s) { return SchemaAllTypes(vi, vf, std::move(s)); },
           "Constructor with subset of fields");
 
   // Global typed functions to exercise RegisterFunc with various schemas

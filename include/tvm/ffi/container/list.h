@@ -212,7 +212,9 @@ class List : public ObjectRef {
   }
 
   /*! \brief Constructor from pointer */
-  explicit List(ObjectPtr<Object> n) : ObjectRef(std::move(n)) {}
+  explicit List(ObjectPtr<Object> n) : ObjectRef(std::move(n)) {
+    TVM_FFI_ICHECK_NOTNULL(data_.get());
+  }
 
   /*!
    * \brief Constructor from iterator
@@ -465,6 +467,7 @@ class List : public ObjectRef {
   /// \cond Doxygen_Suppress
   using ContainerType = ListObj;
   static constexpr bool _type_container_is_exact = false;
+  static constexpr bool _type_is_nullable = false;
   /// \endcond
 
  private:
