@@ -756,16 +756,20 @@ struct AnyHash {
    * \param src The source Any.
    * \return The hash value.
    */
-  static uint64_t CallCustomAnyHash(const TVMFFIAny& custom_any_hash, const Any& src) {
-    // NOTE: we explicitly use low-level ABI here since we do not want to have dep on function.h
-    // it also keeps the logic simple
+  TVM_FFI_INLINE static uint64_t CallCustomAnyHash(const TVMFFIAny& custom_any_hash,
+                                                   const Any& src) {
+    // Use the NativeFunction convention without depending on native_function.h.
     if (custom_any_hash.type_index == TypeIndex::kTVMFFIOpaquePtr) {
-      // we allow this attribute to be a function pointer for fast path
-      using FCustomAnyHashPtr = int64_t (*)(const Any&);
+      using FCustomAnyHashPtr = TVMFFIAny (*)(const Any&) noexcept;
       FCustomAnyHashPtr hash_func = reinterpret_cast<FCustomAnyHashPtr>(custom_any_hash.v_ptr);
       TVM_FFI_ICHECK_NOTNULL(hash_func);
-      return static_cast<uint64_t>(
-          (*hash_func)(src));  // NOLINT(clang-analyzer-core.CallAndMessage)
+      TVMFFIAny result = (*hash_func)(src);  // NOLINT(clang-analyzer-core.CallAndMessage)
+      if (TVM_FFI_PREDICT_TRUE(result.type_index == TypeIndex::kTVMFFIInt)) {
+        return static_cast<uint64_t>(result.v_int64);
+      }
+      Any error = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
+      TVM_FFI_ICHECK_EQ(error.type_index(), TypeIndex::kTVMFFIError);
+      throw details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(error));
     } else {
       // alternatively it can be a ffi.Function object.
       TVM_FFI_ICHECK_EQ(custom_any_hash.type_index, TypeIndex::kTVMFFIFunction);
@@ -888,16 +892,20 @@ struct AnyEqual {
    * \param rhs The right-hand side Any.
    * \return The equality result.
    */
-  static bool CallCustomAnyEqual(const TVMFFIAny& custom_any_equal, const Any& lhs,
-                                 const Any& rhs) {
-    // NOTE: we explicitly use low-level ABI here since we do not want to have dep on function.h
-    // it also keeps the logic simple
+  TVM_FFI_INLINE static bool CallCustomAnyEqual(const TVMFFIAny& custom_any_equal, const Any& lhs,
+                                                const Any& rhs) {
+    // Use the NativeFunction convention without depending on native_function.h.
     if (custom_any_equal.type_index == TypeIndex::kTVMFFIOpaquePtr) {
-      // we allow this attribute to be a function pointer for fast path
-      using FCustomAnyEqualPtr = bool (*)(const Any&, const Any&);
+      using FCustomAnyEqualPtr = TVMFFIAny (*)(const Any&, const Any&) noexcept;
       FCustomAnyEqualPtr equal_func = reinterpret_cast<FCustomAnyEqualPtr>(custom_any_equal.v_ptr);
       TVM_FFI_ICHECK_NOTNULL(equal_func);
-      return (*equal_func)(lhs, rhs);  // NOLINT(clang-analyzer-core.CallAndMessage)
+      TVMFFIAny result = (*equal_func)(lhs, rhs);  // NOLINT(clang-analyzer-core.CallAndMessage)
+      if (TVM_FFI_PREDICT_TRUE(result.type_index == TypeIndex::kTVMFFIBool)) {
+        return result.v_int64 != 0;
+      }
+      Any error = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
+      TVM_FFI_ICHECK_EQ(error.type_index(), TypeIndex::kTVMFFIError);
+      throw details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(error));
     } else {
       // alternatively it can be a ffi.Function object.
       TVM_FFI_ICHECK_EQ(custom_any_equal.type_index, TypeIndex::kTVMFFIFunction);

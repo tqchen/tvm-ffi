@@ -24,6 +24,7 @@
 #include <tvm/ffi/extra/structural_key.h>
 #include <tvm/ffi/reflection/access_path.h>
 #include <tvm/ffi/reflection/accessor.h>
+#include <tvm/ffi/reflection/native_function.h>
 #include <tvm/ffi/reflection/registry.h>
 
 #include <sstream>
@@ -206,8 +207,10 @@ inline void StructuralKeyRegisterReflection() {
       .def_ro("key", &StructuralKeyObj::key)
       .def_ro("hash_i64", &StructuralKeyObj::hash_i64);
   refl::TypeAttrDef<StructuralKeyObj>()
-      .attr(type_attr::kAnyHash, reinterpret_cast<void*>(&StructuralKeyHash))
-      .attr(type_attr::kAnyEqual, reinterpret_cast<void*>(&StructuralKeyEqual));
+      .attr(type_attr::kAnyHash,
+            NativeFunction<int64_t(const Any&)>::FromNative<&StructuralKeyHash>())
+      .attr(type_attr::kAnyEqual,
+            NativeFunction<bool(const Any&, const Any&)>::FromNative<&StructuralKeyEqual>());
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {

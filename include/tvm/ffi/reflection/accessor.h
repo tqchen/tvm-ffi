@@ -442,10 +442,10 @@ inline constexpr const char* kCompare = "__ffi_compare__";
  * hook operates at the ``Any`` level — it is called by ``AnyHash`` whenever
  * an ``Any`` holding an object of this type is used as a container key.
  *
- * Can be either a raw C function pointer (fast path, no boxing overhead) or
- * a ``Function`` object.
+ * Register a native hook with ``NativeFunction<int64_t(const Any&)>::FromNative<&Fn>()``
+ * or a packed ``Function`` object.
  *
- * Raw pointer signature: ``int64_t (*)(const Any& src)``
+ * Native adapter signature: ``TVMFFIAny (*)(const Any& src) noexcept``
  *
  * Function signature: ``(Any src) -> int64``
  */
@@ -456,9 +456,11 @@ inline constexpr const char* kAnyHash = "__any_hash__";
  * Unlike ``kEq`` (which operates on ``ObjectRef``), this hook operates at the
  * ``Any`` level — called by ``AnyEqual`` for container key comparison.
  *
- * Can be either a raw C function pointer (fast path) or a ``Function`` object.
+ * Register a native hook with
+ * ``NativeFunction<bool(const Any&, const Any&)>::FromNative<&Fn>()``
+ * or a packed ``Function`` object.
  *
- * Raw pointer signature: ``bool (*)(const Any& lhs, const Any& rhs)``
+ * Native adapter signature: ``TVMFFIAny (*)(const Any& lhs, const Any& rhs) noexcept``
  *
  * Function signature: ``(Any lhs, Any rhs) -> bool``
  */

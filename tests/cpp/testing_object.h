@@ -29,6 +29,7 @@
 #include <tvm/ffi/extra/structural_visit.h>
 #include <tvm/ffi/memory.h>
 #include <tvm/ffi/object.h>
+#include <tvm/ffi/reflection/native_function.h>
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/ffi/string.h>
 
@@ -99,8 +100,11 @@ inline void TIntObj::RegisterReflection() {
   refl::TypeAttrDef<TIntObj>()
       .def("test.GetValue", &TIntObj::GetValue)
       .attr("test.size", sizeof(TIntObj))
-      .attr(refl::type_attr::kAnyHash, reinterpret_cast<void*>(&TInt::CustomAnyHash))
-      .attr(refl::type_attr::kAnyEqual, reinterpret_cast<void*>(&TInt::CustomAnyEqual));
+      .attr(refl::type_attr::kAnyHash,
+            refl::NativeFunction<int64_t(const Any&)>::FromNative<&TInt::CustomAnyHash>())
+      .attr(
+          refl::type_attr::kAnyEqual,
+          refl::NativeFunction<bool(const Any&, const Any&)>::FromNative<&TInt::CustomAnyEqual>());
   // custom json serialization
   refl::TypeAttrDef<TIntObj>()
       .def(refl::type_attr::kDataToJson,
