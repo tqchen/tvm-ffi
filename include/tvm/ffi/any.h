@@ -144,6 +144,23 @@ class AnyView {
   }
 
   /*!
+   * \brief Strictly reinterpret the AnyView as a type T or throw.
+   * \tparam T The type to cast to.
+   * \return The casted value.
+   * \note This function will not run fallback conversions.
+   */
+  template <typename T, typename = std::enable_if_t<TypeTraits<T>::convert_enabled>>
+  TVM_FFI_INLINE T as_or_throw() const {
+    std::optional<T> result = this->as<T>();
+    if (TVM_FFI_PREDICT_FALSE(!result.has_value())) {
+      TVM_FFI_THROW(TypeError) << "Cannot treat type `"
+                               << TypeTraits<T>::GetMismatchTypeInfo(&data_) << "` as type `"
+                               << TypeTraits<T>::TypeStr() << "`";
+    }
+    return *std::move(result);
+  }
+
+  /*!
    * \brief Cast to a type T.
    *
    * \tparam T The type to cast to.
@@ -429,13 +446,7 @@ class Any {
     if constexpr (std::is_same_v<T, Any>) {
       return *this;
     } else {
-      std::optional<T> result = this->as<T>();
-      if (TVM_FFI_PREDICT_FALSE(!result.has_value())) {
-        TVM_FFI_THROW(TypeError) << "Cannot treat type `"
-                                 << TypeTraits<T>::GetMismatchTypeInfo(&data_) << "` as type `"
-                                 << TypeTraits<T>::TypeStr() << "`";
-      }
-      return *std::move(result);
+      return AnyView(*this).template as_or_throw<T>();
     }
   }
 

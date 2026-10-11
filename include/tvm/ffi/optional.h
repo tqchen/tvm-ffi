@@ -259,12 +259,38 @@ class Optional<T,
   /*!
    * \brief Try to reinterpret the stored value as a type U (strict, no conversion).
    * \tparam U The type to reinterpret to.
-   * \return std::optional<U> for ObjectRef-like U, or const U* when U is an Object type.
-   * \note Returns an empty result when nullopt or the strict type check fails.
+   * \return std::optional<U>, or const U* when U is an Object type.
+   * \note Nullopt is treated as None; no fallback conversions are performed.
    */
-  template <typename U>
+  template <typename U,
+            typename = std::enable_if_t<TypeTraits<U>::convert_enabled || std::is_same_v<U, Any> ||
+                                        std::is_base_of_v<Object, U>>>
   TVM_FFI_INLINE auto as() const {
     return data_.template as<U>();
+  }
+
+  /*!
+   * \brief Strictly reinterpret the stored value as U or throw TypeError.
+   * \tparam U The type to cast to.
+   * \return The casted value.
+   * \note Nullopt is treated as None; no fallback conversions are performed.
+   */
+  template <typename U,
+            typename = std::enable_if_t<TypeTraits<U>::convert_enabled || std::is_same_v<U, Any>>>
+  TVM_FFI_INLINE auto as_or_throw() const& {
+    return data_.template as_or_throw<U>();
+  }
+
+  /*!
+   * \brief Strictly reinterpret the stored value as U, moving ownership on success.
+   * \tparam U The type to cast to.
+   * \return The casted value.
+   * \note Throws TypeError without consuming the value if the strict check fails.
+   */
+  template <typename U,
+            typename = std::enable_if_t<TypeTraits<U>::storage_enabled || std::is_same_v<U, Any>>>
+  TVM_FFI_INLINE auto as_or_throw() && {
+    return std::move(data_).template as_or_throw<U>();
   }
 
   /*!
@@ -440,6 +466,44 @@ class Optional<T, std::enable_if_t<use_object_ref_optional_v<T>>> {
 
   TVM_FFI_INLINE explicit operator bool() const noexcept { return has_value(); }
   TVM_FFI_INLINE bool has_value() const noexcept { return data_ != nullptr; }
+
+  /*!
+   * \brief Try to reinterpret the stored value as U without conversion.
+   * \tparam U The type to cast to.
+   * \return std::optional<U>, or a borrowed const U* when U is an Object type.
+   * \note Nullopt is treated as None.
+   */
+  template <typename U, typename = std::enable_if_t<TypeTraits<U>::convert_enabled ||
+                                                    std::is_base_of_v<Object, U>>>
+  TVM_FFI_INLINE auto as() const {
+    return AnyView(*this).template as<U>();
+  }
+
+  /*!
+   * \brief Strictly reinterpret the stored value as U or throw TypeError.
+   * \tparam U The type to cast to.
+   * \return The casted value.
+   * \note Nullopt is treated as None; no fallback conversions are performed.
+   */
+  template <typename U, typename = std::enable_if_t<TypeTraits<U>::convert_enabled>>
+  TVM_FFI_INLINE auto as_or_throw() const& {
+    return AnyView(*this).template as_or_throw<U>();
+  }
+
+  /*!
+   * \brief Strictly reinterpret the stored value as U, moving ownership on success.
+   * \tparam U The type to cast to.
+   * \return The casted value.
+   * \note Throws TypeError without consuming the value if the strict check fails.
+   */
+  template <typename U, typename = std::enable_if_t<TypeTraits<U>::storage_enabled>>
+  TVM_FFI_INLINE auto as_or_throw() && {
+    AnyView view(data_);
+    if (TVM_FFI_PREDICT_FALSE(!details::AnyUnsafe::CheckAnyViewStrict<U>(view))) {
+      return view.template as_or_throw<U>();
+    }
+    return details::AnyUnsafe::MoveFromAnyAfterCheck<U>(Any(std::move(data_)));
+  }
 
   TVM_FFI_INLINE T operator*() const& noexcept {
     return details::ObjectUnsafe::ObjectRefFromObjectPtr<T>(data_);
@@ -629,6 +693,45 @@ class Optional<T, std::enable_if_t<is_object_ptr_type_v<T> || is_arc_type_v<T>>>
   TVM_FFI_INLINE explicit operator bool() const noexcept { return has_value(); }
   TVM_FFI_INLINE bool has_value() const noexcept { return StorageType::get() != nullptr; }
 
+  /*!
+   * \brief Try to reinterpret the stored value as U without conversion.
+   * \tparam U The type to cast to.
+   * \return std::optional<U>, or a borrowed const U* when U is an Object type.
+   * \note Nullopt is treated as None.
+   */
+  template <typename U, typename = std::enable_if_t<TypeTraits<U>::convert_enabled ||
+                                                    std::is_base_of_v<Object, U>>>
+  TVM_FFI_INLINE auto as() const {
+    return AnyView(*this).template as<U>();
+  }
+
+  /*!
+   * \brief Strictly reinterpret the stored value as U or throw TypeError.
+   * \tparam U The type to cast to.
+   * \return The casted value.
+   * \note Nullopt is treated as None; no fallback conversions are performed.
+   */
+  template <typename U, typename = std::enable_if_t<TypeTraits<U>::convert_enabled>>
+  TVM_FFI_INLINE auto as_or_throw() const& {
+    return AnyView(*this).template as_or_throw<U>();
+  }
+
+  /*!
+   * \brief Strictly reinterpret the stored value as U, moving ownership on success.
+   * \tparam U The type to cast to.
+   * \return The casted value.
+   * \note Throws TypeError without consuming the value if the strict check fails.
+   */
+  template <typename U, typename = std::enable_if_t<TypeTraits<U>::storage_enabled>>
+  TVM_FFI_INLINE auto as_or_throw() && {
+    auto& data = static_cast<StorageType&>(*this);
+    AnyView view(data);
+    if (TVM_FFI_PREDICT_FALSE(!details::AnyUnsafe::CheckAnyViewStrict<U>(view))) {
+      return view.template as_or_throw<U>();
+    }
+    return details::AnyUnsafe::MoveFromAnyAfterCheck<U>(Any(std::move(data)));
+  }
+
   TVM_FFI_INLINE T operator*() const& noexcept {
     return Traits::Copy(static_cast<const StorageType&>(*this));
   }
@@ -675,6 +778,12 @@ struct TypeTraits<Optional<T>> : public TypeTraitsBase {
   TVM_FFI_INLINE static void CopyToAnyView(const Optional<T>& src, TVMFFIAny* result) {
     if constexpr (TypeTraits<T>::storage_enabled && !use_object_ptr_optional_v<T>) {
       *result = src.ToAnyView().CopyToTVMFFIAny();
+    } else if constexpr (use_object_ptr_optional_v<T>) {
+      if (src.has_value()) {
+        TypeTraits<decltype(src.get())>::CopyToAnyView(src.get(), result);
+      } else {
+        TypeTraits<std::nullptr_t>::CopyToAnyView(nullptr, result);
+      }
     } else {
       if (src.has_value()) {
         TypeTraits<T>::CopyToAnyView(*src, result);
