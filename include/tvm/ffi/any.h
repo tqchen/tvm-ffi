@@ -756,39 +756,7 @@ struct AnyHash {
    * \param src The source Any.
    * \return The hash value.
    */
-  static uint64_t CallCustomAnyHash(const TVMFFIAny& custom_any_hash, const Any& src) {
-    // NOTE: we explicitly use low-level ABI here since we do not want to have dep on function.h
-    // it also keeps the logic simple
-    if (custom_any_hash.type_index == TypeIndex::kTVMFFIOpaquePtr) {
-      // we allow this attribute to be a function pointer for fast path
-      using FCustomAnyHashPtr = int64_t (*)(const Any&);
-      FCustomAnyHashPtr hash_func = reinterpret_cast<FCustomAnyHashPtr>(custom_any_hash.v_ptr);
-      TVM_FFI_ICHECK_NOTNULL(hash_func);
-      return static_cast<uint64_t>(
-          (*hash_func)(src));  // NOLINT(clang-analyzer-core.CallAndMessage)
-    } else {
-      // alternatively it can be a ffi.Function object.
-      TVM_FFI_ICHECK_EQ(custom_any_hash.type_index, TypeIndex::kTVMFFIFunction);
-      TVMFFIAny arg = src.data_;
-      TVMFFIAny result;
-      result.type_index = TypeIndex::kTVMFFINone;
-      result.zero_padding = 0;
-      result.v_int64 = 0;
-      TVMFFIFunctionCell* func_cell = TVMFFIFunctionGetCellPtr(custom_any_hash.v_obj);
-      if (func_cell->cpp_call != nullptr) {
-        // Fast path: invoke C++ ABI call directly when available.
-        using FCppCall = void (*)(const void*, const TVMFFIAny*, int32_t, TVMFFIAny*);
-        reinterpret_cast<FCppCall>(func_cell->cpp_call)(custom_any_hash.v_obj, &arg, 1, &result);
-      } else {
-        if (func_cell->safe_call(custom_any_hash.v_obj, &arg, 1, &result) != 0) {
-          throw details::MoveFromSafeCallRaised();
-        }
-      }
-      Any result_any = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
-      TVM_FFI_ICHECK_EQ(result_any.type_index(), TypeIndex::kTVMFFIInt);
-      return static_cast<uint64_t>(result_any.data_.v_int64);
-    }
-  }
+  TVM_FFI_DLL static uint64_t CallCustomAnyHash(const TVMFFIAny& custom_any_hash, const Any& src);
 };
 
 /*! \brief String-aware Any hash functor */
@@ -888,39 +856,8 @@ struct AnyEqual {
    * \param rhs The right-hand side Any.
    * \return The equality result.
    */
-  static bool CallCustomAnyEqual(const TVMFFIAny& custom_any_equal, const Any& lhs,
-                                 const Any& rhs) {
-    // NOTE: we explicitly use low-level ABI here since we do not want to have dep on function.h
-    // it also keeps the logic simple
-    if (custom_any_equal.type_index == TypeIndex::kTVMFFIOpaquePtr) {
-      // we allow this attribute to be a function pointer for fast path
-      using FCustomAnyEqualPtr = bool (*)(const Any&, const Any&);
-      FCustomAnyEqualPtr equal_func = reinterpret_cast<FCustomAnyEqualPtr>(custom_any_equal.v_ptr);
-      TVM_FFI_ICHECK_NOTNULL(equal_func);
-      return (*equal_func)(lhs, rhs);  // NOLINT(clang-analyzer-core.CallAndMessage)
-    } else {
-      // alternatively it can be a ffi.Function object.
-      TVM_FFI_ICHECK_EQ(custom_any_equal.type_index, TypeIndex::kTVMFFIFunction);
-      TVMFFIAny args[2] = {lhs.data_, rhs.data_};
-      TVMFFIAny result;
-      result.type_index = TypeIndex::kTVMFFINone;
-      result.zero_padding = 0;
-      result.v_int64 = 0;
-      TVMFFIFunctionCell* func_cell = TVMFFIFunctionGetCellPtr(custom_any_equal.v_obj);
-      if (func_cell->cpp_call != nullptr) {
-        // Fast path: invoke C++ ABI call directly when available.
-        using FCppCall = void (*)(const void*, const TVMFFIAny*, int32_t, TVMFFIAny*);
-        reinterpret_cast<FCppCall>(func_cell->cpp_call)(custom_any_equal.v_obj, args, 2, &result);
-      } else {
-        if (func_cell->safe_call(custom_any_equal.v_obj, args, 2, &result) != 0) {
-          throw details::MoveFromSafeCallRaised();
-        }
-      }
-      Any result_any = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
-      TVM_FFI_ICHECK(result_any.type_index() == TypeIndex::kTVMFFIBool);
-      return result_any.data_.v_int64 != 0;
-    }
-  }
+  TVM_FFI_DLL static bool CallCustomAnyEqual(const TVMFFIAny& custom_any_equal, const Any& lhs,
+                                             const Any& rhs);
 };
 
 // Defer this definition until any.h so the throwing path can depend on
