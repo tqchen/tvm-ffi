@@ -672,7 +672,14 @@ TEST(ObjectPtrStorage, OptionalAndVariantComposition) {
   OptionalNumberOrInt variant = optional_number;
   OptionalNumber variant_value = variant.get<OptionalNumber>();
   ASSERT_TRUE(variant_value.has_value());
-  EXPECT_EQ(variant_value.value(), number);
+  EXPECT_THROW(std::move(variant_value).as_or_throw<ObjectPtr<TFloatObj>>(), Error);
+  int use_count = number.use_count();
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  NumberPtr moved_value = std::move(variant_value).as_or_throw<NumberPtr>();
+  EXPECT_EQ(moved_value, number);
+  // NOLINTNEXTLINE(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
+  EXPECT_FALSE(variant_value.has_value());
+  EXPECT_EQ(number.use_count(), use_count);
 
   OptionalNumberOrIntValue optional_variant = Variant<NumberPtr, int64_t>(number);
   Any encoded = optional_variant;
