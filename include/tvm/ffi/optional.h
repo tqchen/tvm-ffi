@@ -368,15 +368,15 @@ class Optional<T,
 /*!
  * \brief Pointer-sized Optional specialization for ObjectRef types.
  *
- * ObjectRef already owns an ObjectPtr<Object>. Reusing that storage keeps the
- * long-standing nullable-pointer ABI: nullptr is nullopt, and an engaged value
- * is represented by the object's pointer with no TVMFFIAny wrapper.
+ * One ObjectPtr<Object> keeps the nullable-pointer ABI: nullptr is nullopt, and
+ * an engaged value is represented by the object's pointer with no TVMFFIAny
+ * wrapper. Optional is not an ObjectRef; access the contained reference explicitly.
  */
 template <typename T>
-class Optional<T, std::enable_if_t<use_object_ref_optional_v<T>>> : public ObjectRef {
+class Optional<T, std::enable_if_t<use_object_ref_optional_v<T>>> {
  public:
+  using value_type = T;
   using ContainerType = typename T::ContainerType;
-  static constexpr bool _type_container_is_exact = T::_type_container_is_exact;
 
   Optional() = default;
   // Special members are explicitly inlined to enable move cleanup optimizations
@@ -384,7 +384,7 @@ class Optional<T, std::enable_if_t<use_object_ref_optional_v<T>>> : public Objec
   // NOLINTBEGIN(google-explicit-constructor)
   TVM_FFI_INLINE Optional(const Optional&) = default;
   TVM_FFI_INLINE Optional(Optional&&) noexcept = default;
-  explicit Optional(UnsafeInit tag) : ObjectRef(tag) {}
+  explicit Optional(UnsafeInit) {}
   Optional(std::nullopt_t) {}
   Optional(std::nullptr_t) {}
   TVM_FFI_INLINE Optional(std::optional<T> other) {
@@ -392,17 +392,19 @@ class Optional<T, std::enable_if_t<use_object_ref_optional_v<T>>> : public Objec
       *this = *std::move(other);
     }
   }
-  TVM_FFI_INLINE Optional(T other) : ObjectRef(std::move(other)) {}
+  TVM_FFI_INLINE Optional(T other)
+      : data_(details::ObjectUnsafe::ObjectPtrFromObjectRef<Object>(std::move(other))) {}
   // NOLINTEND(google-explicit-constructor)
 
   TVM_FFI_INLINE Optional& operator=(const Optional&) = default;
   TVM_FFI_INLINE Optional& operator=(Optional&& other) noexcept {
-    ObjectRef::operator=(std::move(other));
+    data_ = std::move(other.data_);
+    other.data_ = nullptr;
     return *this;
   }
 
   TVM_FFI_INLINE Optional& operator=(T other) {
-    ObjectRef::operator=(std::move(other));
+    data_ = details::ObjectUnsafe::ObjectPtrFromObjectRef<Object>(std::move(other));
     return *this;
   }
 
@@ -489,7 +491,17 @@ class Optional<T, std::enable_if_t<use_object_ref_optional_v<T>>> : public Objec
     return static_cast<ContainerType*>(data_.get());
   }
 
+  TVM_FFI_INLINE const ContainerType* operator->() const { return get(); }
+  TVM_FFI_INLINE bool same_as(const Optional& other) const { return data_ == other.data_; }
+  TVM_FFI_INLINE bool same_as(const ObjectRef& other) const { return data_.get() == other.get(); }
+  TVM_FFI_INLINE bool unique() const { return data_.unique(); }
+  TVM_FFI_INLINE int use_count() const { return data_.use_count(); }
+
  private:
+  ObjectPtr<Object> data_;
+
+  friend struct details::ObjectUnsafe;
+
   template <typename U>
   TVM_FFI_INLINE auto EQToOptional(const U& other) const {
     using RetType = decltype(operator*() == *other);

@@ -59,7 +59,7 @@ struct TestObjADerived : public TestObjA {
 };
 
 struct TestObjRefADerived : public ObjectRef {
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TestObjRefADerived, ObjectRef, TestObjADerived);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TestObjRefADerived, ObjectRef, TestObjADerived);
 };
 
 struct PrefixLookupObj : public Object {

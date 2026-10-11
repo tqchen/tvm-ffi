@@ -56,7 +56,7 @@ class TNumberObj : public BasePad, public Object {
 
 class TNumber : public ObjectRef {
  public:
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TNumber, ObjectRef, TNumberObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TNumber, ObjectRef, TNumberObj);
 };
 
 class TIntObj : public TNumberObj {
@@ -75,7 +75,7 @@ class TIntObj : public TNumberObj {
 
 class TInt : public TNumber {
  public:
-  explicit TInt(int64_t value) { data_ = make_object<TIntObj>(value); }
+  explicit TInt(int64_t value) : TNumber(UnsafeInit{}) { data_ = make_object<TIntObj>(value); }
 
   static TInt StaticAdd(TInt lhs, TInt rhs) { return TInt(lhs->value + rhs->value); }
 
@@ -127,7 +127,7 @@ class TFloatObj : public TNumberObj {
 
 class TFloat : public TNumber {
  public:
-  explicit TFloat(double value) { data_ = make_object<TFloatObj>(value); }
+  explicit TFloat(double value) : TNumber(UnsafeInit{}) { data_ = make_object<TFloatObj>(value); }
 
   static uint64_t CustomAnyHash(const Any& src) {
     double value = src.cast<TFloat>()->value;
@@ -138,7 +138,7 @@ class TFloat : public TNumber {
     return lhs.cast<TFloat>()->value == rhs.cast<TFloat>()->value;
   }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TFloat, TNumber, TFloatObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TFloat, TNumber, TFloatObj);
 };
 
 inline void TFloatObj::RegisterReflection() {
@@ -181,7 +181,7 @@ class TPrimExpr : public ObjectRef {
     data_ = make_object<TPrimExprObj>(dtype, value);
   }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TPrimExpr, ObjectRef, TPrimExprObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TPrimExpr, ObjectRef, TPrimExprObj);
 };
 
 class TVarObj : public Object {
@@ -206,7 +206,7 @@ class TVar : public ObjectRef {
  public:
   explicit TVar(std::string name) { data_ = make_object<TVarObj>(name); }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TVar, ObjectRef, TVarObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TVar, ObjectRef, TVarObj);
 };
 
 class TPairObj : public Object {
@@ -232,7 +232,7 @@ class TPair : public ObjectRef {
     data_ = make_object<TPairObj>(std::move(lhs), std::move(rhs));
   }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TPair, ObjectRef, TPairObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TPair, ObjectRef, TPairObj);
 };
 
 class TMutatePairObj : public Object {
@@ -288,7 +288,7 @@ class TMutatePair : public ObjectRef {
     data_ = make_object<TMutatePairObj>(std::move(lhs), std::move(rhs));
   }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TMutatePair, ObjectRef, TMutatePairObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TMutatePair, ObjectRef, TMutatePairObj);
 };
 
 class TObjectPtrHolderObj : public Object {
@@ -323,7 +323,7 @@ class TObjectPtrHolder : public ObjectRef {
     data_ = make_object<TObjectPtrHolderObj>(std::move(value), std::move(optional_alias));
   }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TObjectPtrHolder, ObjectRef, TObjectPtrHolderObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TObjectPtrHolder, ObjectRef, TObjectPtrHolderObj);
 };
 
 // FreeVar test object that has a sub-field referencing another FreeVar.
@@ -365,7 +365,7 @@ class TVarWithDep : public ObjectRef {
     data_ = make_object<TVarWithDepObj>(std::move(name), std::move(dep));
   }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TVarWithDep, ObjectRef, TVarWithDepObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TVarWithDep, ObjectRef, TVarWithDepObj);
 };
 
 // Holder with one recursive-def field and one non-recursive-def field.
@@ -377,7 +377,7 @@ class TDefHolderObj : public Object {
 
   TDefHolderObj(TVarWithDep def_recursive, TVarWithDep def_non_recursive)
       : def_recursive(std::move(def_recursive)), def_non_recursive(std::move(def_non_recursive)) {}
-  explicit TDefHolderObj(UnsafeInit) {}
+  explicit TDefHolderObj(UnsafeInit tag) : def_recursive(tag), def_non_recursive(tag) {}
 
   static void RegisterReflection() {
     namespace refl = tvm::ffi::reflection;
@@ -398,7 +398,7 @@ class TDefHolder : public ObjectRef {
     data_ = make_object<TDefHolderObj>(std::move(def_recursive), std::move(def_non_recursive));
   }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TDefHolder, ObjectRef, TDefHolderObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TDefHolder, ObjectRef, TDefHolderObj);
 };
 
 class TFuncObj : public Object {
@@ -444,7 +444,7 @@ class TFunc : public ObjectRef {
     data_ = make_object<TFuncObj>(params, body, comment);
   }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TFunc, ObjectRef, TFuncObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TFunc, ObjectRef, TFuncObj);
 };
 
 class TCustomFuncObj : public Object {
@@ -495,7 +495,7 @@ class TCustomFunc : public ObjectRef {
     data_ = make_object<TCustomFuncObj>(params, body, comment);
   }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TCustomFunc, ObjectRef, TCustomFuncObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TCustomFunc, ObjectRef, TCustomFuncObj);
 };
 
 // Test object with all POD field types to exercise serialization of every field kind.
@@ -552,7 +552,7 @@ class TAllFields : public ObjectRef {
                                        v_array, v_map);
   }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TAllFields, ObjectRef, TAllFieldsObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TAllFields, ObjectRef, TAllFieldsObj);
 };
 
 // Test object with fields that have default values to test deserialization with missing fields
@@ -590,7 +590,7 @@ class TWithDefaults : public ObjectRef {
     data_ = make_object<TWithDefaultsObj>(required_val, default_int, default_str, default_bool);
   }
 
-  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NULLABLE(TWithDefaults, ObjectRef, TWithDefaultsObj);
+  TVM_FFI_DEFINE_OBJECT_REF_METHODS_NOTNULLABLE(TWithDefaults, ObjectRef, TWithDefaultsObj);
 };
 
 }  // namespace testing

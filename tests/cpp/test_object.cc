@@ -40,10 +40,9 @@ namespace testing {
 
 class TIntOrFloatRef : public ObjectRef {
  public:
-  TIntOrFloatRef() = default;
   explicit TIntOrFloatRef(UnsafeInit tag) : ObjectRef(tag) {}
 
-  static constexpr bool _type_is_nullable = true;
+  static constexpr bool _type_is_nullable = false;
   static constexpr bool _type_container_is_exact = false;
   using ContainerType = Object;
 };
@@ -97,9 +96,8 @@ inline constexpr bool object_ref_contains_is_enabled_v<
 static_assert(ObjectRef::_type_container_is_exact);
 static_assert(TNumber::_type_container_is_exact);
 static_assert(TInt::_type_container_is_exact);
-// ObjectRef optionals retain the original ObjectRef/ObjectPtr representation
-// and continue to participate in the ObjectRef container concept.
-static_assert(std::is_base_of_v<ObjectRef, Optional<TInt>>);
+// ObjectRef optionals retain pointer storage without inheriting ObjectRef.
+static_assert(!std::is_base_of_v<ObjectRef, Optional<TInt>>);
 static_assert(!TIntOrFloatRef::_type_container_is_exact);
 static_assert(!Array<TInt>::_type_container_is_exact);
 static_assert(!List<TInt>::_type_container_is_exact);
@@ -110,14 +108,14 @@ static_assert(!Variant<TInt, TFloat>::_type_container_is_exact);
 
 static_assert(object_ref_contains_v<TNumber, TIntObj>);
 static_assert(object_ref_contains_v<TInt, TIntObj>);
-static_assert(object_ref_contains_v<Optional<TInt>, TIntObj>);
+static_assert(object_ref_contains_v<Optional<TInt>::value_type, TIntObj>);
 static_assert(!object_ref_contains_v<TInt, TFloatObj>);
 static_assert(!object_ref_contains_v<Array<TInt>, ArrayObj>);
 static_assert(object_ref_contains_v<TIntOrFloatRef, TIntObj>);
 static_assert(object_ref_contains_v<TIntOrFloatRef, TFloatObj>);
 static_assert(!object_ref_contains_v<TIntOrFloatRef, TNumberObj>);
 static_assert(object_ref_contains_is_enabled_v<TInt, TIntObj>);
-static_assert(object_ref_contains_is_enabled_v<Optional<TInt>, TIntObj>);
+static_assert(!object_ref_contains_is_enabled_v<Optional<TInt>, TIntObj>);
 static_assert(object_ref_contains_is_enabled_v<TIntOrFloatRef, TIntObj>);
 static_assert(!object_ref_contains_is_enabled_v<int, TIntObj>);
 static_assert(!object_ref_contains_is_enabled_v<TIntObj, TIntObj>);
@@ -242,7 +240,7 @@ TEST(ObjectRef, as) {
   EXPECT_TRUE(c.as<TIntObj>() == nullptr);
   EXPECT_TRUE(c.as<TFloatObj>() == nullptr);
   EXPECT_TRUE(c.as<TNumberObj>() == nullptr);
-  auto null_number = c.as<TNumber>();
+  auto null_number = c.as<ObjectRef>();
   ASSERT_TRUE(null_number.has_value()) << "Expected nullable null ObjectRef cast to succeed";
   EXPECT_TRUE(!(*null_number).defined());  // NOLINT(bugprone-unchecked-optional-access)
   EXPECT_TRUE(!c.as<TInt>().has_value());
@@ -290,7 +288,7 @@ TEST(ObjectRef, AsOrThrow) {
   EXPECT_EQ(a.as<TIntObj>()->value, 10);
   EXPECT_EQ(a.as_or_throw<TInt>()->value, 10);
   EXPECT_EQ(b.as<TFloatObj>()->value, 20);
-  EXPECT_TRUE(!c.as_or_throw<TNumber>().defined());
+  EXPECT_TRUE(!c.as_or_throw<ObjectRef>().defined());
   auto const_as = const_a.as<TInt>();
   ASSERT_TRUE(const_as.has_value()) << "Expected const ObjectRef as<TInt>() to succeed";
   EXPECT_EQ((*const_as).get()->value, 30);  // NOLINT(bugprone-unchecked-optional-access)

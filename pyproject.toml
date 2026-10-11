@@ -111,7 +111,8 @@ tvm-ffi-stubgen = "tvm_ffi.stub.cli:__main__"
 # __dealloc__, and Cython 3.2.8 (2026-06-30) fixed the free-threaded object
 # keep-alive scheme for code executed there (cython#7769). Earlier Cython can
 # collect the wrapper mid-__dealloc__ on the 3.14t build.
-requires = ["scikit-build-core>=0.10.0", "cython>=3.2.8", "setuptools-scm"]
+# scikit-build-core 1.1.0 breaks free-threaded Development.Module discovery on CMake <4.1.2.
+requires = ["scikit-build-core>=0.10.0,!=1.1.0", "cython>=3.2.8", "setuptools-scm"]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]

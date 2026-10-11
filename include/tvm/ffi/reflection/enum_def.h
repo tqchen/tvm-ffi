@@ -107,7 +107,7 @@ class EnumDef : public ReflectionDefBase {
     ::tvm::ffi::details::ObjectUnsafe::GetHeader(obj.get())->type_index = type_index_;
     obj->_int_index = int_index;
     obj->_str_index = std::move(str_index);
-    instance_ = Enum(ObjectPtr<EnumObj>(std::move(obj)));
+    instance_ = ::tvm::ffi::details::ObjectUnsafe::ObjectRefFromObjectPtr<Enum>(std::move(obj));
     entries.push_back(instance_);
     indexes.Set(int_key, instance_);
     indexes.Set(str_key, instance_);
@@ -131,7 +131,8 @@ class EnumDef : public ReflectionDefBase {
     // GCC runs attribute constructors before dynamic initialization of inline type indices.
     // Set the header explicitly so the state is not packed as `None` during static init.
     ::tvm::ffi::details::ObjectUnsafe::GetHeader(state_obj.get())->type_index = state_type_index;
-    EnumState state(std::move(state_obj));
+    EnumState state =
+        ::tvm::ffi::details::ObjectUnsafe::ObjectRefFromObjectPtr<EnumState>(std::move(state_obj));
     constexpr TVMFFIByteArray name = AsByteArray(type_attr::kEnumState);
     TVMFFIAny value_any = AnyView(state).CopyToTVMFFIAny();
     TVM_FFI_CHECK_SAFE_CALL(TVMFFITypeRegisterAttr(type_index_, &name, &value_any));
@@ -139,7 +140,7 @@ class EnumDef : public ReflectionDefBase {
   }
 
   int32_t type_index_;
-  Enum instance_;
+  Enum instance_{UnsafeInit{}};
 };
 
 }  // namespace reflection

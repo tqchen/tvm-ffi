@@ -193,6 +193,7 @@ class Tuple : public ObjectRef {
   /// \cond Doxygen_Suppress
   using ContainerType = ArrayObj;
   static constexpr bool _type_container_is_exact = false;
+  static constexpr bool _type_is_nullable = false;
   /// \endcond
 
  private:

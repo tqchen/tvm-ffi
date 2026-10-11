@@ -173,7 +173,9 @@ class Dict : public ObjectRef {
    * \brief constructor from pointer
    * \param n the container pointer
    */
-  explicit Dict(ObjectPtr<Object> n) : ObjectRef(n) {}
+  explicit Dict(ObjectPtr<Object> n) : ObjectRef(std::move(n)) {
+    TVM_FFI_ICHECK_NOTNULL(data_.get());
+  }
   /*!
    * \brief constructor from iterator
    * \param begin begin of iterator
@@ -274,6 +276,7 @@ class Dict : public ObjectRef {
   /// \cond Doxygen_Suppress
   using ContainerType = DictObj;
   static constexpr bool _type_container_is_exact = false;
+  static constexpr bool _type_is_nullable = false;
   /// \endcond
 
   /// \cond Doxygen_Suppress
