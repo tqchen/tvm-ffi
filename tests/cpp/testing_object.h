@@ -25,6 +25,9 @@
 #include <tvm/ffi/container/map.h>
 #include <tvm/ffi/device.h>
 #include <tvm/ffi/dtype.h>
+#include <tvm/ffi/extra/serialization.h>
+#include <tvm/ffi/extra/structural_equal.h>
+#include <tvm/ffi/extra/structural_hash.h>
 #include <tvm/ffi/extra/structural_mutate.h>
 #include <tvm/ffi/extra/structural_visit.h>
 #include <tvm/ffi/memory.h>
@@ -100,18 +103,17 @@ inline void TIntObj::RegisterReflection() {
   refl::TypeAttrDef<TIntObj>()
       .def("test.GetValue", &TIntObj::GetValue)
       .attr("test.size", sizeof(TIntObj))
-      .attr(refl::type_attr::kAnyHash,
-            refl::NativeFunction<int64_t(const Any&)>::FromNative<&TInt::CustomAnyHash>())
-      .attr(
-          refl::type_attr::kAnyEqual,
-          refl::NativeFunction<bool(const Any&, const Any&)>::FromNative<&TInt::CustomAnyEqual>());
+      .native_fn_attr<&TInt::CustomAnyHash>(type_attr::kAnyHash)
+      .native_fn_attr<&TInt::CustomAnyEqual>(type_attr::kAnyEqual);
   // custom json serialization
   refl::TypeAttrDef<TIntObj>()
-      .def(refl::type_attr::kDataToJson,
-           [](const TIntObj* self) -> Map<String, Any> {
+      .def(type_attr::kDataToJson.name,
+           [](AnyView value) -> Any {
+             const auto* self = value.as_or_throw<const TIntObj*>();
              return Map<String, Any>{{"value", self->value}};
            })
-      .def(refl::type_attr::kDataFromJson, [](Map<String, Any> json_obj) -> TInt {
+      .def(type_attr::kDataFromJson.name, [](AnyView value) -> Any {
+        auto json_obj = value.as_or_throw<Map<String, Any>>();
         return TInt(json_obj["value"].cast<int64_t>());
       });
 }
@@ -152,8 +154,8 @@ inline void TFloatObj::RegisterReflection() {
       .def("sub", [](const TFloatObj* self, double other) -> double { return self->value - other; })
       .def("add", &TFloatObj::Add, "add method");
   refl::TypeAttrDef<TFloatObj>()
-      .def(refl::type_attr::kAnyHash, &TFloat::CustomAnyHash)
-      .def(refl::type_attr::kAnyEqual, &TFloat::CustomAnyEqual);
+      .def(type_attr::kAnyHash.name, &TFloat::CustomAnyHash)
+      .def(type_attr::kAnyEqual.name, &TFloat::CustomAnyEqual);
 }
 
 class TPrimExprObj : public Object {
@@ -276,10 +278,9 @@ class TMutatePairObj : public Object {
     refl::ObjectDef<TMutatePairObj>()
         .def_ro("lhs", &TMutatePairObj::lhs)
         .def_ro("rhs", &TMutatePairObj::rhs);
-    refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMutate);
-    refl::TypeAttrDef<TMutatePairObj>().attr(
-        refl::type_attr::kStructuralMutate,
-        FStructuralMutate::FromNative<&TMutatePairObj::StructuralMutateHook>());
+    refl::EnsureTypeAttrColumn(type_attr::kStructuralMutate);
+    refl::TypeAttrDef<TMutatePairObj>().native_fn_attr<&TMutatePairObj::StructuralMutateHook>(
+        type_attr::kStructuralMutate);
   }
 
   static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindTreeNode;
@@ -432,10 +433,9 @@ class TFuncObj : public Object {
         .def_ro("params", &TFuncObj::params, refl::AttachFieldFlag::SEqHashDefPattern())
         .def_ro("body", &TFuncObj::body)
         .def_ro("comment", &TFuncObj::comment, refl::AttachFieldFlag::SEqHashIgnore());
-    refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralVisit);
-    refl::TypeAttrDef<TFuncObj>().attr(
-        refl::type_attr::kStructuralVisit,
-        FStructuralVisit::FromNative<&TFuncObj::StructuralVisitHook>());
+    refl::EnsureTypeAttrColumn(type_attr::kStructuralVisit);
+    refl::TypeAttrDef<TFuncObj>().native_fn_attr<&TFuncObj::StructuralVisitHook>(
+        type_attr::kStructuralVisit);
   }
 
   static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindTreeNode;
@@ -461,7 +461,7 @@ class TCustomFuncObj : public Object {
       : params(params), body(body), comment(comment) {}
 
   bool SEqual(const TCustomFuncObj* other,
-              ffi::TypedFunction<bool(AnyView, AnyView, bool, AnyView)> cmp) const {
+              const ffi::TypedFunction<bool(AnyView, AnyView, int, AnyView)>& cmp) const {
     if (!cmp(params, other->params, true, "params")) {
       return false;
     }
@@ -471,7 +471,8 @@ class TCustomFuncObj : public Object {
     return true;
   }
 
-  int64_t SHash(int64_t init_hash, ffi::TypedFunction<int64_t(AnyView, int64_t, bool)> hash) const {
+  int64_t SHash(int64_t init_hash,
+                const ffi::TypedFunction<int64_t(AnyView, int64_t, int)>& hash) const {
     int64_t hash_value = init_hash;
     hash_value = hash(params, hash_value, true);
     hash_value = hash(body, hash_value, false);
@@ -485,8 +486,8 @@ class TCustomFuncObj : public Object {
         .def_ro("body", &TCustomFuncObj::body)
         .def_ro("comment", &TCustomFuncObj::comment);
     refl::TypeAttrDef<TCustomFuncObj>()
-        .def(refl::type_attr::kSEqual, &TCustomFuncObj::SEqual)
-        .def(refl::type_attr::kSHash, &TCustomFuncObj::SHash);
+        .def(type_attr::kSEqual.name, &TCustomFuncObj::SEqual)
+        .def(type_attr::kSHash.name, &TCustomFuncObj::SHash);
   }
 
   static constexpr TVMFFISEqHashKind _type_s_eq_hash_kind = kTVMFFISEqHashKindTreeNode;

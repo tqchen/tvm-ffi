@@ -213,10 +213,11 @@ class StructEqualHandler {
   // clamp — the caller (CompareObject) handles that for the FreeVar case.
   bool CompareFields(const ObjectRef& lhs, const ObjectRef& rhs, const TVMFFITypeInfo* type_info) {
     static reflection::TypeAttrColumn custom_s_equal =
-        reflection::TypeAttrColumn(reflection::type_attr::kSEqual);
+        reflection::TypeAttrColumn(type_attr::kSEqual);
 
     bool success = true;
-    if (custom_s_equal[type_info->type_index] == nullptr) {
+    auto hook = type_attr::kSEqual.ValueFrom(custom_s_equal[type_info->type_index]);
+    if (!hook) {
       // We recursively compare the fields the object
       reflection::ForEachFieldInfoWithEarlyStop(type_info, [&](const TVMFFIFieldInfo* field_info) {
         // skip fields that are marked as structural eq hash ignore
@@ -291,9 +292,7 @@ class StructEqualHandler {
               return sub_success;
             });
       }
-      success = custom_s_equal[type_info->type_index]
-                    .cast<ffi::Function>()(lhs, rhs, s_equal_callback_)
-                    .cast<bool>();
+      success = (*hook)(lhs.get(), rhs.get(), s_equal_callback_);
     }
     return success;
   }
@@ -456,7 +455,7 @@ class StructEqualHandler {
   std::vector<reflection::AccessStep>* mismatch_lhs_reverse_path_ = nullptr;
   std::vector<reflection::AccessStep>* mismatch_rhs_reverse_path_ = nullptr;
   // lazily initialize custom equal function
-  ffi::Function s_equal_callback_ = nullptr;
+  ffi::TypedFunction<bool(AnyView, AnyView, int, AnyView)> s_equal_callback_ = nullptr;
   // map from lhs to rhs
   std::unordered_map<ObjectRef, ObjectRef, ObjectPtrHash, ObjectPtrEqual> equal_map_lhs_;
   // map from rhs to lhs
@@ -499,7 +498,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def("ffi.StructuralEqual", StructuralEqual::Equal)
       .def("ffi.GetFirstStructuralMismatch", StructuralEqual::GetFirstMismatch);
   // ensure the type attribute column is presented in the system even if it is empty.
-  refl::EnsureTypeAttrColumn(refl::type_attr::kSEqual);
+  refl::EnsureTypeAttrColumn(type_attr::kSEqual);
 }
 
 }  // namespace ffi

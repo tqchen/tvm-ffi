@@ -164,10 +164,6 @@ struct StructuralMutatorVTable {
   FStructuralVarRemapSet var_remap_set = nullptr;
 };
 
-/*! \brief Borrowed structural mutation hook at attribute lookup and call. */
-using FStructuralMutate =
-    reflection::NativeFunctionView<UnchangedOr<Any>(StructuralMutatorObj*, AnyView)>;
-
 namespace details {
 template <typename Parent>
 class StructuralMutateDynEngine;
@@ -433,6 +429,45 @@ TVM_FFI_COLD_CODE inline Unexpected<Error> SMutateDeclaredTypeError() noexcept {
 }
 }  // namespace details
 
+/*! \brief Borrowed structural mutation hook at attribute lookup and call. */
+using FStructuralMutate =
+    reflection::NativeFunctionView<UnchangedOr<Any>(StructuralMutatorObj*, AnyView)>;
+
+namespace type_attr {
+/*!
+ * \brief Custom structural mutation hook used by ``StructuralMutator``.
+ *
+ * The hook receives the active mutator and the input value. It should recursively mutate structural
+ * children through the mutator, return ``Unchanged`` if no fields are changed, and avoid
+ * intentionally mutating the source object. The input is borrowed and remains valid for the
+ * duration of the call.
+ *
+ * Value type: either an opaque native hook pointer returning raw
+ * ``Expected<UnchangedOr<Any>>`` storage, or an ``ffi::Function``.
+ *
+ * This is the canonical mutation hook. A type that defines
+ * ``kStructuralMaybeInplaceMutate`` must also define this attribute.
+ */
+inline constexpr reflection::AttrKey<FStructuralMutate> kStructuralMutate{"__s_mutate__"};
+/*!
+ * \brief Optional custom mutation hook that may reuse its input object.
+ *
+ * The hook receives the active mutator and a borrowed input value that is safe to mutate in place.
+ * Callers must route shared objects through non-in-place mutation instead. The hook may mutate and
+ * return the source object, delegate to non-in-place mutation, or return another replacement.
+ *
+ * Value type: either an opaque native hook pointer returning raw
+ * ``Expected<UnchangedOr<Any>>`` storage, or an ``ffi::Function``.
+ *
+ * This hook is optional. When it is absent, ``DefaultMutateExpected`` with
+ * ``inplace_mode=InplaceMode::kAllow`` falls back to non-in-place mutation through
+ * ``kStructuralMutate`` or reflected structural fields. In-place mutation is therefore explicitly
+ * opt-in and is never inferred from ownership by the reflected fallback.
+ */
+inline constexpr reflection::AttrKey<FStructuralMutate> kStructuralMaybeInplaceMutate{
+    "__s_maybe_inplace_mutate__"};
+}  // namespace type_attr
+
 /*!
  * \brief Object node of a structural mutator.
  */
@@ -620,7 +655,7 @@ class StructuralMutatorObj : public Object {
   // Engine-internal: subclasses call the Expected forms above.
   /*! \brief Raw default mutation: attr lookup then hook, favouring the fn-ptr case. */
   TVM_FFI_INLINE TVMFFIAny DefaultMutateRaw(AnyView value) noexcept {
-    static reflection::TypeAttrColumn column(reflection::type_attr::kStructuralMutate);
+    static reflection::TypeAttrColumn column(type_attr::kStructuralMutate);
     AnyView attr = column[value.type_index()];
     // Exactly one frame per node: hooks propagate errors untouched, and this is the engine
     // dispatching into `value`, so both exits below name it here and nowhere else.
@@ -705,7 +740,7 @@ class StructuralMutatorObj : public Object {
    *       and every other shape is handed to the out-of-line remainder.
    */
   TVM_FFI_INLINE TVMFFIAny DefaultMaybeInplaceMutateRaw(AnyView value) noexcept {
-    static reflection::TypeAttrColumn column(reflection::type_attr::kStructuralMaybeInplaceMutate);
+    static reflection::TypeAttrColumn column(type_attr::kStructuralMaybeInplaceMutate);
     AnyView attr = column[value.type_index()];
     if (TVM_FFI_PREDICT_TRUE(attr.type_index() == TypeIndex::kTVMFFIOpaquePtr)) {
       // This is the engine dispatching into `value`; hooks propagate errors untouched, so the
@@ -790,7 +825,7 @@ TVM_FFI_INLINE static Expected<Any> MutateReflectedFieldsExpected(StructuralMuta
   const Object* obj = value.as<Object>();
   int32_t type_index = obj->type_index();
 
-  static reflection::TypeAttrColumn column(reflection::type_attr::kShallowCopy);
+  static reflection::TypeAttrColumn column(type_attr::kShallowCopy);
   AnyView attr = column[type_index];
   if (TVM_FFI_PREDICT_FALSE(attr.type_index() != TypeIndex::kTVMFFIFunction)) {
     return Unexpected(Error("TypeError", "__ffi_shallow_copy__ must be an ffi.Function", ""));
@@ -957,7 +992,8 @@ namespace details {
  *   copy->b = std::move(b).ValueOrUnchanged(std::move(copy->b));
  *   return copy;
  * }
- * FStructuralMutate hook = FStructuralMutate::FromNative<&FooMutate>();
+ * FStructuralMutate hook =
+ * FStructuralMutate::FromNative<&FooMutate>();
  * Expected<UnchangedOr<Any>> result = hook.CallExpected(mutator, value);
  * \endcode
  *

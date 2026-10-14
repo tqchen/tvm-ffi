@@ -298,13 +298,12 @@ class TNestedMapHookObj : public Object {
   static void RegisterReflection() {
     namespace refl = tvm::ffi::reflection;
     refl::ObjectDef<TNestedMapHookObj>().def_rw("field", &TNestedMapHookObj::field);
-    refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMutate);
-    refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralMaybeInplaceMutate);
+    refl::EnsureTypeAttrColumn(type_attr::kStructuralMutate);
+    refl::EnsureTypeAttrColumn(type_attr::kStructuralMaybeInplaceMutate);
     refl::TypeAttrDef<TNestedMapHookObj>()
-        .attr(refl::type_attr::kStructuralMutate,
-              FStructuralMutate::FromNative<&TNestedMapHookObj::StructuralMutate>())
-        .attr(refl::type_attr::kStructuralMaybeInplaceMutate,
-              FStructuralMutate::FromNative<&TNestedMapHookObj::MaybeInplaceMutate>());
+        .native_fn_attr<&TNestedMapHookObj::StructuralMutate>(type_attr::kStructuralMutate)
+        .native_fn_attr<&TNestedMapHookObj::MaybeInplaceMutate>(
+            type_attr::kStructuralMaybeInplaceMutate);
   }
 
   static constexpr bool _type_mutable = true;

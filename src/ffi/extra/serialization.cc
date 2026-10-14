@@ -201,9 +201,9 @@ class ObjectGraphSerializer {
     if (obj->IsInstance<IntEnumObj>()) return static_cast<const EnumObj*>(obj)->_int_index;
     if (obj->IsInstance<EnumObj>()) return static_cast<const EnumObj*>(obj)->_str_index;
     static reflection::TypeAttrColumn data_to_json =
-        reflection::TypeAttrColumn(reflection::type_attr::kDataToJson);
-    if (data_to_json[value.type_index()] != nullptr) {
-      return data_to_json[value.type_index()].cast<Function>()(value);
+        reflection::TypeAttrColumn(type_attr::kDataToJson);
+    if (auto hook = type_attr::kDataToJson.ValueFrom(data_to_json[value.type_index()])) {
+      return (*hook)(value);
     }
     // NOTE: invariant: lhs and rhs are already the same type
     const TVMFFITypeInfo* type_info = TVMFFIGetTypeInfo(value.type_index());
@@ -394,9 +394,9 @@ class ObjectGraphDeserializer {
       return EnumObj::_GetByStrIndex(type_index, data.cast<String>());
     }
     static reflection::TypeAttrColumn data_from_json =
-        reflection::TypeAttrColumn(reflection::type_attr::kDataFromJson);
-    if (data_from_json[type_index] != nullptr) {
-      return data_from_json[type_index].cast<Function>()(data);
+        reflection::TypeAttrColumn(type_attr::kDataFromJson);
+    if (auto hook = type_attr::kDataFromJson.ValueFrom(data_from_json[type_index])) {
+      return (*hook)(data);
     }
     // otherwise, we go over the fields and create the data.
     const TVMFFITypeInfo* type_info = TVMFFIGetTypeInfo(type_index);
@@ -489,8 +489,8 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def("ffi.ToJSONGraphString", ToJSONGraphString)
       .def("ffi.FromJSONGraph", FromJSONGraph)
       .def("ffi.FromJSONGraphString", FromJSONGraphString);
-  refl::EnsureTypeAttrColumn(refl::type_attr::kDataToJson);
-  refl::EnsureTypeAttrColumn(refl::type_attr::kDataFromJson);
+  refl::EnsureTypeAttrColumn(type_attr::kDataToJson);
+  refl::EnsureTypeAttrColumn(type_attr::kDataFromJson);
 }
 
 }  // namespace ffi

@@ -179,10 +179,10 @@ class StructuralHashHandler {
   // callback). Does not touch the FreeVar def-region clamp — that lives
   // inline in HashObject's FreeVar branch, which wraps this helper.
   uint64_t HashFields(const ObjectRef& obj, const TVMFFITypeInfo* type_info, uint64_t init_hash) {
-    static reflection::TypeAttrColumn custom_s_hash =
-        reflection::TypeAttrColumn(reflection::type_attr::kSHash);
+    static reflection::TypeAttrColumn custom_s_hash = reflection::TypeAttrColumn(type_attr::kSHash);
 
-    if (custom_s_hash[type_info->type_index] == nullptr) {
+    auto hook = type_attr::kSHash.ValueFrom(custom_s_hash[type_info->type_index]);
+    if (!hook) {
       // go over the content and hash the fields
       reflection::ForEachFieldInfo(type_info, [&](const TVMFFIFieldInfo* field_info) {
         // skip fields that are marked as structural eq hash ignore
@@ -233,9 +233,8 @@ class StructuralHashHandler {
               return static_cast<int64_t>(details::StableHashCombine(inner_init, hv));
             });
       }
-      init_hash = custom_s_hash[type_info->type_index]
-                      .cast<ffi::Function>()(obj, static_cast<int64_t>(init_hash), s_hash_callback_)
-                      .cast<uint64_t>();
+      init_hash = static_cast<uint64_t>(
+          (*hook)(obj.get(), static_cast<int64_t>(init_hash), s_hash_callback_));
     }
     return init_hash;
   }
@@ -382,7 +381,7 @@ class StructuralHashHandler {
   // graph node counter.
   uint32_t graph_node_counter_{0};
   // lazily initialize custom hash function
-  ffi::Function s_hash_callback_ = nullptr;
+  ffi::TypedFunction<int64_t(AnyView, int64_t, int)> s_hash_callback_ = nullptr;
   // map from lhs to rhs
   std::unordered_map<ObjectRef, uint64_t, ObjectPtrHash, ObjectPtrEqual> hash_memo_;
 };
@@ -405,7 +404,7 @@ static int64_t FFIStructuralHash(const Any& value, bool map_free_vars, bool skip
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::GlobalDef().def("ffi.StructuralHash", FFIStructuralHash);
-  refl::EnsureTypeAttrColumn(refl::type_attr::kSHash);
+  refl::EnsureTypeAttrColumn(type_attr::kSHash);
 }
 
 }  // namespace ffi

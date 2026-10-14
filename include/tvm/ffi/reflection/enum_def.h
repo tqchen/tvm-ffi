@@ -93,6 +93,18 @@ class EnumDef : public ReflectionDefBase {
     return *this;
   }
 
+  /*! \brief Set an enum attribute using its key's declared value type. */
+  template <typename T, typename Value>
+  EnumDef& set_attr(AttrKey<T> key, Value&& value) {
+    return set_attr(key.name, T(std::forward<Value>(value)));
+  }
+
+  /*! \brief Set a named native callback using its key's declared adapter. */
+  template <auto Fn, typename T>
+  EnumDef& set_native_fn_attr(AttrKey<T> key) {
+    return set_attr(key, T::template FromNative<Fn>());
+  }
+
  private:
   void Register(const EnumState& state, int64_t int_index, String str_index) {
     List<ObjectRef> entries = state->entries;
@@ -133,7 +145,7 @@ class EnumDef : public ReflectionDefBase {
     ::tvm::ffi::details::ObjectUnsafe::GetHeader(state_obj.get())->type_index = state_type_index;
     EnumState state =
         ::tvm::ffi::details::ObjectUnsafe::ObjectRefFromObjectPtr<EnumState>(std::move(state_obj));
-    constexpr TVMFFIByteArray name = AsByteArray(type_attr::kEnumState);
+    constexpr TVMFFIByteArray name = AsByteArray(type_attr::kEnumState.name);
     TVMFFIAny value_any = AnyView(state).CopyToTVMFFIAny();
     TVM_FFI_CHECK_SAFE_CALL(TVMFFITypeRegisterAttr(type_index_, &name, &value_any));
     return state;
