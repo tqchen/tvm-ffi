@@ -71,6 +71,11 @@ struct PrefixLookupObj : public Object {
   TVM_FFI_DECLARE_OBJECT_INFO_FINAL("test.PrefixLookup", PrefixLookupObj, Object);
 };
 
+class QueryEnumObj : public EnumObj {
+ public:
+  TVM_FFI_DECLARE_OBJECT_INFO_FINAL("test.QueryEnum", QueryEnumObj, EnumObj);
+};
+
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
 
@@ -115,6 +120,35 @@ TEST(Reflection, GetFieldByteOffset) {
   EXPECT_EQ(reflection::GetFieldByteOffsetToObject(&TestObjA::x), sizeof(TVMFFIObject));
   EXPECT_EQ(reflection::GetFieldByteOffsetToObject(&TestObjA::y), 8 + sizeof(TVMFFIObject));
   EXPECT_EQ(reflection::GetFieldByteOffsetToObject(&TIntObj::value), sizeof(TVMFFIObject));
+}
+
+TEST(Reflection, EnumIsDefined) {
+  using Definition = reflection::EnumDef<QueryEnumObj>;
+  reflection::TypeAttrColumn states(type_attr::kEnumState);
+  int32_t type_index = QueryEnumObj::_GetOrAllocRuntimeTypeIndex();
+  EXPECT_FALSE(Definition::IsDefined("Alpha"));
+  EXPECT_EQ(states[type_index], nullptr);
+
+  Definition("Alpha").set_attr("description", String("first"));
+  Enum original = EnumObj::_GetByStrIndex<QueryEnumObj>("Alpha");
+  EnumState state = states[type_index].cast<EnumState>();
+  EXPECT_TRUE(Definition::IsDefined("Alpha"));
+  EXPECT_FALSE(Definition::IsDefined("alpha"));
+  EXPECT_FALSE(Definition::IsDefined("Beta"));
+  EXPECT_FALSE(Definition::IsDefined("0"));
+  EXPECT_FALSE(Definition::IsDefined(String("Alpha\0suffix", 12)));
+  EXPECT_TRUE(states[type_index].cast<EnumState>().same_as(state));
+  EXPECT_EQ(state->entries.size(), 1);
+  EXPECT_EQ(state->indexes.size(), 2);
+  EXPECT_EQ(state->attrs.size(), 1);
+  EXPECT_EQ(state->attrs.at("description").size(), 1);
+  EXPECT_EQ(state->attrs.at("description").at(original).cast<String>(), "first");
+  EXPECT_TRUE(EnumObj::_GetByStrIndex<QueryEnumObj>("Alpha").same_as(original));
+  EXPECT_TRUE(EnumObj::_GetByIntIndex<QueryEnumObj>(0).same_as(original));
+  Definition("Beta");  // NOLINT(bugprone-unused-raii)
+  EXPECT_TRUE(Definition::IsDefined("Beta"));
+  EXPECT_TRUE(EnumObj::_GetByStrIndex<QueryEnumObj>("Beta").same_as(
+      EnumObj::_GetByIntIndex<QueryEnumObj>(1)));
 }
 
 TEST(Reflection, FieldGetter) {

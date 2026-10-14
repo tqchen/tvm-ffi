@@ -49,6 +49,26 @@ template <typename EnumClsObj, typename = std::enable_if_t<std::is_base_of_v<Enu
 class EnumDef : public ReflectionDefBase {
  public:
   /*!
+   * \brief Check whether a canonical name is defined without registering enum state or entries.
+   * \param name The canonical string index.
+   * \return Whether the name is defined for this enum type.
+   */
+  static bool IsDefined(const String& name) {
+    constexpr TVMFFIByteArray column_name = AsByteArray(type_attr::kEnumState.name);
+    if (TVMFFIGetTypeAttrColumn(&column_name) == nullptr) return false;
+    AnyView value =
+        TypeAttrColumn(type_attr::kEnumState)[EnumClsObj::_GetOrAllocRuntimeTypeIndex()];
+    if (value == nullptr) return false;
+    if (value.type_index() != EnumStateObj::_GetOrAllocRuntimeTypeIndex()) {
+      TVM_FFI_THROW(TypeError) << "Expected `" << EnumStateObj::_type_key
+                               << "` in enum state column, but got `" << value.GetTypeKey() << "`";
+    }
+    // Avoid cast<EnumState> because its inline type index may not be initialized yet.
+    const auto* state = static_cast<const EnumStateObj*>(value.cast<ObjectRef>().get());
+    return state->indexes.count(name) != 0;
+  }
+
+  /*!
    * \brief Register an enum singleton with an automatically assigned integer index.
    *
    * The integer index is assigned from the singleton's registration order.
