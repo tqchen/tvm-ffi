@@ -169,19 +169,15 @@ TVM_FFI_STATIC_INIT_BLOCK() {
               const Array<Tuple<int32_t, Function>>& callbacks) -> Optional<VisitInterrupt> {
              return details::StructuralVisitExpected(root, callbacks).value();
            });
-  refl::EnsureTypeAttrColumn(refl::type_attr::kStructuralVisit);
-  refl::TypeAttrDef<ArrayObj>().attr(
-      refl::type_attr::kStructuralVisit,
-      FStructuralVisit::FromNative<&details::VisitSeqContainer<ArrayObj>>());
-  refl::TypeAttrDef<ListObj>().attr(
-      refl::type_attr::kStructuralVisit,
-      FStructuralVisit::FromNative<&details::VisitSeqContainer<ListObj>>());
-  refl::TypeAttrDef<MapObj>().attr(
-      refl::type_attr::kStructuralVisit,
-      FStructuralVisit::FromNative<&details::VisitMapContainer<MapObj>>());
-  refl::TypeAttrDef<DictObj>().attr(
-      refl::type_attr::kStructuralVisit,
-      FStructuralVisit::FromNative<&details::VisitMapContainer<DictObj>>());
+  refl::EnsureTypeAttrColumn(type_attr::kStructuralVisit);
+  refl::TypeAttrDef<ArrayObj>().native_fn_attr<&details::VisitSeqContainer<ArrayObj>>(
+      type_attr::kStructuralVisit);
+  refl::TypeAttrDef<ListObj>().native_fn_attr<&details::VisitSeqContainer<ListObj>>(
+      type_attr::kStructuralVisit);
+  refl::TypeAttrDef<MapObj>().native_fn_attr<&details::VisitMapContainer<MapObj>>(
+      type_attr::kStructuralVisit);
+  refl::TypeAttrDef<DictObj>().native_fn_attr<&details::VisitMapContainer<DictObj>>(
+      type_attr::kStructuralVisit);
 }
 
 }  // namespace ffi

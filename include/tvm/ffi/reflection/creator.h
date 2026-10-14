@@ -48,14 +48,14 @@ inline ObjectPtr<Object> CreateEmptyObject(const TVMFFITypeInfo* type_info) {
     return details::ObjectUnsafe::ObjectPtrFromOwned<Object>(static_cast<TVMFFIObject*>(handle));
   }
   // Fallback: __ffi_new__ type attr (Python-defined types)
-  constexpr TVMFFIByteArray kFFINewAttrName = reflection::AsByteArray(reflection::type_attr::kNew);
+  constexpr TVMFFIByteArray kFFINewAttrName = reflection::AsByteArray(type_attr::kNew.name);
   const TVMFFITypeAttrColumn* column = TVMFFIGetTypeAttrColumn(&kFFINewAttrName);
   if (column != nullptr) {
     int32_t offset = type_info->type_index - column->begin_index;
     if (offset >= 0 && offset < column->size) {
       AnyView attr_view = AnyView::CopyFromTVMFFIAny(column->data[offset]);
-      if (auto opt_func = attr_view.try_cast<Function>()) {
-        ObjectRef obj_ref = (*opt_func)().cast<ObjectRef>();
+      if (auto opt_func = type_attr::kNew.ValueFrom(attr_view)) {
+        ObjectRef obj_ref = (*opt_func)();
         return details::ObjectUnsafe::ObjectPtrFromObjectRef<Object>(std::move(obj_ref));
       }
     }
@@ -78,7 +78,7 @@ inline bool HasCreator(const TVMFFITypeInfo* type_info) {
   if (type_info->metadata != nullptr && type_info->metadata->creator != nullptr) {
     return true;
   }
-  constexpr TVMFFIByteArray kFFINewAttrName = reflection::AsByteArray(reflection::type_attr::kNew);
+  constexpr TVMFFIByteArray kFFINewAttrName = reflection::AsByteArray(type_attr::kNew.name);
   const TVMFFITypeAttrColumn* column = TVMFFIGetTypeAttrColumn(&kFFINewAttrName);
   if (column != nullptr) {
     int32_t offset = type_info->type_index - column->begin_index;

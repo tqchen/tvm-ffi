@@ -29,7 +29,6 @@
 #include <tvm/ffi/container/variant.h>
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/function_details.h>
-#include <tvm/ffi/optional.h>
 #include <tvm/ffi/reflection/creator.h>
 #include <tvm/ffi/string.h>
 #include <tvm/ffi/type_traits.h>
@@ -47,8 +46,8 @@ namespace tvm {
 namespace ffi {
 /*! \brief Reflection namespace */
 namespace reflection {
-namespace details {
 
+namespace details {
 template <typename T, typename = void>
 struct HasContainerType : public std::false_type {};
 
@@ -755,8 +754,8 @@ class ObjectDef : public ReflectionDefBase {
     if constexpr (std::is_copy_constructible_v<Class>) {
       Function fn = Function::FromTyped(
           [](const Class* self) { return ObjectRef(ffi::make_object<Class>(*self)); },
-          std::string(type_key_) + "." + type_attr::kShallowCopy);
-      TVMFFIByteArray attr = AsByteArray(type_attr::kShallowCopy);
+          std::string(type_key_) + "." + type_attr::kShallowCopy.name);
+      TVMFFIByteArray attr = AsByteArray(type_attr::kShallowCopy.name);
       TVMFFIAny fn_any = AnyView(fn).CopyToTVMFFIAny();
       TVM_FFI_CHECK_SAFE_CALL(TVMFFITypeRegisterAttr(type_index_, &attr, &fn_any));
     }
@@ -770,8 +769,8 @@ class ObjectDef : public ReflectionDefBase {
             return ObjectRef(::tvm::ffi::details::ObjectUnsafe::ObjectPtrFromOwned<Object>(
                 static_cast<TVMFFIObject*>(handle)));
           },
-          std::string(type_key_) + "." + type_attr::kNew);
-      TVMFFIByteArray attr = AsByteArray(type_attr::kNew);
+          std::string(type_key_) + "." + type_attr::kNew.name);
+      TVMFFIByteArray attr = AsByteArray(type_attr::kNew.name);
       TVMFFIAny fn_any = AnyView(fn).CopyToTVMFFIAny();
       TVM_FFI_CHECK_SAFE_CALL(TVMFFITypeRegisterAttr(type_index_, &attr, &fn_any));
       // Step 3. Register `__ffi_init__` if no explicit init is defined.
@@ -784,7 +783,7 @@ class ObjectDef : public ReflectionDefBase {
       }
     }
     // Step 4. Publish finality, which no other registered metadata exposes.
-    RegisterTypeAttrValue(type_index_, type_attr::kTypeFinal, Class::_type_final);
+    RegisterTypeAttrValue(type_index_, type_attr::kTypeFinal.name, Class::_type_final);
   }
 
   /*!
@@ -918,7 +917,8 @@ class ObjectDef : public ReflectionDefBase {
       static_assert(std::is_same_v<typename TSelf::ContainerType, Class>,
                     "TSelf::ContainerType must match ObjectDef's object type");
     }
-    return def_type_attr(type_attr::kConvert, &details::FFIConvertFromAnyViewToObjectRef<TSelf>);
+    return def_type_attr(type_attr::kConvert.name,
+                         &details::FFIConvertFromAnyViewToObjectRef<TSelf>);
   }
 
   /*!
@@ -951,7 +951,7 @@ class ObjectDef : public ReflectionDefBase {
                    std::forward<Extra>(extra)...);
     // Also mirror into __ffi_init__ TypeAttrColumn for runtime dispatch.
     const TVMFFITypeInfo* tinfo = TVMFFIGetTypeInfo(type_index_);
-    constexpr TVMFFIByteArray attr_name = AsByteArray(type_attr::kInit);
+    constexpr TVMFFIByteArray attr_name = AsByteArray(type_attr::kInit.name);
     for (int32_t i = 0; i < tinfo->num_methods; ++i) {
       if (tinfo->methods[i].name.size == attr_name.size &&
           std::strncmp(tinfo->methods[i].name.data, attr_name.data, attr_name.size) == 0) {
@@ -1050,7 +1050,7 @@ class ObjectDef : public ReflectionDefBase {
   int32_t type_index_;
   const char* type_key_;
   bool has_explicit_init_{false};
-  static constexpr const char* kInitMethodName = type_attr::kInit;
+  static constexpr const char* kInitMethodName = type_attr::kInit.name;
 };
 
 /*!
@@ -1074,6 +1074,12 @@ class TypeAttrDef : public ReflectionDefBase {
   template <typename... ExtraArgs>
   explicit TypeAttrDef(ExtraArgs&&... extra_args)
       : type_index_(Class::_GetOrAllocRuntimeTypeIndex()), type_key_(Class::_type_key) {}
+
+  /*! \brief Register a named native callback using its key's declared adapter. */
+  template <auto Fn, typename T>
+  TypeAttrDef& native_fn_attr(AttrKey<T> key) {
+    return attr(key, T::template FromNative<Fn>());
+  }
 
   /*!
    * \brief Define a value type attribute.
@@ -1131,7 +1137,15 @@ class TypeAttrDef : public ReflectionDefBase {
       static_assert(std::is_same_v<typename TSelf::ContainerType, Class>,
                     "TSelf::ContainerType must match TypeAttrDef's object type");
     }
-    return def(type_attr::kConvert, &details::FFIConvertFromAnyViewToObjectRef<TSelf>);
+    return def(type_attr::kConvert.name, &details::FFIConvertFromAnyViewToObjectRef<TSelf>);
+  }
+
+  /*! \brief Register a value using its key's declared type. */
+  template <typename T, typename Value>
+  TypeAttrDef& attr(AttrKey<T> key, Value&& value) {
+    T typed_value(std::forward<Value>(value));
+    RegisterTypeAttrValue(type_index_, key.name, std::move(typed_value));
+    return *this;
   }
 
   /*!
@@ -1145,7 +1159,8 @@ class TypeAttrDef : public ReflectionDefBase {
    * \return The TypeAttrDef object.
    */
   template <typename T>
-  TypeAttrDef& attr(const char* name, T value) {  // NOLINT(performance-unnecessary-value-param)
+  TypeAttrDef& attr(const char* name,
+                    T value) {  // NOLINT(performance-unnecessary-value-param)
     RegisterTypeAttrValue(type_index_, name, std::move(value));
     return *this;
   }
@@ -1165,6 +1180,12 @@ inline void EnsureTypeAttrColumn(std::string_view name) {
   AnyView any_view(nullptr);
   TVM_FFI_CHECK_SAFE_CALL(TVMFFITypeRegisterAttr(kTVMFFINone, &name_array,
                                                  reinterpret_cast<const TVMFFIAny*>(&any_view)));
+}
+
+/*! \brief Ensure the erased column named by a typed key exists. */
+template <typename T>
+inline void EnsureTypeAttrColumn(AttrKey<T> key) {
+  EnsureTypeAttrColumn(key.name);
 }
 
 /// \cond Doxygen_Suppress

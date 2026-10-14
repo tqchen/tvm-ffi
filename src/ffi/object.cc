@@ -686,7 +686,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
       .def_ro("value", &ffi::EnumObj::_str_index, "Canonical string index.", refl::init(false),
               refl::AttachFieldFlag::SEqHashIgnore())
       .def_convert<ffi::StrEnum>();
-  refl::EnsureTypeAttrColumn(refl::type_attr::kEnumState);
+  refl::EnsureTypeAttrColumn(ffi::type_attr::kEnumState);
   refl::GlobalDef()
       .def_method("ffi.GetRegisteredTypeKeys",
                   []() -> ffi::Array<ffi::String> {

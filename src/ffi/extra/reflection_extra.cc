@@ -21,6 +21,7 @@
  *
  * \brief Extra reflection registrations. *
  */
+#include <tvm/ffi/extra/dataclass.h>
 #include <tvm/ffi/extra/structural_key.h>
 #include <tvm/ffi/reflection/access_path.h>
 #include <tvm/ffi/reflection/accessor.h>
@@ -117,8 +118,8 @@ inline void AccessStepRegisterReflection() {
   //   kArrayItemMissing -> "[<missing:index>]"
   //   kMapItemMissing   -> "[<missing:<repr(key)>>]"
   refl::TypeAttrDef<AccessStepObj>().def(
-      refl::type_attr::kRepr,
-      [](const AccessStep& step, const ffi::Function& fn_repr) -> ffi::String {
+      type_attr::kRepr.name, [](const Object* self, const ffi::Function& fn_repr) -> ffi::String {
+        const auto* step = AnyView(self).as_or_throw<const AccessStepObj*>();
         std::ostringstream os;
         switch (step->kind) {
           case AccessKind::kAttr:
@@ -168,8 +169,8 @@ inline void AccessPathRegisterReflection() {
   // Register __ffi_repr__ for AccessPath: flatten via ToSteps() and walk the resulting vector.
   // Root (depth == 0) emits "<root>"; non-root nodes concatenate each step's fragment.
   refl::TypeAttrDef<AccessPathObj>().def(
-      refl::type_attr::kRepr,
-      [](const AccessPath& path, const ffi::Function& fn_repr) -> ffi::String {
+      type_attr::kRepr.name, [](const Object* self, const ffi::Function& fn_repr) -> ffi::String {
+        const auto* path = AnyView(self).as_or_throw<const AccessPathObj*>();
         Array<AccessStep> steps = path->ToSteps();
         std::ostringstream os;
         os << "<root>";
@@ -207,10 +208,8 @@ inline void StructuralKeyRegisterReflection() {
       .def_ro("key", &StructuralKeyObj::key)
       .def_ro("hash_i64", &StructuralKeyObj::hash_i64);
   refl::TypeAttrDef<StructuralKeyObj>()
-      .attr(type_attr::kAnyHash,
-            NativeFunction<int64_t(const Any&)>::FromNative<&StructuralKeyHash>())
-      .attr(type_attr::kAnyEqual,
-            NativeFunction<bool(const Any&, const Any&)>::FromNative<&StructuralKeyEqual>());
+      .native_fn_attr<&StructuralKeyHash>(type_attr::kAnyHash)
+      .native_fn_attr<&StructuralKeyEqual>(type_attr::kAnyEqual);
 }
 
 TVM_FFI_STATIC_INIT_BLOCK() {

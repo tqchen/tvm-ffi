@@ -340,12 +340,12 @@ class ObjectDeepCopier : public ObjectGraphDFS<ObjectDeepCopier, CopyFrame, Any>
       default: {
         // Reflected object: shallow-copy and register
         const TVMFFITypeInfo* type_info = TVMFFIGetTypeInfo(ti);
-        TVM_FFI_ICHECK((*column_)[ti] != nullptr)
+        auto copy_fn = type_attr::kShallowCopy.ValueFrom((*column_)[ti]);
+        TVM_FFI_ICHECK(copy_fn.has_value())
             << "Cannot deep copy object of type \""
             << std::string_view(type_info->type_key.data, type_info->type_key.size)
             << "\" because it is not copy-constructible";
-        Function copy_fn = (*column_)[ti].cast<Function>();
-        f.copy = copy_fn(f.obj);
+        f.copy = (*copy_fn)(f.obj);
         copy_map_[f.obj] = f.copy;
         break;
       }
@@ -884,13 +884,11 @@ class ReprPrinter : public ObjectGraphDFS<ReprPrinter, ReprFrame, std::string> {
       return true;
     }
     // Custom __ffi_repr__ hook
-    static refl::TypeAttrColumn repr_column(refl::type_attr::kRepr);
-    AnyView custom_repr = repr_column[ti];
-    if (custom_repr != nullptr) {
+    static refl::TypeAttrColumn repr_column(type_attr::kRepr);
+    if (auto repr_fn = type_attr::kRepr.ValueFrom(repr_column[ti])) {
       state_[obj] = State::kInProgress;
-      Function repr_fn = custom_repr.cast<Function>();
-      Function fn_repr = CreateFnRepr();
-      String r = repr_fn(obj, fn_repr).cast<String>();
+      TypedFunction<String(AnyView)> fn_repr = CreateFnRepr();
+      String r = (*repr_fn)(obj, fn_repr);
       std::string result(r.data(), r.size());
       if (show_addr_ && (ti == TypeIndex::kTVMFFIArray || ti == TypeIndex::kTVMFFIList ||
                          ti == TypeIndex::kTVMFFIMap || ti == TypeIndex::kTVMFFIDict)) {
@@ -1095,13 +1093,11 @@ class RecursiveHasher : public ObjectGraphDFS<RecursiveHasher, HashFrame, uint64
       return true;
     }
     // Check for custom __ffi_hash__ hook
-    static refl::TypeAttrColumn hash_column(refl::type_attr::kHash);
-    AnyView custom = hash_column[obj->type_index()];
-    if (custom != nullptr) {
+    static refl::TypeAttrColumn hash_column(type_attr::kHash);
+    if (auto hook = type_attr::kHash.ValueFrom(hash_column[obj->type_index()])) {
       on_stack_.insert(obj);
-      Function hook = custom.cast<Function>();
-      Function fn_hash = CreateFnHash();
-      int64_t r = hook(obj, fn_hash).cast<int64_t>();
+      TypedFunction<int64_t(AnyView)> fn_hash = CreateFnHash();
+      int64_t r = (*hook)(obj, fn_hash);
       uint64_t h = static_cast<uint64_t>(r);
       memo_[obj] = h;
       on_stack_.erase(obj);
@@ -1111,8 +1107,8 @@ class RecursiveHasher : public ObjectGraphDFS<RecursiveHasher, HashFrame, uint64
     // For reflected types (not built-in containers), error if the type has
     // __ffi_eq__ or __ffi_compare__ but no __ffi_hash__.
     if (ti >= TypeIndex::kTVMFFIStaticObjectEnd) {
-      static refl::TypeAttrColumn eq_column(refl::type_attr::kEq);
-      static refl::TypeAttrColumn cmp_column(refl::type_attr::kCompare);
+      static refl::TypeAttrColumn eq_column(type_attr::kEq);
+      static refl::TypeAttrColumn cmp_column(type_attr::kCompare);
       if (eq_column[obj->type_index()] != nullptr || cmp_column[obj->type_index()] != nullptr) {
         const TVMFFITypeInfo* info = TVMFFIGetTypeInfo(ti);
         TVM_FFI_THROW(ValueError)
@@ -1402,39 +1398,36 @@ class RecursiveComparer : public ObjectGraphDFS<RecursiveComparer, CompareFrame,
                                << String(lhs_info->type_key) << " vs "
                                << String(rhs_info->type_key);
     }
-    static refl::TypeAttrColumn eq_column(refl::type_attr::kEq);
-    static refl::TypeAttrColumn cmp_column(refl::type_attr::kCompare);
+    static refl::TypeAttrColumn eq_column(type_attr::kEq);
+    static refl::TypeAttrColumn cmp_column(type_attr::kCompare);
     int32_t ti = lhs_obj->type_index();
     AnyView custom_eq = eq_column[ti];
     AnyView custom_cmp = cmp_column[ti];
     if (eq_only_) {
-      if (custom_eq != nullptr) {
+      if (auto hook = type_attr::kEq.ValueFrom(custom_eq)) {
         auto pair = std::make_pair(lhs_obj, rhs_obj);
         on_stack_.insert(pair);
-        Function hook = custom_eq.cast<Function>();
-        Function fn_eq = CreateFnEq();
-        bool result = hook(lhs_obj, rhs_obj, fn_eq).cast<bool>();
+        TypedFunction<bool(AnyView, AnyView)> fn_eq = CreateFnEq();
+        bool result = (*hook)(lhs_obj, rhs_obj, fn_eq);
         on_stack_.erase(pair);
         *out = result ? 0 : 1;
         return true;
       }
-      if (custom_cmp != nullptr) {
+      if (auto hook = type_attr::kCompare.ValueFrom(custom_cmp)) {
         auto pair = std::make_pair(lhs_obj, rhs_obj);
         on_stack_.insert(pair);
-        Function hook = custom_cmp.cast<Function>();
-        Function fn_cmp = CreateFnCompare();
-        int32_t result = hook(lhs_obj, rhs_obj, fn_cmp).cast<int32_t>();
+        TypedFunction<int32_t(AnyView, AnyView)> fn_cmp = CreateFnCompare();
+        int32_t result = (*hook)(lhs_obj, rhs_obj, fn_cmp);
         on_stack_.erase(pair);
         *out = result;
         return true;
       }
     } else {
-      if (custom_cmp != nullptr) {
+      if (auto hook = type_attr::kCompare.ValueFrom(custom_cmp)) {
         auto pair = std::make_pair(lhs_obj, rhs_obj);
         on_stack_.insert(pair);
-        Function hook = custom_cmp.cast<Function>();
-        Function fn_cmp = CreateFnCompare();
-        int32_t result = hook(lhs_obj, rhs_obj, fn_cmp).cast<int32_t>();
+        TypedFunction<int32_t(AnyView, AnyView)> fn_cmp = CreateFnCompare();
+        int32_t result = (*hook)(lhs_obj, rhs_obj, fn_cmp);
         on_stack_.erase(pair);
         *out = result;
         return true;
@@ -2138,7 +2131,7 @@ Function MakeInit(int32_t type_index) {
 void RegisterFFIInit(int32_t type_index) {
   namespace refl = ::tvm::ffi::reflection;
   Function auto_init_fn = MakeInit(type_index);
-  TVMFFIByteArray attr_name = refl::AsByteArray(refl::type_attr::kInit);
+  TVMFFIByteArray attr_name = refl::AsByteArray(type_attr::kInit.name);
   TVMFFIAny attr_value = AnyView(auto_init_fn).CopyToTVMFFIAny();
   TVM_FFI_CHECK_SAFE_CALL(TVMFFITypeRegisterAttr(type_index, &attr_name, &attr_value));
 }
@@ -2167,7 +2160,7 @@ void PyClassRegisterTypeAttrColumns(int32_t type_index, int32_t total_size) {
     ConstructPyClassFields(obj, type_info);
     return ObjectRef(details::ObjectUnsafe::ObjectPtrFromOwned<Object>(obj));
   });
-  TVMFFIByteArray attr_name = refl::AsByteArray(refl::type_attr::kNew);
+  TVMFFIByteArray attr_name = refl::AsByteArray(type_attr::kNew.name);
   TVMFFIAny attr_value = AnyView(new_fn).CopyToTVMFFIAny();
   TVM_FFI_CHECK_SAFE_CALL(TVMFFITypeRegisterAttr(type_index, &attr_name, &attr_value));
   // Step 3. Register `__ffi_shallow_copy__`
@@ -2197,7 +2190,7 @@ void PyClassRegisterTypeAttrColumns(int32_t type_index, int32_t total_size) {
         Object* obj = reinterpret_cast<Object*>(obj_ptr);
         return ObjectRef(details::ObjectUnsafe::ObjectPtrFromOwned<Object>(obj));
       });
-  TVMFFIByteArray copy_attr_name = refl::AsByteArray(refl::type_attr::kShallowCopy);
+  TVMFFIByteArray copy_attr_name = refl::AsByteArray(type_attr::kShallowCopy.name);
   TVMFFIAny copy_attr_value = AnyView(copy_fn).CopyToTVMFFIAny();
   TVM_FFI_CHECK_SAFE_CALL(TVMFFITypeRegisterAttr(type_index, &copy_attr_name, &copy_attr_value));
 }
@@ -2209,7 +2202,7 @@ void PyClassRegisterTypeAttrColumns(int32_t type_index, int32_t total_size) {
 // ============================================================================
 
 Any DeepCopy(const Any& value) {
-  static refl::TypeAttrColumn column(refl::type_attr::kShallowCopy);
+  static refl::TypeAttrColumn column(type_attr::kShallowCopy);
   ObjectDeepCopier copier(&column);
   return copier.Run(value);
 }
@@ -2263,13 +2256,13 @@ bool RecursiveGe(const Any& lhs, const Any& rhs) {
 
 TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
-  refl::EnsureTypeAttrColumn(refl::type_attr::kShallowCopy);
-  refl::EnsureTypeAttrColumn(refl::type_attr::kRepr);
-  refl::EnsureTypeAttrColumn(refl::type_attr::kHash);
-  refl::EnsureTypeAttrColumn(refl::type_attr::kEq);
-  refl::EnsureTypeAttrColumn(refl::type_attr::kCompare);
-  refl::EnsureTypeAttrColumn(refl::type_attr::kNew);
-  refl::EnsureTypeAttrColumn(refl::type_attr::kInit);
+  refl::EnsureTypeAttrColumn(type_attr::kShallowCopy);
+  refl::EnsureTypeAttrColumn(type_attr::kRepr);
+  refl::EnsureTypeAttrColumn(type_attr::kHash);
+  refl::EnsureTypeAttrColumn(type_attr::kEq);
+  refl::EnsureTypeAttrColumn(type_attr::kCompare);
+  refl::EnsureTypeAttrColumn(type_attr::kNew);
+  refl::EnsureTypeAttrColumn(type_attr::kInit);
   refl::GlobalDef()
       .def("ffi._RegisterFFIInit", RegisterFFIInit)
       .def("ffi.MakeFieldSetter", MakeFieldSetter)

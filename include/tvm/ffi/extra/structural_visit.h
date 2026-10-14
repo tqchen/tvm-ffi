@@ -132,6 +132,24 @@ struct StructuralVisitorVTable {
 using FStructuralVisit =
     reflection::NativeFunctionView<Optional<VisitInterrupt>(StructuralVisitorObj*, AnyView)>;
 
+namespace type_attr {
+/*!
+ * \brief Custom structural visitor hook (used by ``StructuralVisitor``).
+ *
+ * The hook receives the active visitor and the current object value. Opaque
+ * pointer hooks return a ``TVMFFIAny`` that stores an
+ * ``Expected<Optional<VisitInterrupt>>`` result.
+ *
+ * Value type: either an opaque native hook pointer or an ``ffi::Function``.
+ *
+ * On success, the hook returns ``None`` for no interrupt, or a
+ * ``VisitInterrupt`` to halt traversal. On failure, it returns an ``Error``.
+ * The ``visitor`` parameter is the active traversal context used to recursively
+ * visit structural children.
+ */
+inline constexpr reflection::AttrKey<FStructuralVisit> kStructuralVisit{"__s_visit__"};
+}  // namespace type_attr
+
 /*!
  * \brief Object node of a structural visitor.
  *
@@ -238,7 +256,7 @@ class StructuralVisitorObj : public Object {
  private:
   /*! \brief Internal raw ABI descent, avoiding a typed result around compiled hooks. */
   TVM_FFI_INLINE TVMFFIAny DefaultVisitRaw(AnyView value) noexcept {
-    static reflection::TypeAttrColumn column(reflection::type_attr::kStructuralVisit);
+    static reflection::TypeAttrColumn column(type_attr::kStructuralVisit);
     AnyView attr = column[value.type_index()];
     if (TVM_FFI_PREDICT_TRUE(attr.type_index() == TypeIndex::kTVMFFIOpaquePtr)) {
       return (*reinterpret_cast<FStructuralVisitABI>(attr.cast<void*>()))(this, value);
@@ -532,7 +550,8 @@ namespace details {
  *   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->b));
  *   return Optional<VisitInterrupt>(std::nullopt);
  * }
- * FStructuralVisit hook = FStructuralVisit::FromNative<&FooVisit>();
+ * FStructuralVisit hook =
+ * FStructuralVisit::FromNative<&FooVisit>();
  * Expected<Optional<VisitInterrupt>> result = hook.CallExpected(visitor, value);
  * \endcode
  *

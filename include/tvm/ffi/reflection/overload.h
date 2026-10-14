@@ -30,6 +30,7 @@
 #include <tvm/ffi/function.h>
 #include <tvm/ffi/function_details.h>
 #include <tvm/ffi/optional.h>
+#include <tvm/ffi/reflection/accessor.h>
 #include <tvm/ffi/reflection/registry.h>
 #include <tvm/ffi/string.h>
 #include <tvm/ffi/type_traits.h>
@@ -398,7 +399,7 @@ class OverloadObjectDef : private ObjectDef<Class> {
     // via Register() are automatically visible through the TypeAttrColumn.
     if (is_first) {
       const TVMFFITypeInfo* tinfo = TVMFFIGetTypeInfo(type_index_);
-      constexpr TVMFFIByteArray attr_name = AsByteArray(type_attr::kInit);
+      constexpr TVMFFIByteArray attr_name = AsByteArray(type_attr::kInit.name);
       for (int32_t i = 0; i < tinfo->num_methods; ++i) {
         if (tinfo->methods[i].name.size == attr_name.size &&
             std::strncmp(tinfo->methods[i].name.data, attr_name.data, attr_name.size) == 0) {

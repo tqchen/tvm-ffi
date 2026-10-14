@@ -184,11 +184,16 @@ class StrEnum : public Enum {
   /// \endcond
 };
 
+namespace type_attr {
+/*! \brief Per-class enum state: ordered entries, canonical indices, and extensible attrs. */
+inline constexpr reflection::AttrKey<EnumState> kEnumState{"__ffi_enum__"};
+}  // namespace type_attr
+
 template <typename Index>
 inline Enum EnumObj::GetByIndex(int32_t type_index, const Index& index) {
-  static reflection::TypeAttrColumn state_column(reflection::type_attr::kEnumState);
-  if (AnyView value = state_column[type_index]; value != nullptr) {
-    EnumState state = value.cast<EnumState>();
+  static reflection::TypeAttrColumn state_column(type_attr::kEnumState);
+  if (auto value = type_attr::kEnumState.ValueFrom(state_column[type_index])) {
+    const EnumState& state = *value;
     if (auto entry = state->indexes.Get(Any(index))) return entry->as_or_throw<Enum>();
   }
   TVM_FFI_THROW(ValueError) << "Enum `" << TypeIndexToTypeKey(type_index)
