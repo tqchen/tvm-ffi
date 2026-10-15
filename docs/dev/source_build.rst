@@ -126,6 +126,28 @@ After installation, you should see:
 - Headers are installed under ``dist/include/``;
 - Libraries are installed under ``dist/lib/``.
 
+Embedding and Install Components
+--------------------------------
+
+A parent CMake project can use ``add_subdirectory(path/to/tvm-ffi)``. FFI's
+install rules remain available in this configuration and explicitly belong to
+the ``tvm_ffi`` component, independently of the parent's default component:
+
+.. code-block:: bash
+
+   cmake --install build --component tvm_ffi --prefix ./dist
+
+Python bindings remain disabled by default. Set
+``TVM_FFI_BUILD_PYTHON_MODULE=ON`` before adding the subdirectory to include the
+Cython extension and its existing source/package support files. This requires
+the same Python and Cython build dependencies as a standalone Python build.
+Developer settings and C++ test setup remain limited to standalone builds.
+
+The FFI wheel selects only ``tvm_ffi``. Its CMake payload is installed under
+``tvm_ffi/`` within the wheel; ``wheel.packages`` supplies the pure Python
+package. Component selection does not change optional payload rules: for
+example, Python builds do not install the static library.
+
 Troubleshooting
 ---------------
 
