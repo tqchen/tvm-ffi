@@ -992,6 +992,7 @@ def test_registry_big_int_fields_are_mirrored(big_int_holder: ObjectInfo) -> Non
         _field("x", TypeSchema("Optional", (TypeSchema("int"),)), 24, 8),  # not the 16-byte cell
         _field("x", TypeSchema("Union", (TypeSchema("int"), TypeSchema("str"))), 24, 16),
         _field("x", "ctypes.c_void_p", 24, 8),
+        _field("x", "ffi.VisitInterrupt", 24, 8),
     ],
 )
 def test_unrenderable_field_keeps_the_type_opaque(field: NamedTypeSchema) -> None:
@@ -1425,6 +1426,77 @@ def test_stage_3_checks_dependencies_across_the_run(tmp_path: Path) -> None:
     text = "\n".join(line for block in info.code_blocks for line in block.lines)
     assert "    base: TestCxxClassBaseObj," in text
     assert "use crate::hand::TestCxxClassBaseObj;" in text
+
+
+# ---------------------------------------------------------------------------
+# Name resolution corner cases
+# ---------------------------------------------------------------------------
+
+
+def test_ffi_field_type_off_the_default_ty_map_reads_as_any() -> None:
+    """Of the `ffi.*` keys, only those on the default `ty-map` name a type the crate binds."""
+    text, imports = _render(_info("demo.Doc", (_field("path", "ffi.reflection.AccessPath"),)))
+    assert "    pub fn path(&self) -> Result<AccessPath> {" in text
+    assert "tvm_ffi::reflection::AccessPath" in _uses(imports)
+    text, imports = _render(_info("demo.Doc", (_field("interrupt", "ffi.VisitInterrupt"),)))
+    assert (
+        "    pub fn interrupt(&self) -> Result<Any> {\n"
+        '        FieldGetter::new(Self::type_index(), "interrupt")?.get_any(self)\n'
+    ) in text
+    assert not any("VisitInterrupt" in path for path in _uses(imports))
+
+
+def test_parent_with_the_objects_own_name_is_spelled_in_full() -> None:
+    """A parent in another module sharing the leaf would collide with the block's own names."""
+    info = _info("demo.s.Frame", parent="demo.t.Frame", ancestors=["ffi.Object", "demo.t.Frame"])
+    text, imports = _render(info)
+    parent = "super::super::demo::t::Frame"
+    assert f"    base: {parent}Obj," in text
+    assert f"    type Target = {parent}Obj;" in text
+    assert text.endswith(f"tvm_ffi::impl_object_upcast!(Frame => {parent});")
+    assert not any(path.startswith(f"{parent}") for path in _uses(imports))
+
+
+def test_any_field_of_an_opaque_type_reads_through_get_any() -> None:
+    text, _ = _render(_info("demo.Literal", (_field("value", "Any"),)))
+    assert (
+        "    pub fn value(&self) -> Result<Any> {\n"
+        '        FieldGetter::new(Self::type_index(), "value")?.get_any(self)\n'
+    ) in text
+
+
+def test_non_snake_case_fields_allow_the_lint() -> None:
+    fields = (_field("M", "int", 24, 8), _field("n", "int", 32, 8))
+    text, _ = _render(_info("demo.Tile", fields, total_size=40))
+    assert "#[allow(non_snake_case)]\n#[repr(C)]\n" in text
+    assert text.count("    #[allow(non_snake_case)]\n    pub") == 2  # both allocators
+    text, _ = _render(_info("demo.Tile", (_field("n", "int", 24, 8),), total_size=32))
+    assert "allow(non_snake_case)" not in text
+    text, _ = _render(_info("demo.Tile", (_field("M", "int"),)))
+    assert "    #[allow(non_snake_case)]\n    pub fn M(&self) -> Result<i64> {" in text
+
+
+def test_ty_map_target_in_the_files_own_module_is_not_imported() -> None:
+    """`ir.Op -> crate::ir::Op` names a hand-written binding next to the generated ones."""
+    ty_map = {**RUST.default_ty_map(), "ir.Op": "crate::ir::Op"}
+
+    def render(info: ObjectInfo) -> tuple[str, RustImports]:
+        assert info.type_key is not None
+        block = _object_block(info.type_key)
+        imports = RustImports()
+        generate_rust_object(block, ty_map, imports, Options(), info, ALL_DECLARED)
+        return "\n".join(block.lines[1:-1]), imports
+
+    text, imports = render(_info("ir.Call", (_field("op", "ir.Op"),)))
+    assert "    pub fn op(&self) -> Result<Op> {" in text
+    assert "crate::ir::Op" not in _uses(imports)
+    text, imports = render(_info("ir.Special", parent="ir.Op", ancestors=["ffi.Object", "ir.Op"]))
+    assert "    base: OpObj," in text
+    assert text.endswith("tvm_ffi::impl_object_upcast!(Special => Op);")
+    assert not any(path.startswith("crate::") for path in _uses(imports))
+    # Elsewhere the target is imported as written.
+    text, imports = render(_info("tirx.Call", (_field("op", "ir.Op"),)))
+    assert "crate::ir::Op" in _uses(imports)
 
 
 # ---------------------------------------------------------------------------
