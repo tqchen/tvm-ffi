@@ -87,7 +87,10 @@ endfunction ()
 # exports of libtvm_ffi.so and unexpectedly interpose with symbols from downstream libraries.
 #
 # Linux, Android, and BSD targets generally use GNU-compatible linkers that support this through
-# `--exclude-libs,ALL`. Other platforms are left unchanged.
+# `--exclude-libs,ALL`. Darwin uses -load_hidden for archives, preserving dynamic links.
+# On Darwin, Ninja and Makefile generators are required so a target-local link launcher can
+# hide resolved archives, including imported and transitive dependencies, without rewriting
+# CMake's dependency graph. Other generators are rejected rather than silently leaking symbols.
 #
 # Parameters:
 #   target_name: CMake target to modify
@@ -97,6 +100,32 @@ function (tvm_ffi_hide_static_linked_lib_symbols target_name)
                                                                            MATCHES "GNU|Clang"
   )
     target_link_options(${target_name} PRIVATE "-Wl,--exclude-libs,ALL")
+  elseif (APPLE)
+    if (NOT CMAKE_GENERATOR MATCHES "Ninja|Makefiles")
+      message(FATAL_ERROR "Darwin static archive hiding requires a Ninja or Makefiles generator")
+    endif ()
+    get_target_property(configured ${target_name} _TVM_FFI_HIDE_DARWIN_ARCHIVES)
+    if (NOT configured)
+      foreach (lang C CXX)
+        get_target_property(launcher ${target_name} ${lang}_LINKER_LAUNCHER)
+        if (NOT launcher)
+          set(launcher "")
+        endif ()
+        list(LENGTH launcher launcher_size)
+        set_property(
+          TARGET ${target_name}
+          PROPERTY
+            ${lang}_LINKER_LAUNCHER
+            "${CMAKE_COMMAND};-P;${CMAKE_CURRENT_FUNCTION_LIST_DIR}/HideDarwinArchives.cmake;--;${launcher_size};${launcher}"
+        )
+      endforeach ()
+      set_property(
+        TARGET ${target_name}
+        APPEND
+        PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/HideDarwinArchives.cmake"
+      )
+      set_property(TARGET ${target_name} PROPERTY _TVM_FFI_HIDE_DARWIN_ARCHIVES TRUE)
+    endif ()
   endif ()
 endfunction ()
 
