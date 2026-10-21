@@ -88,9 +88,10 @@ endfunction ()
 #
 # Linux, Android, and BSD targets generally use GNU-compatible linkers that support this through
 # `--exclude-libs,ALL`. Darwin uses -load_hidden for archives, preserving dynamic links.
-# On Darwin, Ninja and Makefile generators are required so a target-local link launcher can
-# hide resolved archives, including imported and transitive dependencies, without rewriting
-# CMake's dependency graph. Other generators are rejected rather than silently leaking symbols.
+# On Darwin, Ninja and Makefile generators use a target-local link launcher for resolved .a
+# inputs, including imported and transitive dependencies. Other generators retain their previous
+# behavior with a warning. Unresolved -l choices and compiler-injected archives are not covered;
+# explicit archive-loading flags cannot be combined with this policy.
 #
 # Parameters:
 #   target_name: CMake target to modify
@@ -102,7 +103,11 @@ function (tvm_ffi_hide_static_linked_lib_symbols target_name)
     target_link_options(${target_name} PRIVATE "-Wl,--exclude-libs,ALL")
   elseif (APPLE)
     if (NOT CMAKE_GENERATOR MATCHES "Ninja|Makefiles")
-      message(FATAL_ERROR "Darwin static archive hiding requires a Ninja or Makefiles generator")
+      message(
+        WARNING "Static archive symbols are not hidden for ${target_name}: Darwin archive hiding "
+                "supports Ninja and Makefiles generators; ${CMAKE_GENERATOR} is unchanged."
+      )
+      return()
     endif ()
     get_target_property(configured ${target_name} _TVM_FFI_HIDE_DARWIN_ARCHIVES)
     if (NOT configured)
@@ -112,12 +117,11 @@ function (tvm_ffi_hide_static_linked_lib_symbols target_name)
           set(launcher "")
         endif ()
         list(LENGTH launcher launcher_size)
-        set_property(
-          TARGET ${target_name}
-          PROPERTY
-            ${lang}_LINKER_LAUNCHER
-            "${CMAKE_COMMAND};-P;${CMAKE_CURRENT_FUNCTION_LIST_DIR}/HideDarwinArchives.cmake;--;${launcher_size};${launcher}"
+        set(archive_launcher
+            "${CMAKE_COMMAND}" -P "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/HideDarwinArchives.cmake" --
+            "${launcher_size}" ${launcher}
         )
+        set_property(TARGET ${target_name} PROPERTY ${lang}_LINKER_LAUNCHER "${archive_launcher}")
       endforeach ()
       set_property(
         TARGET ${target_name}
