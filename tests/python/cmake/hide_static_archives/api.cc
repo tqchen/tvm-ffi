@@ -19,4 +19,6 @@ extern "C" int direct_value();
 extern "C" int imported_value();
 extern "C" int dynamic_value();
 extern "C" int unknown_value();
-extern "C" int public_api() { return direct_value() + imported_value() + dynamic_value() + unknown_value(); }
+extern "C" int public_api() {
+  return direct_value() + imported_value() + dynamic_value() + unknown_value();
+}
