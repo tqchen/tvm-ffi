@@ -1350,7 +1350,7 @@ class StructuralMapEngine : public Parent {
         matched = mapped_view.template as<TSub>();
         if (!matched.has_value()) return false;
       }
-      *out = [&]() -> Expected<Any> {
+      Expected<Any> callback_result = [&]() -> Expected<Any> {
         if constexpr (std::is_same_v<TSub, AnyView>) {
           return InvokeTypedCallbackLink(callback, mapped_view, StateIndices{});
         } else if constexpr (std::is_same_v<TSub, Any>) {
@@ -1359,9 +1359,14 @@ class StructuralMapEngine : public Parent {
           return InvokeTypedCallbackLink(callback, *std::move(matched), StateIndices{});
         }
       }();
-      if (TVM_FFI_PREDICT_FALSE(out->is_err())) {
-        this->UpdateVisitErrorContext(*out, mapped_view);
+      if (TVM_FFI_PREDICT_FALSE(callback_result.is_err())) {
+        this->UpdateVisitErrorContext(callback_result, mapped_view);
+        *out = std::move(callback_result);
         return true;
+      }
+      // Unchanged refers to the descended node, whose owner stays live through the callback.
+      if (ExpectedUnsafe::GetData(callback_result).type_index() != TypeIndex::kTVMFFIUnchanged) {
+        *out = std::move(callback_result);
       }
       return true;
     }
@@ -1570,10 +1575,16 @@ class StructuralMapDynEngine : public Parent {
       if (!matched.has_value()) return false;
       // WithDefRegionKind restores its state through RAII, so this late read is equivalent to
       // the typed engine's invocation-time read even after recursive descent.
-      *out = InvokeLink(*matched, with_kind, mapped_view, this->def_region_kind());
-      if (TVM_FFI_PREDICT_FALSE(out->is_err())) {
-        this->UpdateVisitErrorContext(*out, mapped_view);
+      Expected<Any> callback_result =
+          InvokeLink(*matched, with_kind, mapped_view, this->def_region_kind());
+      if (TVM_FFI_PREDICT_FALSE(callback_result.is_err())) {
+        this->UpdateVisitErrorContext(callback_result, mapped_view);
+        *out = std::move(callback_result);
         return true;
+      }
+      // Preserve descent and its lifetime just as in the typed engine.
+      if (ExpectedUnsafe::GetData(callback_result).type_index() != TypeIndex::kTVMFFIUnchanged) {
+        *out = std::move(callback_result);
       }
       return true;
     }
