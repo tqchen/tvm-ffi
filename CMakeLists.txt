@@ -129,7 +129,6 @@ endif ()
 
 tvm_ffi_add_msvc_flags(tvm_ffi_objs)
 tvm_ffi_add_target_from_obj(tvm_ffi tvm_ffi_objs)
-tvm_ffi_hide_static_linked_lib_symbols(tvm_ffi_shared)
 
 if (TVM_FFI_USE_THREADS)
   find_package(Threads REQUIRED)
@@ -164,6 +163,7 @@ endif ()
 target_link_libraries(tvm_ffi_objs PUBLIC tvm_ffi_header)
 target_link_libraries(tvm_ffi_shared PUBLIC tvm_ffi_header)
 target_link_libraries(tvm_ffi_static PUBLIC tvm_ffi_header)
+tvm_ffi_hide_static_linked_lib_symbols(tvm_ffi_shared)
 
 # ######### Target: `tvm_ffi_testing` ##########
 # Build testing utilities as a separate shared library that can be loaded on demand
