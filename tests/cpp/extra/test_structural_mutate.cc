@@ -1163,7 +1163,7 @@ TEST(StructuralMap, PostOrderCallbackErrorKeepsDescendedNode) {
   auto fail = [](const ArrayObj*) -> Any {
     return Any(Error("ValueError", "post-order callback failed", ""));
   };
-  auto check_error = [&](Expected<Any> result) {
+  auto check_error = [&](const Expected<Any>& result) {
     ASSERT_TRUE(result.is_err());
     EXPECT_EQ(result.error().message(), "post-order callback failed");
     Optional<VisitErrorContext> context = VisitErrorContext::TryGetFromError(result.error());
