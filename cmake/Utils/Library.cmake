@@ -74,6 +74,7 @@ function (tvm_ffi_add_msvc_flags target_name)
     # per-object section limit (C1128). Apply /bigobj to every target that uses these flags so
     # growth in any TU doesn't break the Windows build.
     target_compile_options(${target_name} PRIVATE "/bigobj")
+    target_compile_options(${target_name} PRIVATE "$<$<COMPILE_LANGUAGE:C,CXX>:/Zc:inline>")
   endif ()
 endfunction ()
 
