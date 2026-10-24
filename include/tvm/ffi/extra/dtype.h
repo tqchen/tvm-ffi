@@ -24,6 +24,7 @@
 #define TVM_FFI_EXTRA_DTYPE_H_
 
 #include <dlpack/dlpack.h>
+#include <tvm/ffi/base_detail.h>
 
 #include <type_traits>
 
@@ -48,14 +49,16 @@ struct __hip_fp8_e5m2_fnuz;
 struct __hip_fp4_e2m1;
 struct __hip_fp4x2_e2m1;
 
-namespace tvm_ffi {
+namespace tvm {
+namespace ffi {
 
 /// \cond Doxygen_Suppress
 
 template <typename T>
 struct dtype_trait {};
 
-namespace detail::dtypes {
+namespace detail {
+namespace dtypes {
 
 template <typename T>
 struct integer_trait {
@@ -75,11 +78,8 @@ struct float_trait {
   };
 };
 
-}  // namespace detail::dtypes
-
-// Backward compatibility.
-// TODO(tvm-ffi): Remove after updating the remaining downstream uses.
-namespace details = detail;
+}  // namespace dtypes
+}  // namespace detail
 
 template <>
 struct dtype_trait<signed char> : detail::dtypes::integer_trait<signed char> {};
@@ -205,6 +205,7 @@ struct dtype_trait<__hip_fp4x2_e2m1> {
 
 /// \endcond
 
-}  // namespace tvm_ffi
+}  // namespace ffi
+}  // namespace tvm
 
 #endif  // TVM_FFI_EXTRA_DTYPE_H_
