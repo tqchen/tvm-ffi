@@ -22,7 +22,7 @@
  *        deep copy, repr printing, recursive hash, recursive compare.
  */
 #include <tvm/ffi/any.h>
-#include <tvm/ffi/base_details.h>
+#include <tvm/ffi/base_detail.h>
 #include <tvm/ffi/big_int.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/dict.h>
@@ -103,7 +103,7 @@ void GetStringData(const Any& val, const TVMFFIAny* data, int32_t ti, const char
     *out_len = data->small_str_len;
   } else {
     const auto* obj =
-        details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(val);
+        detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(val);
     *out_ptr = obj->data;
     *out_len = obj->size;
   }
@@ -117,7 +117,7 @@ void GetBytesData(const Any& val, const TVMFFIAny* data, int32_t ti, const char*
     *out_len = data->small_str_len;
   } else {
     const auto* obj =
-        details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(val);
+        detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(val);
     *out_ptr = obj->data;
     *out_len = obj->size;
   }
@@ -193,7 +193,7 @@ class ObjectGraphDFS {
   }
 
   void EnumerateChildren(FrameBase& frame, const Any& value, const Object* obj, int32_t ti) {
-    using details::AnyUnsafe;
+    using detail::AnyUnsafe;
     switch (ti) {
       case TypeIndex::kTVMFFIArray: {
         auto seq = AnyUnsafe::CopyFromAnyViewAfterCheck<Array<Any>>(value);
@@ -841,18 +841,18 @@ class ReprPrinter : public ObjectGraphDFS<ReprPrinter, ReprFrame, std::string> {
       return true;
     }
     if (ti == TypeIndex::kTVMFFIBigInt) {
-      *out = details::int_ops::ToStringFallback(value.cast<BigInt>());
+      *out = detail::int_ops::ToStringFallback(value.cast<BigInt>());
       return true;
     }
     // String/Bytes on heap
     if (ti == TypeIndex::kTVMFFIStr) {
-      String s = details::AnyUnsafe::CopyFromAnyViewAfterCheck<String>(value);
+      String s = detail::AnyUnsafe::CopyFromAnyViewAfterCheck<String>(value);
       String escaped = EscapedStringPy(s);
       *out = std::string(escaped.data(), escaped.size());
       return true;
     }
     if (ti == TypeIndex::kTVMFFIBytes) {
-      Bytes b = details::AnyUnsafe::CopyFromAnyViewAfterCheck<Bytes>(value);
+      Bytes b = detail::AnyUnsafe::CopyFromAnyViewAfterCheck<Bytes>(value);
       *out = FormatBytes(b.data(), b.size());
       return true;
     }
@@ -978,7 +978,7 @@ class RecursiveHasher : public ObjectGraphDFS<RecursiveHasher, HashFrame, uint64
       // Containers already combine type_key_hash with container_size.
       f.hash = type_info->type_key_hash;
     } else {
-      f.hash = details::StableHashCombine(type_info->type_key_hash, f.container_size);
+      f.hash = detail::StableHashCombine(type_info->type_key_hash, f.container_size);
     }
     if (f.kind == FrameBase::kMap) {
       f.entry_hashes.reserve(f.container_size);
@@ -997,7 +997,7 @@ class RecursiveHasher : public ObjectGraphDFS<RecursiveHasher, HashFrame, uint64
   bool FeedChild(HashFrame& f, uint64_t h) {
     switch (f.kind) {
       case FrameBase::kSequence: {
-        f.hash = details::StableHashCombine(f.hash, details::StableHashCombine(h, f.seq_index++));
+        f.hash = detail::StableHashCombine(f.hash, detail::StableHashCombine(h, f.seq_index++));
         break;
       }
       case FrameBase::kMap: {
@@ -1005,13 +1005,13 @@ class RecursiveHasher : public ObjectGraphDFS<RecursiveHasher, HashFrame, uint64
           f.key_hash = h;
           f.in_key = false;
         } else {
-          f.entry_hashes.push_back(details::StableHashCombine(f.key_hash, h));
+          f.entry_hashes.push_back(detail::StableHashCombine(f.key_hash, h));
           f.in_key = true;
         }
         break;
       }
       case FrameBase::kObject: {
-        f.hash = details::StableHashCombine(f.hash, h);
+        f.hash = detail::StableHashCombine(f.hash, h);
         break;
       }
     }
@@ -1022,7 +1022,7 @@ class RecursiveHasher : public ObjectGraphDFS<RecursiveHasher, HashFrame, uint64
     if (f.kind == FrameBase::kMap) {
       std::sort(f.entry_hashes.begin(), f.entry_hashes.end());
       for (uint64_t eh : f.entry_hashes) {
-        f.hash = details::StableHashCombine(f.hash, eh);
+        f.hash = detail::StableHashCombine(f.hash, eh);
       }
     }
     return f.hash;
@@ -1044,13 +1044,13 @@ class RecursiveHasher : public ObjectGraphDFS<RecursiveHasher, HashFrame, uint64
   // ---------- Immediate (non-recursive) hashing ----------
 
   bool TryHashImmediate(const Any& value, uint64_t* out) {
-    using details::AnyUnsafe;
+    using detail::AnyUnsafe;
     const TVMFFIAny* data = AnyUnsafe::TVMFFIAnyPtrFromAny(value);
     int32_t ti = data->type_index;
 
     // None
     if (ti == TypeIndex::kTVMFFINone) {
-      *out = details::StableHashCombine(uint64_t{0}, uint64_t{0});
+      *out = detail::StableHashCombine(uint64_t{0}, uint64_t{0});
       return true;
     }
     // String (Str/SmallStr cross-variant)
@@ -1071,7 +1071,7 @@ class RecursiveHasher : public ObjectGraphDFS<RecursiveHasher, HashFrame, uint64
     // Object types
     const Object* obj = static_cast<const Object*>(value.as<Object>());
     if (obj == nullptr) {
-      *out = details::StableHashCombine(uint64_t{0}, uint64_t{0});
+      *out = detail::StableHashCombine(uint64_t{0}, uint64_t{0});
       return true;
     }
     // Return memoized hash if already fully hashed.
@@ -1144,11 +1144,11 @@ class RecursiveHasher : public ObjectGraphDFS<RecursiveHasher, HashFrame, uint64
     switch (ti) {
       case TypeIndex::kTVMFFIBool: {
         uint64_t v = data->v_int64 != 0 ? 1 : 0;
-        return details::StableHashCombine(static_cast<uint64_t>(ti), v);
+        return detail::StableHashCombine(static_cast<uint64_t>(ti), v);
       }
       case TypeIndex::kTVMFFIInt: {
-        return details::StableHashCombine(static_cast<uint64_t>(ti),
-                                          static_cast<uint64_t>(data->v_int64));
+        return detail::StableHashCombine(static_cast<uint64_t>(ti),
+                                         static_cast<uint64_t>(data->v_int64));
       }
       case TypeIndex::kTVMFFIFloat: {
         double v = data->v_float64;
@@ -1162,26 +1162,26 @@ class RecursiveHasher : public ObjectGraphDFS<RecursiveHasher, HashFrame, uint64
         } else {
           std::memcpy(&bits, &v, sizeof(bits));
         }
-        return details::StableHashCombine(static_cast<uint64_t>(ti), bits);
+        return detail::StableHashCombine(static_cast<uint64_t>(ti), bits);
       }
       case TypeIndex::kTVMFFIDataType: {
         DLDataType dt = data->v_dtype;
         uint64_t h =
-            details::StableHashCombine(static_cast<uint64_t>(ti), static_cast<uint64_t>(dt.code));
-        h = details::StableHashCombine(h, static_cast<uint64_t>(dt.bits));
-        h = details::StableHashCombine(h, static_cast<uint64_t>(dt.lanes));
+            detail::StableHashCombine(static_cast<uint64_t>(ti), static_cast<uint64_t>(dt.code));
+        h = detail::StableHashCombine(h, static_cast<uint64_t>(dt.bits));
+        h = detail::StableHashCombine(h, static_cast<uint64_t>(dt.lanes));
         return h;
       }
       case TypeIndex::kTVMFFIDevice: {
         DLDevice dev = data->v_device;
-        uint64_t h = details::StableHashCombine(static_cast<uint64_t>(ti),
-                                                static_cast<uint64_t>(dev.device_type));
-        h = details::StableHashCombine(h, static_cast<uint64_t>(dev.device_id));
+        uint64_t h = detail::StableHashCombine(static_cast<uint64_t>(ti),
+                                               static_cast<uint64_t>(dev.device_type));
+        h = detail::StableHashCombine(h, static_cast<uint64_t>(dev.device_id));
         return h;
       }
       default: {
-        return details::StableHashCombine(static_cast<uint64_t>(ti),
-                                          static_cast<uint64_t>(data->v_uint64));
+        return detail::StableHashCombine(static_cast<uint64_t>(ti),
+                                         static_cast<uint64_t>(data->v_uint64));
       }
     }
   }
@@ -1192,8 +1192,8 @@ class RecursiveHasher : public ObjectGraphDFS<RecursiveHasher, HashFrame, uint64
     const char* ptr;
     size_t len;
     GetStringData(value, data, ti, &ptr, &len);
-    return details::StableHashCombine(static_cast<uint64_t>(TypeIndex::kTVMFFIStr),
-                                      details::StableHashBytes(ptr, len));
+    return detail::StableHashCombine(static_cast<uint64_t>(TypeIndex::kTVMFFIStr),
+                                     detail::StableHashBytes(ptr, len));
   }
 
   // ---------- Bytes hashing ----------
@@ -1202,16 +1202,16 @@ class RecursiveHasher : public ObjectGraphDFS<RecursiveHasher, HashFrame, uint64
     const char* ptr;
     size_t len;
     GetBytesData(value, data, ti, &ptr, &len);
-    return details::StableHashCombine(static_cast<uint64_t>(TypeIndex::kTVMFFIBytes),
-                                      details::StableHashBytes(ptr, len));
+    return detail::StableHashCombine(static_cast<uint64_t>(TypeIndex::kTVMFFIBytes),
+                                     detail::StableHashBytes(ptr, len));
   }
 
   // ---------- Shape hashing ----------
 
   static uint64_t HashShape(const Shape& shape) {
-    uint64_t h = details::StableHashCombine(shape->GetTypeKeyHash(), shape.size());
+    uint64_t h = detail::StableHashCombine(shape->GetTypeKeyHash(), shape.size());
     for (int64_t dim : shape) {
-      h = details::StableHashCombine(h, static_cast<uint64_t>(dim));
+      h = detail::StableHashCombine(h, static_cast<uint64_t>(dim));
     }
     return h;
   }
@@ -1299,7 +1299,7 @@ class RecursiveComparer : public ObjectGraphDFS<RecursiveComparer, CompareFrame,
   // ---------- Immediate (non-recursive) comparison ----------
 
   bool TryCompareImmediate(const Any& lhs, const Any& rhs, int32_t* out) {
-    using details::AnyUnsafe;
+    using detail::AnyUnsafe;
     const TVMFFIAny* lhs_data = AnyUnsafe::TVMFFIAnyPtrFromAny(lhs);
     const TVMFFIAny* rhs_data = AnyUnsafe::TVMFFIAnyPtrFromAny(rhs);
     int32_t lti = lhs_data->type_index;
@@ -1333,8 +1333,8 @@ class RecursiveComparer : public ObjectGraphDFS<RecursiveComparer, CompareFrame,
       if ((lti == TypeIndex::kTVMFFIInt && rti == TypeIndex::kTVMFFIBigInt) ||
           (lti == TypeIndex::kTVMFFIBigInt && rti == TypeIndex::kTVMFFIInt)) {
         // Both views borrow the live Any arguments without copying their integer objects.
-        *out = details::int_ops::CompareFallback(details::BigIntUnsafe::GetArrayView(lhs_data),
-                                                 details::BigIntUnsafe::GetArrayView(rhs_data));
+        *out = detail::int_ops::CompareFallback(detail::BigIntUnsafe::GetArrayView(lhs_data),
+                                                detail::BigIntUnsafe::GetArrayView(rhs_data));
         return true;
       }
       TVM_FFI_THROW(TypeError) << "Cannot compare values of different types: " << lhs.GetTypeKey()
@@ -1345,10 +1345,10 @@ class RecursiveComparer : public ObjectGraphDFS<RecursiveComparer, CompareFrame,
       return true;
     }
     if (lti == TypeIndex::kTVMFFIBigInt) {
-      auto lhs_words = details::BigIntUnsafe::GetArrayView(lhs_data);
-      auto rhs_words = details::BigIntUnsafe::GetArrayView(rhs_data);
-      *out = eq_only_ ? !details::int_ops::EqualFallback(lhs_words, rhs_words)
-                      : details::int_ops::CompareFallback(lhs_words, rhs_words);
+      auto lhs_words = detail::BigIntUnsafe::GetArrayView(lhs_data);
+      auto rhs_words = detail::BigIntUnsafe::GetArrayView(rhs_data);
+      *out = eq_only_ ? !detail::int_ops::EqualFallback(lhs_words, rhs_words)
+                      : detail::int_ops::CompareFallback(lhs_words, rhs_words);
       return true;
     }
     const Object* lhs_obj = static_cast<const Object*>(lhs.as<Object>());
@@ -1446,7 +1446,7 @@ class RecursiveComparer : public ObjectGraphDFS<RecursiveComparer, CompareFrame,
       TVM_FFI_THROW(ValueError) << "RecursiveCompare: maximum stack depth ("
                                 << kMaxTraversalStackDepth << ") exceeded";
     }
-    using details::AnyUnsafe;
+    using detail::AnyUnsafe;
     const TVMFFIAny* lhs_data = AnyUnsafe::TVMFFIAnyPtrFromAny(lhs);
     int32_t lti = lhs_data->type_index;
     const Object* lhs_obj = static_cast<const Object*>(lhs.as<Object>());
@@ -1794,7 +1794,7 @@ void PyClassDeleter(void* self_void, int flags) {
 template <typename T>
 int PyClassFieldGetter(void* field, TVMFFIAny* result) {
   TVM_FFI_SAFE_CALL_BEGIN();
-  *result = details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(*reinterpret_cast<T*>(field)));
+  *result = detail::AnyUnsafe::MoveAnyToTVMFFIAny(Any(*reinterpret_cast<T*>(field)));
   TVM_FFI_SAFE_CALL_END();
 }
 
@@ -1923,10 +1923,10 @@ Function MakeFieldSetter(int32_t field_type_index, int64_t type_converter_int,
     converted.v_int64 = 0;
     int err = f_convert(type_converter, reinterpret_cast<const TVMFFIAny*>(&args[1]), &converted);
     if (err != 0) {
-      throw details::MoveFromSafeCallRaised();
+      throw detail::MoveFromSafeCallRaised();
     }
     // Take ownership of the converted value and write to the field.
-    Any owned = details::AnyUnsafe::MoveTVMFFIAnyToAny(&converted);
+    Any owned = detail::AnyUnsafe::MoveTVMFFIAnyToAny(&converted);
     WriteFieldValue(field_addr, field_type_index, std::move(owned));
   });
 }
@@ -2003,7 +2003,7 @@ void BindFieldArgs(Object* obj, const AutoInitInfo& info, const TVMFFIAny* raw_a
   // passed, or the field's declared default.
   auto rethrow_setter_error = [&](size_t fi, const char* what) {
     const TVMFFIFieldInfo* field_info = info.all_fields[fi].info;
-    Error err = details::MoveFromSafeCallRaised();
+    Error err = detail::MoveFromSafeCallRaised();
     auto field_name = std::string_view(field_info->name.data, field_info->name.size);
     std::string message;
     message.reserve(info.type_key.size() + field_name.size() + err.message().size() + 48);
@@ -2154,11 +2154,11 @@ void PyClassRegisterTypeAttrColumns(int32_t type_index, int32_t total_size) {
     }
     TVMFFIObject* ffi_obj = reinterpret_cast<TVMFFIObject*>(obj_ptr);
     ffi_obj->type_index = type_index;
-    ffi_obj->combined_ref_count = details::kCombinedRefCountBothOne;
+    ffi_obj->combined_ref_count = detail::kCombinedRefCountBothOne;
     ffi_obj->deleter = PyClassDeleter;
     Object* obj = reinterpret_cast<Object*>(obj_ptr);
     ConstructPyClassFields(obj, type_info);
-    return ObjectRef(details::ObjectUnsafe::ObjectPtrFromOwned<Object>(obj));
+    return ObjectRef(detail::ObjectUnsafe::ObjectPtrFromOwned<Object>(obj));
   });
   TVMFFIByteArray attr_name = refl::AsByteArray(type_attr::kNew.name);
   TVMFFIAny attr_value = AnyView(new_fn).CopyToTVMFFIAny();
@@ -2172,7 +2172,7 @@ void PyClassRegisterTypeAttrColumns(int32_t type_index, int32_t total_size) {
         }
         TVMFFIObject* ffi_obj = reinterpret_cast<TVMFFIObject*>(obj_ptr);
         ffi_obj->type_index = type_index;
-        ffi_obj->combined_ref_count = details::kCombinedRefCountBothOne;
+        ffi_obj->combined_ref_count = detail::kCombinedRefCountBothOne;
         ffi_obj->deleter = PyClassDeleter;
         refl::ForEachFieldInfo(type_info, [&](const TVMFFIFieldInfo* finfo) {
           void* dst = reinterpret_cast<char*>(obj_ptr) + finfo->offset;
@@ -2188,7 +2188,7 @@ void PyClassRegisterTypeAttrColumns(int32_t type_index, int32_t total_size) {
           }
         });
         Object* obj = reinterpret_cast<Object*>(obj_ptr);
-        return ObjectRef(details::ObjectUnsafe::ObjectPtrFromOwned<Object>(obj));
+        return ObjectRef(detail::ObjectUnsafe::ObjectPtrFromOwned<Object>(obj));
       });
   TVMFFIByteArray copy_attr_name = refl::AsByteArray(type_attr::kShallowCopy.name);
   TVMFFIAny copy_attr_value = AnyView(copy_fn).CopyToTVMFFIAny();

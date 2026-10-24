@@ -55,7 +55,7 @@ static_assert(sizeof(Optional<Function>) == sizeof(Function));
 static_assert(alignof(Optional<Function>) == alignof(Function));
 static_assert(sizeof(Optional<Optional<int>>) == sizeof(Any));
 static_assert(sizeof(Optional<Optional<TInt>>) == sizeof(Any));
-static_assert(details::storage_enabled_v<Optional<int>>);
+static_assert(detail::storage_enabled_v<Optional<int>>);
 
 TEST(Optional, StorageEnabledPassThrough) {
   // Optional<int> is storage-enabled, so a nested Optional round-trips through

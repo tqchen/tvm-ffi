@@ -107,7 +107,7 @@ class MapForwardIterFunctor {
 };
 
 int64_t BigIntAnyHash(const Any& value) {
-  return details::int_ops::BitcastToInt64(value.as_or_throw<BigInt>().hash());
+  return detail::int_ops::BitcastToInt64(value.as_or_throw<BigInt>().hash());
 }
 
 bool BigIntAnyEqual(const Any& lhs, const Any& rhs) {
@@ -118,7 +118,7 @@ TVM_FFI_STATIC_INIT_BLOCK() {
   namespace refl = tvm::ffi::reflection;
   refl::EnsureTypeAttrColumn(type_attr::kAnyHash);
   refl::EnsureTypeAttrColumn(type_attr::kAnyEqual);
-  refl::ObjectDef<details::BigIntObj>()
+  refl::ObjectDef<detail::BigIntObj>()
       .def_type_attr(
           type_attr::kAnyHash.name,
           reflection::NativeFunctionView<int64_t(const Any&)>::FromNative<&BigIntAnyHash>())
@@ -132,14 +132,14 @@ TVM_FFI_STATIC_INIT_BLOCK() {
                      })
       .def_type_attr(type_attr::kCompare.name,
                      [](const Object* lhs, const Object* rhs, const Function&) {
-                       return details::int_ops::CompareFallback(
-                           details::BigIntUnsafe::GetArrayView(AnyView(lhs).as_or_throw<BigInt>()),
-                           details::BigIntUnsafe::GetArrayView(AnyView(rhs).as_or_throw<BigInt>()));
+                       return detail::int_ops::CompareFallback(
+                           detail::BigIntUnsafe::GetArrayView(AnyView(lhs).as_or_throw<BigInt>()),
+                           detail::BigIntUnsafe::GetArrayView(AnyView(rhs).as_or_throw<BigInt>()));
                      })
       .def_type_attr(
           type_attr::kHash.name,
           [](const Object* value, const Function&) -> int64_t {
-            return details::int_ops::BitcastToInt64(AnyView(value).as_or_throw<BigInt>().hash());
+            return detail::int_ops::BitcastToInt64(AnyView(value).as_or_throw<BigInt>().hash());
           })
       .def_type_attr(type_attr::kDataToJson.name,
                      [](AnyView value) -> Any {

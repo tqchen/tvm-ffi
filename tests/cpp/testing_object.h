@@ -259,7 +259,7 @@ class TMutatePairObj : public Object {
       StructuralMutatorObj* mutator, AnyView value) noexcept {
     ++StructuralMutateCallCount();
     const TMutatePairObj* self =
-        details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const TMutatePairObj>(value);
+        detail::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const TMutatePairObj>(value);
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, lhs,
                                       mutator->MutateExpected(self->lhs, InplaceMode::kDisallow));
     TVM_FFI_S_MUTATE_ASSIGN_OR_RETURN(UnchangedOr<ObjectRef>, rhs,

@@ -45,7 +45,7 @@ inline ObjectPtr<Object> CreateEmptyObject(const TVMFFITypeInfo* type_info) {
   if (type_info->metadata != nullptr && type_info->metadata->creator != nullptr) {
     TVMFFIObjectHandle handle;
     TVM_FFI_CHECK_SAFE_CALL(type_info->metadata->creator(&handle));
-    return details::ObjectUnsafe::ObjectPtrFromOwned<Object>(static_cast<TVMFFIObject*>(handle));
+    return detail::ObjectUnsafe::ObjectPtrFromOwned<Object>(static_cast<TVMFFIObject*>(handle));
   }
   // Fallback: __ffi_new__ type attr (Python-defined types)
   constexpr TVMFFIByteArray kFFINewAttrName = reflection::AsByteArray(type_attr::kNew.name);
@@ -56,7 +56,7 @@ inline ObjectPtr<Object> CreateEmptyObject(const TVMFFITypeInfo* type_info) {
       AnyView attr_view = AnyView::CopyFromTVMFFIAny(column->data[offset]);
       if (auto opt_func = type_attr::kNew.ValueFrom(attr_view)) {
         ObjectRef obj_ref = (*opt_func)();
-        return details::ObjectUnsafe::ObjectPtrFromObjectRef<Object>(std::move(obj_ref));
+        return detail::ObjectUnsafe::ObjectPtrFromObjectRef<Object>(std::move(obj_ref));
       }
     }
   }
@@ -92,7 +92,7 @@ inline bool HasCreator(const TVMFFITypeInfo* type_info) {
 
 namespace reflection {
 
-namespace details {
+namespace detail {
 
 /*!
  * \brief Convert an AnyView to a specific reflected object type.
@@ -112,7 +112,11 @@ TObjectRef FFIConvertFromAnyViewToObjectRef(AnyView input) {
   TVM_FFI_UNREACHABLE();
 }
 
-}  // namespace details
+}  // namespace detail
+
+// Backward compatibility.
+// TODO(tvm-ffi): Remove after updating the remaining downstream uses.
+namespace details = detail;
 
 /*!
  * \brief helper wrapper class of TVMFFITypeInfo to create object based on reflection.

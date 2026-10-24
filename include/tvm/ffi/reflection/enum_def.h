@@ -136,10 +136,10 @@ class EnumDef : public ReflectionDefBase {
                                 << "`";
     }
     ObjectPtr<EnumClsObj> obj = make_object<EnumClsObj>();
-    ::tvm::ffi::details::ObjectUnsafe::GetHeader(obj.get())->type_index = type_index_;
+    ::tvm::ffi::detail::ObjectUnsafe::GetHeader(obj.get())->type_index = type_index_;
     obj->_int_index = int_index;
     obj->_str_index = std::move(str_index);
-    instance_ = ::tvm::ffi::details::ObjectUnsafe::ObjectRefFromObjectPtr<Enum>(std::move(obj));
+    instance_ = ::tvm::ffi::detail::ObjectUnsafe::ObjectRefFromObjectPtr<Enum>(std::move(obj));
     entries.push_back(instance_);
     indexes.Set(int_key, instance_);
     indexes.Set(str_key, instance_);
@@ -156,15 +156,15 @@ class EnumDef : public ReflectionDefBase {
       }
       // Avoid cast<EnumState> here because it reads the same deferred inline type index.
       TVMFFIAny value_any = value.CopyToTVMFFIAny();
-      return ::tvm::ffi::details::ObjectUnsafe::ObjectRefFromObjectPtr<EnumState>(
-          ::tvm::ffi::details::ObjectUnsafe::ObjectPtrFromUnowned<Object>(value_any.v_obj));
+      return ::tvm::ffi::detail::ObjectUnsafe::ObjectRefFromObjectPtr<EnumState>(
+          ::tvm::ffi::detail::ObjectUnsafe::ObjectPtrFromUnowned<Object>(value_any.v_obj));
     }
     ObjectPtr<EnumStateObj> state_obj = make_object<EnumStateObj>();
     // GCC runs attribute constructors before dynamic initialization of inline type indices.
     // Set the header explicitly so the state is not packed as `None` during static init.
-    ::tvm::ffi::details::ObjectUnsafe::GetHeader(state_obj.get())->type_index = state_type_index;
+    ::tvm::ffi::detail::ObjectUnsafe::GetHeader(state_obj.get())->type_index = state_type_index;
     EnumState state =
-        ::tvm::ffi::details::ObjectUnsafe::ObjectRefFromObjectPtr<EnumState>(std::move(state_obj));
+        ::tvm::ffi::detail::ObjectUnsafe::ObjectRefFromObjectPtr<EnumState>(std::move(state_obj));
     constexpr TVMFFIByteArray name = AsByteArray(type_attr::kEnumState.name);
     TVMFFIAny value_any = AnyView(state).CopyToTVMFFIAny();
     TVM_FFI_CHECK_SAFE_CALL(TVMFFITypeRegisterAttr(type_index_, &name, &value_any));

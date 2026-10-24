@@ -32,7 +32,7 @@
 #include <tvm/ffi/expected.h>
 #include <tvm/ffi/extra/visit_error_context.h>
 #include <tvm/ffi/function.h>
-#include <tvm/ffi/function_details.h>
+#include <tvm/ffi/function_detail.h>
 #include <tvm/ffi/optional.h>
 #include <tvm/ffi/reflection/accessor.h>
 #include <tvm/ffi/reflection/native_function.h>
@@ -102,13 +102,13 @@ class StructuralVisitorObj;
  */
 using FStructuralVisitABI = TVMFFIAny (*)(StructuralVisitorObj* visitor, AnyView value) noexcept;
 
-namespace details {
+namespace detail {
 
 // Visit reflected structural fields of an object-backed value.
 TVM_FFI_INLINE static Expected<Optional<VisitInterrupt>> VisitReflectedFieldsExpected(
     StructuralVisitorObj* visitor, const Object* obj) noexcept;
 
-}  // namespace details
+}  // namespace detail
 
 /*!
  * \brief VTable ABI for \ref StructuralVisitor dispatch. This function table provides a stable ABI
@@ -184,7 +184,7 @@ class StructuralVisitorObj : public Object {
    * \return Expected interrupt state. An error means traversal failed.
    */
   TVM_FFI_INLINE Expected<Optional<VisitInterrupt>> VisitExpected(AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<Optional<VisitInterrupt>>(
+    return detail::ExpectedUnsafe::MoveFromTVMFFIAny<Optional<VisitInterrupt>>(
         (*vtable_->visit)(this, value));
   }
 
@@ -244,7 +244,7 @@ class StructuralVisitorObj : public Object {
    * \return Expected interrupt state. An error means traversal failed.
    */
   TVM_FFI_INLINE Expected<Optional<VisitInterrupt>> DefaultVisitExpected(AnyView value) noexcept {
-    return details::ExpectedUnsafe::MoveFromTVMFFIAny<Optional<VisitInterrupt>>(
+    return detail::ExpectedUnsafe::MoveFromTVMFFIAny<Optional<VisitInterrupt>>(
         DefaultVisitRaw(value));
   }
 
@@ -267,20 +267,20 @@ class StructuralVisitorObj : public Object {
   /*! \brief Handle Function hooks and reflected descent outside the compiled-hook path. */
   TVMFFIAny DefaultVisitRawTail(AnyView value, AnyView attr) noexcept {
     if (attr.type_index() == TypeIndex::kTVMFFIFunction) {
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(
+      return detail::ExpectedUnsafe::MoveToTVMFFIAny(
           attr.cast<Function>().CallExpected<Optional<VisitInterrupt>>(this, value));
     }
     if (TVM_FFI_PREDICT_FALSE(attr.type_index() != TypeIndex::kTVMFFINone)) {
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(
+      return detail::ExpectedUnsafe::MoveToTVMFFIAny(
           Expected<Optional<VisitInterrupt>>(Unexpected(Error(
               "TypeError", "__s_visit__ must be an opaque function pointer or ffi.Function", ""))));
     }
     if (value.type_index() < TypeIndex::kTVMFFIStaticObjectBegin) {
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(
+      return detail::ExpectedUnsafe::MoveToTVMFFIAny(
           Expected<Optional<VisitInterrupt>>(std::nullopt));
     }
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(
-        details::VisitReflectedFieldsExpected(this, value.cast<const Object*>()));
+    return detail::ExpectedUnsafe::MoveToTVMFFIAny(
+        detail::VisitReflectedFieldsExpected(this, value.cast<const Object*>()));
   }
 
  protected:
@@ -329,7 +329,7 @@ class StructuralVisitor : public ObjectRef {
   /// \endcond
 };
 
-namespace details {
+namespace detail {
 
 /*!
  * \brief Return true when \p result carries a traversal-stopping interrupt.
@@ -396,7 +396,7 @@ TVM_FFI_INLINE static Expected<Optional<VisitInterrupt>> VisitReflectedFieldsExp
           int ret_code = field_info->getter(const_cast<void*>(field_addr),
                                             reinterpret_cast<TVMFFIAny*>(&field_value));
           if (TVM_FFI_PREDICT_FALSE(ret_code != 0)) {
-            result = Unexpected(details::MoveFromSafeCallRaised());
+            result = Unexpected(detail::MoveFromSafeCallRaised());
             return true;
           }
 
@@ -423,7 +423,7 @@ TVM_FFI_INLINE static Expected<Optional<VisitInterrupt>> VisitReflectedFieldsExp
   return visit_fields();
 }
 
-}  // namespace details
+}  // namespace detail
 
 // ---------------------------------------------------------------------------
 // Structural Walk API.
@@ -528,7 +528,7 @@ enum class WalkOrder : int32_t {
   kPostOrder = 1,
 };
 
-namespace details {
+namespace detail {
 
 /*!
  * \brief Return from a visit hook if \p Result stops traversal.
@@ -545,7 +545,7 @@ namespace details {
  * Expected<Optional<VisitInterrupt>> FooVisit(StructuralVisitorObj* visitor,
  *                                             AnyView value) noexcept {
  *   const FooNode* self =
- *       details::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const FooNode>(value);
+ *       detail::AnyUnsafe::RawObjectPtrFromAnyViewAfterCheck<const FooNode>(value);
  *   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->a));
  *   TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(visitor->VisitExpected(self->b));
  *   return Optional<VisitInterrupt>(std::nullopt);
@@ -557,16 +557,15 @@ namespace details {
  *
  * \param Result An expression yielding the descent result to inspect.
  */
-#define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result)                                \
-  do {                                                                            \
-    auto&& tvm_ffi_res_ = (Result);                                               \
-    if (TVM_FFI_PREDICT_FALSE(                                                    \
-            ::tvm::ffi::details::StructuralVisitNeedEarlyReturn(tvm_ffi_res_))) { \
-      return ::std::move(tvm_ffi_res_);                                           \
-    }                                                                             \
+#define TVM_FFI_S_VISIT_MAYBE_EARLY_RETURN(Result)                                                 \
+  do {                                                                                             \
+    auto&& tvm_ffi_res_ = (Result);                                                                \
+    if (TVM_FFI_PREDICT_FALSE(::tvm::ffi::detail::StructuralVisitNeedEarlyReturn(tvm_ffi_res_))) { \
+      return ::std::move(tvm_ffi_res_);                                                            \
+    }                                                                                              \
   } while (0)
 
-}  // namespace details
+}  // namespace detail
 
 /*!
  * \brief Callback-dispatched walk engine with a state-carrying Parent layer.
@@ -630,7 +629,7 @@ class StructuralWalkEngine : public Parent {
   template <typename Callback, typename Value, size_t... Is>
   TVM_FFI_INLINE Expected<WalkResult> InvokeCallbackLink(Callback& callback, Value&& value,
                                                          std::index_sequence<Is...>) noexcept {
-    using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
+    using FuncInfo = detail::FunctionInfo<std::decay_t<Callback>>;
     static_assert(
         FuncInfo::num_args == 1 + sizeof...(Is) || FuncInfo::num_args == 2 + sizeof...(Is),
         "StructuralWalk callback takes (value, state...) with an optional trailing "
@@ -654,7 +653,7 @@ class StructuralWalkEngine : public Parent {
   template <typename Callback>
   TVM_FFI_INLINE bool TryLink(Callback& callback, AnyView value,
                               Expected<WalkResult>* out) noexcept {
-    using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
+    using FuncInfo = detail::FunctionInfo<std::decay_t<Callback>>;
     static_assert(FuncInfo::num_args >= 1, "StructuralWalk callback requires a value argument");
     using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
     using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
@@ -686,18 +685,18 @@ class StructuralWalkEngine : public Parent {
    */
   TVMFFIAny VisitImpl(AnyView value) noexcept {
     if (TVM_FFI_PREDICT_FALSE(value.type_index() == TypeIndex::kTVMFFINone)) {
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(
+      return detail::ExpectedUnsafe::MoveToTVMFFIAny(
           Expected<Optional<VisitInterrupt>>(std::nullopt));
     }
     if constexpr (order == WalkOrder::kPreOrder) {
       Expected<WalkResult> result = WalkResult::Advance();
       TryLinks(value, &result, std::index_sequence_for<Callbacks...>{});
-      if (TVM_FFI_PREDICT_FALSE(details::StructuralVisitNeedEarlyReturn(result))) {
+      if (TVM_FFI_PREDICT_FALSE(detail::StructuralVisitNeedEarlyReturn(result))) {
         if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
           Error err = result.error();
-          details::UpdateVisitErrorContext(err, value);
+          detail::UpdateVisitErrorContext(err, value);
         }
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+        return detail::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
       }
       // Hoist the call out of TVM_FFI_UNSAFE_ASSUME: clang's -Wassume rejects
       // arguments that contain a call expression (its potential side effects
@@ -705,19 +704,19 @@ class StructuralWalkEngine : public Parent {
       // quiet on configs where the assume macro compiles away.
       [[maybe_unused]] int32_t type_index = result.type_index();
       TVM_FFI_UNSAFE_ASSUME(type_index == TypeIndex::kTVMFFIInt);
-      if (TVM_FFI_PREDICT_FALSE(details::ExpectedUnsafe::ValueAs<int32_t>(result) ==
+      if (TVM_FFI_PREDICT_FALSE(detail::ExpectedUnsafe::ValueAs<int32_t>(result) ==
                                 WalkResult::kSkipTag)) {
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(
+        return detail::ExpectedUnsafe::MoveToTVMFFIAny(
             Expected<Optional<VisitInterrupt>>(std::nullopt));
       }
     }
 
     {
       TVMFFIAny result =
-          details::ExpectedUnsafe::MoveToTVMFFIAny(Parent::DefaultVisitExpected(value));
-      if (TVM_FFI_PREDICT_FALSE(details::StructuralVisitRawNeedEarlyReturn(result))) {
+          detail::ExpectedUnsafe::MoveToTVMFFIAny(Parent::DefaultVisitExpected(value));
+      if (TVM_FFI_PREDICT_FALSE(detail::StructuralVisitRawNeedEarlyReturn(result))) {
         if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
-          return details::AttachStructuralVisitErrorContextRaw(result, value);
+          return detail::AttachStructuralVisitErrorContextRaw(result, value);
         }
         return result;
       }
@@ -726,16 +725,16 @@ class StructuralWalkEngine : public Parent {
     if constexpr (order == WalkOrder::kPostOrder) {
       Expected<WalkResult> result = WalkResult::Advance();
       TryLinks(value, &result, std::index_sequence_for<Callbacks...>{});
-      if (TVM_FFI_PREDICT_FALSE(details::StructuralVisitNeedEarlyReturn(result))) {
+      if (TVM_FFI_PREDICT_FALSE(detail::StructuralVisitNeedEarlyReturn(result))) {
         if (TVM_FFI_PREDICT_FALSE(result.is_err())) {
           Error err = result.error();
-          details::UpdateVisitErrorContext(err, value);
+          detail::UpdateVisitErrorContext(err, value);
         }
-        return details::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
+        return detail::ExpectedUnsafe::MoveToTVMFFIAny(std::move(result));
       }
     }
 
-    return details::ExpectedUnsafe::MoveToTVMFFIAny(
+    return detail::ExpectedUnsafe::MoveToTVMFFIAny(
         Expected<Optional<VisitInterrupt>>(std::nullopt));
   }
 
@@ -850,17 +849,17 @@ class StructuralVisitEngine : public Parent {
    */
   TVMFFIAny VisitImpl(AnyView value) noexcept {
     if (TVM_FFI_PREDICT_FALSE(value.type_index() == TypeIndex::kTVMFFINone)) {
-      return details::ExpectedUnsafe::MoveToTVMFFIAny(
+      return detail::ExpectedUnsafe::MoveToTVMFFIAny(
           Expected<Optional<VisitInterrupt>>(std::nullopt));
     }
     TVMFFIAny result;
     if (!TryLinks(value, &result, std::index_sequence_for<Callbacks...>{})) {
       // Only an unmatched value uses the Parent layer's default descent. A matched
       // callback already traversed as much of the value as it wanted.
-      result = details::ExpectedUnsafe::MoveToTVMFFIAny(Parent::DefaultVisitExpected(value));
+      result = detail::ExpectedUnsafe::MoveToTVMFFIAny(Parent::DefaultVisitExpected(value));
     }
     if (TVM_FFI_PREDICT_FALSE(result.type_index == TypeIndex::kTVMFFIError)) {
-      return details::AttachStructuralVisitErrorContextRaw(result, value);
+      return detail::AttachStructuralVisitErrorContextRaw(result, value);
     }
     return result;
   }
@@ -868,7 +867,7 @@ class StructuralVisitEngine : public Parent {
   /*! \brief Try one typed callback, storing its raw result only when it matches. */
   template <typename Callback>
   inline bool TryLink(Callback& callback, AnyView value, TVMFFIAny* out) noexcept {
-    using FuncInfo = details::FunctionInfo<std::decay_t<Callback>>;
+    using FuncInfo = detail::FunctionInfo<std::decay_t<Callback>>;
     static_assert(FuncInfo::num_args == 2, "StructuralVisit callback takes (value, visitor)");
     using FirstArg = std::tuple_element_t<0, typename FuncInfo::ArgType>;
     using TSub = std::remove_cv_t<std::remove_reference_t<FirstArg>>;
@@ -880,20 +879,20 @@ class StructuralVisitEngine : public Parent {
     auto* visitor = static_cast<typename Parent::VisitorObjType*>(this);
     try {
       if constexpr (std::is_same_v<TSub, AnyView>) {
-        *out = details::ExpectedUnsafe::MoveToTVMFFIAny(
+        *out = detail::ExpectedUnsafe::MoveToTVMFFIAny(
             Expected<Optional<VisitInterrupt>>(callback(value, visitor)));
         return true;
       } else if constexpr (std::is_same_v<TSub, Any>) {
-        *out = details::ExpectedUnsafe::MoveToTVMFFIAny(
+        *out = detail::ExpectedUnsafe::MoveToTVMFFIAny(
             Expected<Optional<VisitInterrupt>>(callback(Any(value), visitor)));
         return true;
       } else if (auto matched = value.template as<TSub>()) {
-        *out = details::ExpectedUnsafe::MoveToTVMFFIAny(
+        *out = detail::ExpectedUnsafe::MoveToTVMFFIAny(
             Expected<Optional<VisitInterrupt>>(callback(*std::move(matched), visitor)));
         return true;
       }
     } catch (const Error& err) {
-      *out = details::ExpectedUnsafe::MoveToTVMFFIAny(
+      *out = detail::ExpectedUnsafe::MoveToTVMFFIAny(
           Expected<Optional<VisitInterrupt>>(Unexpected(err)));
       return true;
     }

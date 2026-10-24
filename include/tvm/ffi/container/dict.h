@@ -27,7 +27,7 @@
 #define TVM_FFI_CONTAINER_DICT_H_
 
 #include <tvm/ffi/any.h>
-#include <tvm/ffi/container/container_details.h>
+#include <tvm/ffi/container/container_detail.h>
 #include <tvm/ffi/container/map_base.h>
 #include <tvm/ffi/memory.h>
 #include <tvm/ffi/object.h>
@@ -73,8 +73,8 @@ static_assert(sizeof(DictObj) == sizeof(MapBaseObj), "DictObj must match MapBase
  * \tparam V The value type.
  */
 template <typename K, typename V,
-          typename = typename std::enable_if_t<details::storage_enabled_v<K> &&
-                                               details::storage_enabled_v<V>>>
+          typename = typename std::enable_if_t<detail::storage_enabled_v<K> &&
+                                               detail::storage_enabled_v<V>>>
 class Dict : public ObjectRef {
  public:
   /*! \brief The key type of the dict */
@@ -207,7 +207,7 @@ class Dict : public ObjectRef {
    * \return the corresponding element.
    */
   V at(const K& key) const {
-    return details::AnyUnsafe::CopyFromAnyViewAfterCheck<V>(GetDictObj()->at(key));
+    return detail::AnyUnsafe::CopyFromAnyViewAfterCheck<V>(GetDictObj()->at(key));
   }
   /*!
    * \brief Read element from dict.
@@ -259,7 +259,7 @@ class Dict : public ObjectRef {
     if (iter == GetDictObj()->end()) {
       return std::nullopt;
     }
-    return details::AnyUnsafe::CopyFromAnyViewAfterCheck<V>(iter->second);
+    return detail::AnyUnsafe::CopyFromAnyViewAfterCheck<V>(iter->second);
   }
 
   /*!
@@ -300,8 +300,8 @@ class Dict : public ObjectRef {
     /*! \brief De-reference iterators */
     reference operator*() const {
       auto& kv = *itr;
-      return std::make_pair(details::AnyUnsafe::CopyFromAnyViewAfterCheck<K>(kv.first),
-                            details::AnyUnsafe::CopyFromAnyViewAfterCheck<V>(kv.second));
+      return std::make_pair(detail::AnyUnsafe::CopyFromAnyViewAfterCheck<K>(kv.first),
+                            detail::AnyUnsafe::CopyFromAnyViewAfterCheck<V>(kv.second));
     }
     /*! \brief Prefix self increment, e.g. ++iter */
     iterator& operator++() {
@@ -366,8 +366,8 @@ struct TypeTraits<Dict<K, V>> : public MapTypeTraitsBase<TypeTraits<Dict<K, V>>,
   TVM_FFI_INLINE static std::string TypeSchema() {
     std::ostringstream oss;
     oss << R"({"type":")" << StaticTypeKey::kTVMFFIDict << R"(","args":[)";
-    oss << details::TypeSchema<K>::v() << ",";
-    oss << details::TypeSchema<V>::v();
+    oss << detail::TypeSchema<K>::v() << ",";
+    oss << detail::TypeSchema<V>::v();
     oss << "]}";
     return oss.str();
   }
