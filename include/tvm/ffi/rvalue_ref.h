@@ -73,11 +73,11 @@ class RValueRef {
   using ContainerType = typename TObjRef::ContainerType;
   /*! \brief only allow move constructor from rvalue of T */
   explicit RValueRef(TObjRef&& data)
-      : data_(details::ObjectUnsafe::ObjectPtrFromObjectRef<ContainerType>(std::move(data))) {}
+      : data_(detail::ObjectUnsafe::ObjectPtrFromObjectRef<ContainerType>(std::move(data))) {}
 
   /*! \brief return the data as rvalue */
   TObjRef operator*() && {
-    return details::ObjectUnsafe::ObjectRefFromObjectPtr<TObjRef>(std::move(data_));
+    return detail::ObjectUnsafe::ObjectRefFromObjectPtr<TObjRef>(std::move(data_));
   }
 
  private:
@@ -128,7 +128,7 @@ struct TypeTraits<RValueRef<TObjRef>> : public TypeTraitsBase {
       // fast path, storage type matches, direct move the rvalue ref
       if (TypeTraits<TObjRef>::CheckAnyStrict(&tmp_any)) {
         return RValueRef<TObjRef>(
-            details::ObjectUnsafe::ObjectRefFromObjectPtr<TObjRef>(std::move(*rvalue_ref)));
+            detail::ObjectUnsafe::ObjectRefFromObjectPtr<TObjRef>(std::move(*rvalue_ref)));
       }
       if (std::optional<TObjRef> opt = TypeTraits<TObjRef>::TryCastFromAnyView(&tmp_any)) {
         // object type does not match up, we need to try to convert the object

@@ -55,7 +55,7 @@ namespace tvm_ffi {
 template <typename T>
 struct dtype_trait {};
 
-namespace details::dtypes {
+namespace detail::dtypes {
 
 template <typename T>
 struct integer_trait {
@@ -75,43 +75,47 @@ struct float_trait {
   };
 };
 
-}  // namespace details::dtypes
+}  // namespace detail::dtypes
+
+// Backward compatibility.
+// TODO(tvm-ffi): Remove after updating the remaining downstream uses.
+namespace details = detail;
 
 template <>
-struct dtype_trait<signed char> : details::dtypes::integer_trait<signed char> {};
+struct dtype_trait<signed char> : detail::dtypes::integer_trait<signed char> {};
 
 template <>
-struct dtype_trait<unsigned char> : details::dtypes::integer_trait<unsigned char> {};
+struct dtype_trait<unsigned char> : detail::dtypes::integer_trait<unsigned char> {};
 
 template <>
-struct dtype_trait<signed short> : details::dtypes::integer_trait<signed short> {};
+struct dtype_trait<signed short> : detail::dtypes::integer_trait<signed short> {};
 
 template <>
-struct dtype_trait<unsigned short> : details::dtypes::integer_trait<unsigned short> {};
+struct dtype_trait<unsigned short> : detail::dtypes::integer_trait<unsigned short> {};
 
 template <>
-struct dtype_trait<signed int> : details::dtypes::integer_trait<signed int> {};
+struct dtype_trait<signed int> : detail::dtypes::integer_trait<signed int> {};
 
 template <>
-struct dtype_trait<unsigned int> : details::dtypes::integer_trait<unsigned int> {};
+struct dtype_trait<unsigned int> : detail::dtypes::integer_trait<unsigned int> {};
 
 template <>
-struct dtype_trait<signed long> : details::dtypes::integer_trait<signed long> {};
+struct dtype_trait<signed long> : detail::dtypes::integer_trait<signed long> {};
 
 template <>
-struct dtype_trait<unsigned long> : details::dtypes::integer_trait<unsigned long> {};
+struct dtype_trait<unsigned long> : detail::dtypes::integer_trait<unsigned long> {};
 
 template <>
-struct dtype_trait<signed long long> : details::dtypes::integer_trait<signed long long> {};
+struct dtype_trait<signed long long> : detail::dtypes::integer_trait<signed long long> {};
 
 template <>
-struct dtype_trait<unsigned long long> : details::dtypes::integer_trait<unsigned long long> {};
+struct dtype_trait<unsigned long long> : detail::dtypes::integer_trait<unsigned long long> {};
 
 template <>
-struct dtype_trait<float> : details::dtypes::float_trait<float> {};
+struct dtype_trait<float> : detail::dtypes::float_trait<float> {};
 
 template <>
-struct dtype_trait<double> : details::dtypes::float_trait<double> {};
+struct dtype_trait<double> : detail::dtypes::float_trait<double> {};
 
 // Specialization for bool
 

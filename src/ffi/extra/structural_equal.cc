@@ -48,7 +48,7 @@ class StructEqualHandler {
   StructEqualHandler() = default;
 
   bool CompareAny(ffi::Any lhs, ffi::Any rhs) {
-    using ffi::details::AnyUnsafe;
+    using ffi::detail::AnyUnsafe;
     const TVMFFIAny* lhs_data = AnyUnsafe::TVMFFIAnyPtrFromAny(lhs);
     const TVMFFIAny* rhs_data = AnyUnsafe::TVMFFIAnyPtrFromAny(rhs);
     if (lhs_data->type_index != rhs_data->type_index) {
@@ -59,26 +59,26 @@ class StructEqualHandler {
       }
       // small string and normal string comparison
       if (lhs_data->type_index == kTVMFFIStr && rhs_data->type_index == kTVMFFISmallStr) {
-        const details::BytesObjBase* lhs_str =
-            details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(lhs);
+        const detail::BytesObjBase* lhs_str =
+            detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(lhs);
         return Bytes::memequal(lhs_str->data, rhs_data->v_bytes, lhs_str->size,
                                rhs_data->small_str_len);
       }
       if (lhs_data->type_index == kTVMFFISmallStr && rhs_data->type_index == kTVMFFIStr) {
-        const details::BytesObjBase* rhs_str =
-            details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(rhs);
+        const detail::BytesObjBase* rhs_str =
+            detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(rhs);
         return Bytes::memequal(lhs_data->v_bytes, rhs_str->data, lhs_data->small_str_len,
                                rhs_str->size);
       }
       if (lhs_data->type_index == kTVMFFIBytes && rhs_data->type_index == kTVMFFISmallBytes) {
-        const details::BytesObjBase* lhs_bytes =
-            details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(lhs);
+        const detail::BytesObjBase* lhs_bytes =
+            detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(lhs);
         return Bytes::memequal(lhs_bytes->data, rhs_data->v_bytes, lhs_bytes->size,
                                rhs_data->small_str_len);
       }
       if (lhs_data->type_index == kTVMFFISmallBytes && rhs_data->type_index == kTVMFFIBytes) {
-        const details::BytesObjBase* rhs_bytes =
-            details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(rhs);
+        const detail::BytesObjBase* rhs_bytes =
+            detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(rhs);
         return Bytes::memequal(lhs_data->v_bytes, rhs_bytes->data, lhs_data->small_str_len,
                                rhs_bytes->size);
       }
@@ -96,16 +96,16 @@ class StructEqualHandler {
     }
     switch (lhs_data->type_index) {
       case TypeIndex::kTVMFFIBigInt: {
-        return details::int_ops::EqualFallback(details::BigIntUnsafe::GetArrayView(lhs_data),
-                                               details::BigIntUnsafe::GetArrayView(rhs_data));
+        return detail::int_ops::EqualFallback(detail::BigIntUnsafe::GetArrayView(lhs_data),
+                                              detail::BigIntUnsafe::GetArrayView(rhs_data));
       }
       case TypeIndex::kTVMFFIStr:
       case TypeIndex::kTVMFFIBytes: {
         // compare bytes
-        const details::BytesObjBase* lhs_str =
-            AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(lhs);
-        const details::BytesObjBase* rhs_str =
-            AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(rhs);
+        const detail::BytesObjBase* lhs_str =
+            AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(lhs);
+        const detail::BytesObjBase* rhs_str =
+            AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(rhs);
         return Bytes::memequal(lhs_str->data, rhs_str->data, lhs_str->size, rhs_str->size);
       }
       case TypeIndex::kTVMFFIArray: {
@@ -424,7 +424,7 @@ class StructEqualHandler {
     if (lhs.type_index() < TypeIndex::kTVMFFIStaticObjectBegin) {
       return lhs;
     }
-    ObjectRef lhs_obj = ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<ObjectRef>(std::move(lhs));
+    ObjectRef lhs_obj = ffi::detail::AnyUnsafe::MoveFromAnyAfterCheck<ObjectRef>(std::move(lhs));
     auto it = equal_map_lhs_.find(lhs_obj);
     if (it != equal_map_lhs_.end()) {
       return it->second;
@@ -436,7 +436,7 @@ class StructEqualHandler {
     if (rhs.type_index() < TypeIndex::kTVMFFIStaticObjectBegin) {
       return rhs;
     }
-    ObjectRef rhs_obj = ffi::details::AnyUnsafe::MoveFromAnyAfterCheck<ObjectRef>(std::move(rhs));
+    ObjectRef rhs_obj = ffi::detail::AnyUnsafe::MoveFromAnyAfterCheck<ObjectRef>(std::move(rhs));
     auto it = equal_map_rhs_.find(rhs_obj);
     if (it != equal_map_rhs_.end()) {
       return it->second;

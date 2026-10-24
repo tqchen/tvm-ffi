@@ -156,7 +156,7 @@ TEST(UnchangedOr, ErrorRoundTrip) {
   Expected<UnchangedOr<Any>> failure = Error("ValueError", "expected failure", "");
   const Any copied_storage(failure);
   Expected<UnchangedOr<Any>> copied =
-      details::AnyUnsafe::CopyFromAnyViewAfterCheck<Expected<UnchangedOr<Any>>>(copied_storage);
+      detail::AnyUnsafe::CopyFromAnyViewAfterCheck<Expected<UnchangedOr<Any>>>(copied_storage);
 
   ASSERT_TRUE(copied.is_err());
   EXPECT_EQ(copied.error().kind(), "ValueError");
@@ -164,7 +164,7 @@ TEST(UnchangedOr, ErrorRoundTrip) {
 
   Any moved_storage(failure);
   Expected<UnchangedOr<Any>> moved =
-      details::AnyUnsafe::MoveFromAnyAfterCheck<Expected<UnchangedOr<Any>>>(
+      detail::AnyUnsafe::MoveFromAnyAfterCheck<Expected<UnchangedOr<Any>>>(
           std::move(moved_storage));
 
   ASSERT_TRUE(moved.is_err());
@@ -192,7 +192,7 @@ TEST(UnchangedOr, ErrorRoundTrip) {
 TEST(StructuralMutate, UnchangedProtocolResolvesAtThrowingEntryPoints) {
   Expected<Any> raw_tag = []() -> Expected<Any> { return Unchanged(); }();
   ASSERT_TRUE(raw_tag.is_ok());
-  EXPECT_EQ(details::ExpectedUnsafe::GetData(raw_tag).type_index(), TypeIndex::kTVMFFIUnchanged);
+  EXPECT_EQ(detail::ExpectedUnsafe::GetData(raw_tag).type_index(), TypeIndex::kTVMFFIUnchanged);
   EXPECT_TRUE(ReturnTypedUnchangedExpected().value().IsUnchanged());
   auto never_matches = [](int64_t, StructuralMutatorObj*) -> Expected<Any> { return Any(); };
   using Mutator = StructuralMutateEngine<StructuralMapEngineBase, decltype(never_matches)>;

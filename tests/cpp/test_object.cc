@@ -69,7 +69,7 @@ struct TypeTraits<testing::TPositiveIntRef>
     : public ObjectRefTypeTraitsBase<testing::TPositiveIntRef> {
   TVM_FFI_INLINE static bool CheckAnyStrict(const TVMFFIAny* src) {
     return ObjectRefTypeTraitsBase<testing::TPositiveIntRef>::CheckAnyStrict(src) &&
-           details::ObjectUnsafe::RawObjectPtrFromUnowned<testing::TIntObj>(src->v_obj)->value > 0;
+           detail::ObjectUnsafe::RawObjectPtrFromUnowned<testing::TIntObj>(src->v_obj)->value > 0;
   }
 };
 
@@ -342,7 +342,7 @@ TEST(ObjectRef, UnsafeInit) {
 
 TEST(Object, CAPIAccessor) {
   ObjectRef a = TInt(10);
-  TVMFFIObjectHandle obj = details::ObjectUnsafe::RawObjectPtrFromObjectRef(a);
+  TVMFFIObjectHandle obj = detail::ObjectUnsafe::RawObjectPtrFromObjectRef(a);
   int32_t type_index = TVMFFIObjectGetTypeIndex(obj);
   EXPECT_EQ(type_index, TIntObj::RuntimeTypeIndex());
 }
@@ -500,7 +500,7 @@ TEST(Object, OpaqueObject) {
   TVM_FFI_CHECK_SAFE_CALL(TVMFFIObjectCreateOpaque(new DummyOpaqueObject(10), kTVMFFIOpaquePyObject,
                                                    DummyOpaqueObject::Deleter, &handle));
   ObjectPtr<Object> a =
-      details::ObjectUnsafe::ObjectPtrFromOwned<Object>(static_cast<Object*>(handle));
+      detail::ObjectUnsafe::ObjectPtrFromOwned<Object>(static_cast<Object*>(handle));
   EXPECT_EQ(a->type_index(), kTVMFFIOpaquePyObject);
   EXPECT_EQ(static_cast<DummyOpaqueObject*>(TVMFFIOpaqueObjectGetCellPtr(a.get())->handle)->value,
             10);

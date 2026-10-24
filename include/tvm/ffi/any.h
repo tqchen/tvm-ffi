@@ -36,11 +36,11 @@ namespace ffi {
 
 class Any;
 
-namespace details {
+namespace detail {
 // Helper to perform
 // unsafe operations related to object
 struct AnyUnsafe;
-}  // namespace details
+}  // namespace detail
 
 /*!
  * \brief AnyView allows us to take un-managed reference view of any value.
@@ -51,7 +51,7 @@ class AnyView {
   TVMFFIAny data_;
   // Any can see AnyView
   friend class Any;
-  friend struct details::AnyUnsafe;
+  friend struct detail::AnyUnsafe;
 
  public:
   // NOTE: the following functions use style
@@ -217,7 +217,7 @@ class AnyView {
   }
 };
 
-namespace details {
+namespace detail {
 /*!
  * \brief Helper function to inplace convert any view to any.
  * \param data The pointer that represents the format as any view.
@@ -228,7 +228,7 @@ namespace details {
 TVM_FFI_INLINE void InplaceConvertAnyViewToAny(TVMFFIAny* data,
                                                [[maybe_unused]] size_t extra_any_bytes = 0) {
   if (data->type_index >= TVMFFITypeIndex::kTVMFFIStaticObjectBegin) {
-    details::ObjectUnsafe::IncRefObjectHandle(data->v_obj);
+    detail::ObjectUnsafe::IncRefObjectHandle(data->v_obj);
   } else if (data->type_index >= TypeIndex::kTVMFFIRawStr) {
     if (data->type_index == TypeIndex::kTVMFFIRawStr) {
       // convert raw string to owned string object
@@ -242,14 +242,14 @@ TVM_FFI_INLINE void InplaceConvertAnyViewToAny(TVMFFIAny* data,
       // convert rvalue ref to owned object
       Object** obj_addr = static_cast<Object**>(data->v_ptr);
       TVM_FFI_ICHECK(obj_addr[0] != nullptr) << "RValueRef already moved";
-      ObjectRef temp(details::ObjectUnsafe::ObjectPtrFromOwned<Object>(obj_addr[0]));
+      ObjectRef temp(detail::ObjectUnsafe::ObjectPtrFromOwned<Object>(obj_addr[0]));
       // set the rvalue ref to nullptr to avoid double move
       obj_addr[0] = nullptr;
       TypeTraits<ObjectRef>::MoveToAny(std::move(temp), data);
     }
   }
 }
-}  // namespace details
+}  // namespace detail
 
 /*!
  * \brief Managed Any that takes strong reference to a value.
@@ -268,7 +268,7 @@ class Any {
    */
   TVM_FFI_INLINE void reset() {
     if (data_.type_index >= TVMFFITypeIndex::kTVMFFIStaticObjectBegin) {
-      details::ObjectUnsafe::DecRefObjectHandle(data_.v_obj);
+      detail::ObjectUnsafe::DecRefObjectHandle(data_.v_obj);
     }
     data_.type_index = TVMFFITypeIndex::kTVMFFINone;
     data_.zero_padding = 0;
@@ -299,7 +299,7 @@ class Any {
    */
   TVM_FFI_INLINE Any(const Any& other) : data_(other.data_) {
     if (data_.type_index >= TypeIndex::kTVMFFIStaticObjectBegin) {
-      details::ObjectUnsafe::IncRefObjectHandle(data_.v_obj);
+      detail::ObjectUnsafe::IncRefObjectHandle(data_.v_obj);
     }
   }
   /*!
@@ -334,7 +334,7 @@ class Any {
    * \param other The other AnyView
    */
   Any(const AnyView& other) : data_(other.data_) {  // NOLINT(*)
-    details::InplaceConvertAnyViewToAny(&data_);
+    detail::InplaceConvertAnyViewToAny(&data_);
   }
   /*!
    * \brief Assign from another AnyView
@@ -559,7 +559,7 @@ class Any {
     data_.v_int64 = raw.v_int64;
   }
 
-  friend struct details::AnyUnsafe;
+  friend struct detail::AnyUnsafe;
   friend struct AnyHash;
   friend struct AnyEqual;
 };
@@ -575,7 +575,7 @@ static_assert(sizeof(Any) == sizeof(TVMFFIAny));
 static_assert(std::is_trivially_copyable_v<AnyView>, "AnyView must be trivially copyable.");
 static_assert(std::is_standard_layout_v<AnyView>, "AnyView must have standard layout.");
 
-namespace details {
+namespace detail {
 
 template <typename Type>
 struct Type2Str {
@@ -705,7 +705,7 @@ struct AnyUnsafe : public ObjectUnsafe {
     return TypeTraits<T>::GetMismatchTypeInfo(&(ref.data_));
   }
 };
-}  // namespace details
+}  // namespace detail
 
 /*! \brief String-aware Any equal functor */
 struct AnyHash {
@@ -719,18 +719,18 @@ struct AnyHash {
     if (src.data_.type_index == TypeIndex::kTVMFFISmallStr) {
       // for small string, we use the same type key hash as normal string
       // so heap allocated string and on stack string will have the same hash
-      return details::StableHashCombine(TypeIndex::kTVMFFIStr,
-                                        details::StableHashSmallStrBytes(&src.data_));
+      return detail::StableHashCombine(TypeIndex::kTVMFFIStr,
+                                       detail::StableHashSmallStrBytes(&src.data_));
     } else if (src.data_.type_index == TypeIndex::kTVMFFISmallBytes) {
       // use byte the same type key as bytes
-      return details::StableHashCombine(TypeIndex::kTVMFFIBytes,
-                                        details::StableHashSmallStrBytes(&src.data_));
+      return detail::StableHashCombine(TypeIndex::kTVMFFIBytes,
+                                       detail::StableHashSmallStrBytes(&src.data_));
     } else if (src.data_.type_index == TypeIndex::kTVMFFIStr ||
                src.data_.type_index == TypeIndex::kTVMFFIBytes) {
-      const details::BytesObjBase* src_str =
-          details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(src);
-      return details::StableHashCombine(src.data_.type_index,
-                                        details::StableHashBytes(src_str->data, src_str->size));
+      const detail::BytesObjBase* src_str =
+          detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(src);
+      return detail::StableHashCombine(src.data_.type_index,
+                                       detail::StableHashBytes(src_str->data, src_str->size));
     } else {
       if (src.data_.type_index >= TypeIndex::kTVMFFIStaticObjectBegin) {
         static const TVMFFITypeAttrColumn* custom_hash_column = GetAnyHashTypeAttrColumn();
@@ -739,13 +739,13 @@ struct AnyHash {
           if (offset >= 0 && offset < custom_hash_column->size) {
             const TVMFFIAny& custom_any_hash = custom_hash_column->data[offset];
             if (custom_any_hash.type_index != TypeIndex::kTVMFFINone) {
-              return details::StableHashCombine(src.data_.type_index,
-                                                CallCustomAnyHash(custom_any_hash, src));
+              return detail::StableHashCombine(src.data_.type_index,
+                                               CallCustomAnyHash(custom_any_hash, src));
             }
           }
         }
       }
-      return details::StableHashCombine(src.data_.type_index, src.data_.v_uint64);
+      return detail::StableHashCombine(src.data_.type_index, src.data_.v_uint64);
     }
   }
 
@@ -778,9 +778,9 @@ struct AnyHash {
       if (TVM_FFI_PREDICT_TRUE(result.type_index == TypeIndex::kTVMFFIInt)) {
         return static_cast<uint64_t>(result.v_int64);
       }
-      Any error = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
+      Any error = detail::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
       TVM_FFI_ICHECK_EQ(error.type_index(), TypeIndex::kTVMFFIError);
-      throw details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(error));
+      throw detail::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(error));
     } else {
       // alternatively it can be a ffi.Function object.
       TVM_FFI_ICHECK_EQ(custom_any_hash.type_index, TypeIndex::kTVMFFIFunction);
@@ -796,10 +796,10 @@ struct AnyHash {
         reinterpret_cast<FCppCall>(func_cell->cpp_call)(custom_any_hash.v_obj, &arg, 1, &result);
       } else {
         if (func_cell->safe_call(custom_any_hash.v_obj, &arg, 1, &result) != 0) {
-          throw details::MoveFromSafeCallRaised();
+          throw detail::MoveFromSafeCallRaised();
         }
       }
-      Any result_any = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
+      Any result_any = detail::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
       TVM_FFI_ICHECK_EQ(result_any.type_index(), TypeIndex::kTVMFFIInt);
       return static_cast<uint64_t>(result_any.data_.v_int64);
     }
@@ -830,10 +830,10 @@ struct AnyEqual {
       // specialy handle string hash
       if (lhs.data_.type_index == TypeIndex::kTVMFFIStr ||
           lhs.data_.type_index == TypeIndex::kTVMFFIBytes) {
-        const details::BytesObjBase* lhs_str =
-            details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(lhs);
-        const details::BytesObjBase* rhs_str =
-            details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(rhs);
+        const detail::BytesObjBase* lhs_str =
+            detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(lhs);
+        const detail::BytesObjBase* rhs_str =
+            detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(rhs);
         return Bytes::memequal(lhs_str->data, rhs_str->data, lhs_str->size, rhs_str->size);
       }
       if (lhs.data_.type_index >= TypeIndex::kTVMFFIStaticObjectBegin) {
@@ -857,26 +857,26 @@ struct AnyEqual {
       }
       // small string and normal string comparison
       if (lhs.data_.type_index == kTVMFFIStr && rhs.data_.type_index == kTVMFFISmallStr) {
-        const details::BytesObjBase* lhs_str =
-            details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(lhs);
+        const detail::BytesObjBase* lhs_str =
+            detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(lhs);
         return Bytes::memequal(lhs_str->data, rhs.data_.v_bytes, lhs_str->size,
                                rhs.data_.small_str_len);
       }
       if (lhs.data_.type_index == kTVMFFISmallStr && rhs.data_.type_index == kTVMFFIStr) {
-        const details::BytesObjBase* rhs_str =
-            details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(rhs);
+        const detail::BytesObjBase* rhs_str =
+            detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(rhs);
         return Bytes::memequal(lhs.data_.v_bytes, rhs_str->data, lhs.data_.small_str_len,
                                rhs_str->size);
       }
       if (lhs.data_.type_index == kTVMFFIBytes && rhs.data_.type_index == kTVMFFISmallBytes) {
-        const details::BytesObjBase* lhs_bytes =
-            details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(lhs);
+        const detail::BytesObjBase* lhs_bytes =
+            detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(lhs);
         return Bytes::memequal(lhs_bytes->data, rhs.data_.v_bytes, lhs_bytes->size,
                                rhs.data_.small_str_len);
       }
       if (lhs.data_.type_index == kTVMFFISmallBytes && rhs.data_.type_index == kTVMFFIBytes) {
-        const details::BytesObjBase* rhs_bytes =
-            details::AnyUnsafe::CopyFromAnyViewAfterCheck<const details::BytesObjBase*>(rhs);
+        const detail::BytesObjBase* rhs_bytes =
+            detail::AnyUnsafe::CopyFromAnyViewAfterCheck<const detail::BytesObjBase*>(rhs);
         return Bytes::memequal(lhs.data_.v_bytes, rhs_bytes->data, lhs.data_.small_str_len,
                                rhs_bytes->size);
       }
@@ -914,9 +914,9 @@ struct AnyEqual {
       if (TVM_FFI_PREDICT_TRUE(result.type_index == TypeIndex::kTVMFFIBool)) {
         return result.v_int64 != 0;
       }
-      Any error = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
+      Any error = detail::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
       TVM_FFI_ICHECK_EQ(error.type_index(), TypeIndex::kTVMFFIError);
-      throw details::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(error));
+      throw detail::AnyUnsafe::MoveFromAnyAfterCheck<Error>(std::move(error));
     } else {
       // alternatively it can be a ffi.Function object.
       TVM_FFI_ICHECK_EQ(custom_any_equal.type_index, TypeIndex::kTVMFFIFunction);
@@ -932,10 +932,10 @@ struct AnyEqual {
         reinterpret_cast<FCppCall>(func_cell->cpp_call)(custom_any_equal.v_obj, args, 2, &result);
       } else {
         if (func_cell->safe_call(custom_any_equal.v_obj, args, 2, &result) != 0) {
-          throw details::MoveFromSafeCallRaised();
+          throw detail::MoveFromSafeCallRaised();
         }
       }
-      Any result_any = details::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
+      Any result_any = detail::AnyUnsafe::MoveTVMFFIAnyRawToAny(result);
       TVM_FFI_ICHECK(result_any.type_index() == TypeIndex::kTVMFFIBool);
       return result_any.data_.v_int64 != 0;
     }

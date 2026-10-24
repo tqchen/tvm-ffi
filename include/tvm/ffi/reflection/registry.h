@@ -28,7 +28,7 @@
 #include <tvm/ffi/container/map.h>
 #include <tvm/ffi/container/variant.h>
 #include <tvm/ffi/function.h>
-#include <tvm/ffi/function_details.h>
+#include <tvm/ffi/function_detail.h>
 #include <tvm/ffi/reflection/creator.h>
 #include <tvm/ffi/string.h>
 #include <tvm/ffi/type_traits.h>
@@ -47,14 +47,14 @@ namespace ffi {
 /*! \brief Reflection namespace */
 namespace reflection {
 
-namespace details {
+namespace detail {
 template <typename T, typename = void>
 struct HasContainerType : public std::false_type {};
 
 template <typename T>
 struct HasContainerType<T, std::void_t<typename T::ContainerType>> : public std::true_type {};
 
-}  // namespace details
+}  // namespace detail
 
 /*!
  * \brief Types of temporary metadata hold in FieldInfoBuilder and MethodInfoBuilder,
@@ -119,7 +119,7 @@ class Metadata : public InfoTrait {
   }
   /*! \brief Convert the metadata to JSON string */
   static std::string ToJSON(const _MetadataType& metadata) {
-    using ::tvm::ffi::details::StringObj;
+    using ::tvm::ffi::detail::StringObj;
     std::ostringstream os;
     os << "{";
     bool first = true;
@@ -390,7 +390,7 @@ TVM_FFI_INLINE int64_t GetFieldByteOffsetToObject(T Class::* field_ptr) {
   int64_t field_offset_to_class =
       reinterpret_cast<int64_t>(&(static_cast<Class*>(nullptr)->*field_ptr));
   return field_offset_to_class -
-         ::tvm::ffi::details::ObjectUnsafe::GetObjectOffsetToSubclass<Class>();
+         ::tvm::ffi::detail::ObjectUnsafe::GetObjectOffsetToSubclass<Class>();
 }
 
 /// \cond Doxygen_Suppress
@@ -399,7 +399,7 @@ class ReflectionDefBase {
   template <typename T>
   static int FieldGetter(void* field, TVMFFIAny* result) {
     TVM_FFI_SAFE_CALL_BEGIN();
-    *result = ::tvm::ffi::details::AnyUnsafe::MoveAnyToTVMFFIAny(Any(*reinterpret_cast<T*>(field)));
+    *result = ::tvm::ffi::detail::AnyUnsafe::MoveAnyToTVMFFIAny(Any(*reinterpret_cast<T*>(field)));
     TVM_FFI_SAFE_CALL_END();
   }
 
@@ -418,7 +418,7 @@ class ReflectionDefBase {
   static int ObjectCreatorDefault(TVMFFIObjectHandle* result) {
     TVM_FFI_SAFE_CALL_BEGIN();
     ObjectPtr<T> obj = make_object<T>();
-    *result = ::tvm::ffi::details::ObjectUnsafe::MoveObjectPtrToTVMFFIObjectPtr(std::move(obj));
+    *result = ::tvm::ffi::detail::ObjectUnsafe::MoveObjectPtrToTVMFFIObjectPtr(std::move(obj));
     TVM_FFI_SAFE_CALL_END();
   }
 
@@ -426,7 +426,7 @@ class ReflectionDefBase {
   static int ObjectCreatorUnsafeInit(TVMFFIObjectHandle* result) {
     TVM_FFI_SAFE_CALL_BEGIN();
     ObjectPtr<T> obj = make_object<T>(UnsafeInit{});
-    *result = ::tvm::ffi::details::ObjectUnsafe::MoveObjectPtrToTVMFFIObjectPtr(std::move(obj));
+    *result = ::tvm::ffi::detail::ObjectUnsafe::MoveObjectPtrToTVMFFIObjectPtr(std::move(obj));
     TVM_FFI_SAFE_CALL_END();
   }
 
@@ -535,7 +535,7 @@ class GlobalDef : public ReflectionDefBase {
    */
   template <typename Func, typename... Extra>
   GlobalDef& def(const char* name, Func&& func, Extra&&... extra) {
-    using FuncInfo = ::tvm::ffi::details::FunctionInfo<std::decay_t<Func>>;
+    using FuncInfo = ::tvm::ffi::detail::FunctionInfo<std::decay_t<Func>>;
     RegisterFunc(name, ffi::Function::FromTyped(std::forward<Func>(func), std::string(name)),
                  FuncInfo::TypeSchema(), std::forward<Extra>(extra)...);
     return *this;
@@ -556,7 +556,7 @@ class GlobalDef : public ReflectionDefBase {
   template <typename Func, typename... Extra>
   GlobalDef& def_packed(const char* name, Func func, Extra&&... extra) {
     RegisterFunc(name, ffi::Function::FromPacked(func),
-                 ::tvm::ffi::details::TypeSchemaImpl<Function>::v(), std::forward<Extra>(extra)...);
+                 ::tvm::ffi::detail::TypeSchemaImpl<Function>::v(), std::forward<Extra>(extra)...);
     return *this;
   }
 
@@ -576,7 +576,7 @@ class GlobalDef : public ReflectionDefBase {
    */
   template <typename Func, typename... Extra>
   GlobalDef& def_method(const char* name, Func&& func, Extra&&... extra) {
-    using FuncInfo = ::tvm::ffi::details::FunctionInfo<std::decay_t<Func>>;
+    using FuncInfo = ::tvm::ffi::detail::FunctionInfo<std::decay_t<Func>>;
     RegisterFunc(name, GetMethod(std::string(name), std::forward<Func>(func)),
                  FuncInfo::TypeSchema(), std::forward<Extra>(extra)...);
     return *this;
@@ -766,7 +766,7 @@ class ObjectDef : public ReflectionDefBase {
           [creator = info->metadata->creator]() -> ObjectRef {
             TVMFFIObjectHandle handle;
             TVM_FFI_CHECK_SAFE_CALL(creator(&handle));
-            return ObjectRef(::tvm::ffi::details::ObjectUnsafe::ObjectPtrFromOwned<Object>(
+            return ObjectRef(::tvm::ffi::detail::ObjectUnsafe::ObjectPtrFromOwned<Object>(
                 static_cast<TVMFFIObject*>(handle)));
           },
           std::string(type_key_) + "." + type_attr::kNew.name);
@@ -913,12 +913,12 @@ class ObjectDef : public ReflectionDefBase {
    */
   template <typename TSelf>
   TVM_FFI_INLINE ObjectDef& def_convert() {
-    if constexpr (details::HasContainerType<TSelf>::value) {
+    if constexpr (detail::HasContainerType<TSelf>::value) {
       static_assert(std::is_same_v<typename TSelf::ContainerType, Class>,
                     "TSelf::ContainerType must match ObjectDef's object type");
     }
     return def_type_attr(type_attr::kConvert.name,
-                         &details::FFIConvertFromAnyViewToObjectRef<TSelf>);
+                         &detail::FFIConvertFromAnyViewToObjectRef<TSelf>);
   }
 
   /*!
@@ -1015,7 +1015,7 @@ class ObjectDef : public ReflectionDefBase {
     // initialize default value to nullptr
     info.default_value_or_factory = AnyView(nullptr).CopyToTVMFFIAny();
     info.doc = TVMFFIByteArray{nullptr, 0};
-    info.metadata_.emplace_back("type_schema", ::tvm::ffi::details::TypeSchema<T>::v());
+    info.metadata_.emplace_back("type_schema", ::tvm::ffi::detail::TypeSchema<T>::v());
     // apply field info traits
     ((ApplyFieldInfoTrait(&info, std::forward<ExtraArgs>(extra_args)), ...));
     // call register
@@ -1027,7 +1027,7 @@ class ObjectDef : public ReflectionDefBase {
   // register a method
   template <typename Func, typename... Extra>
   void RegisterMethod(const char* name, bool is_static, Func&& func, Extra&&... extra) {
-    using FuncInfo = ::tvm::ffi::details::FunctionInfo<std::decay_t<Func>>;
+    using FuncInfo = ::tvm::ffi::detail::FunctionInfo<std::decay_t<Func>>;
     MethodInfoBuilder info;
     info.name = TVMFFIByteArray{name, std::char_traits<char>::length(name)};
     info.doc = TVMFFIByteArray{nullptr, 0};
@@ -1133,11 +1133,11 @@ class TypeAttrDef : public ReflectionDefBase {
    */
   template <typename TSelf>
   TVM_FFI_INLINE TypeAttrDef& def_convert() {
-    if constexpr (details::HasContainerType<TSelf>::value) {
+    if constexpr (detail::HasContainerType<TSelf>::value) {
       static_assert(std::is_same_v<typename TSelf::ContainerType, Class>,
                     "TSelf::ContainerType must match TypeAttrDef's object type");
     }
-    return def(type_attr::kConvert.name, &details::FFIConvertFromAnyViewToObjectRef<TSelf>);
+    return def(type_attr::kConvert.name, &detail::FFIConvertFromAnyViewToObjectRef<TSelf>);
   }
 
   /*! \brief Register a value using its key's declared type. */
@@ -1189,7 +1189,7 @@ inline void EnsureTypeAttrColumn(AttrKey<T> key) {
 }
 
 /// \cond Doxygen_Suppress
-namespace details {
+namespace detail {
 
 /*!
  * \brief Implementation struct for overload_cast.
@@ -1239,7 +1239,7 @@ struct OverloadCastImpl {
   }
 };
 
-}  // namespace details
+}  // namespace detail
 /// \endcond
 
 /*!
@@ -1295,7 +1295,7 @@ struct OverloadCastImpl {
  * \endcode
  */
 template <typename... Args>
-inline constexpr details::OverloadCastImpl<Args...> overload_cast = {};
+inline constexpr detail::OverloadCastImpl<Args...> overload_cast = {};
 
 /// \cond Doxygen_Suppress
 // `const_`'s trailing underscore triggers RST hyperlink-reference syntax in
