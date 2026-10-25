@@ -134,20 +134,52 @@ def test_find_shared_library_path_extra_lib_paths(tmp_path: Path) -> None:
     lib_file.write_bytes(b"")
 
     result = libinfo.find_shared_library_path(
-        "nonexistent-dist-name", "dummy", extra_lib_paths=[tmp_path]
+        "nonexistent-dist-name", "dummy", extra_lib_paths=[tmp_path / "missing", str(tmp_path)]
     )
 
-    assert isinstance(result, Path)
-    assert result.resolve() == lib_file.resolve()
+    assert isinstance(result, str)
+    assert result == str(lib_file.resolve())
     # Sanity: the result must live under the temp tree, not tvm_ffi's own tree.
-    assert tmp_path.resolve() in result.resolve().parents
+    assert tmp_path.resolve() in Path(result).parents
 
 
 def test_find_shared_library_path_extra_lib_paths_type_error(tmp_path: Path) -> None:
-    """Non-Path elements in ``extra_lib_paths`` raise a TypeError naming the offender."""
-    with pytest.raises(TypeError, match=r"extra_lib_paths\[1\] must be a pathlib\.Path"):
+    """Unsupported elements in ``extra_lib_paths`` raise a TypeError naming the offender."""
+    with pytest.raises(TypeError, match=r"extra_lib_paths\[1\] must be str or pathlib\.Path"):
         libinfo.find_shared_library_path(
             "apache-tvm-ffi",
             "tvm_ffi",
-            extra_lib_paths=[tmp_path, str(tmp_path)],  # ty: ignore[invalid-argument-type]
+            extra_lib_paths=[tmp_path, 123],  # ty: ignore[invalid-argument-type]
         )
+
+
+def test_resolve_first_valid_path(tmp_path: Path) -> None:
+    """Mixed candidates are resolved before applying the predicate in order."""
+    candidates = [str(tmp_path / "missing"), tmp_path]
+    seen = []
+
+    def is_directory(path: Path) -> bool:
+        assert isinstance(path, Path)
+        seen.append(path)
+        return path.is_dir()
+
+    assert libinfo.resolve_first_valid_path(candidates, is_directory) == str(tmp_path.resolve())
+    assert seen == [tmp_path / "missing", tmp_path]
+    assert libinfo.resolve_first_valid_path(candidates, lambda _: False) is None
+    assert libinfo.resolve_first_valid_path(candidates, lambda _: Path("relative")) == "relative"
+
+    def skip_missing(path: Path) -> bool:
+        if not path.is_dir():
+            raise OSError("missing")
+        return True
+
+    assert libinfo.resolve_first_valid_path(candidates, skip_missing) == str(tmp_path.resolve())
+
+
+def test_private_libinfo_compatibility() -> None:
+    """Private callers retain the finder Path return and resolver behavior."""
+    result = libinfo._find_library_by_basename("apache-tvm-ffi", "tvm_ffi")
+    assert isinstance(result, Path)
+    assert result.parent.is_dir()
+    assert str(result) == libinfo.find_shared_library_path("apache-tvm-ffi", "tvm_ffi")
+    assert libinfo._resolve_and_validate([result], lambda _: True) == str(result)
