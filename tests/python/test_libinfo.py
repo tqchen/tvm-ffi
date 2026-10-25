@@ -128,12 +128,12 @@ def _platform_lib_filename(target_name: str) -> str:
     return f"lib{target_name}.so"
 
 
-def test_find_library_by_basename_extra_lib_paths(tmp_path: Path) -> None:
+def test_find_shared_library_path_extra_lib_paths(tmp_path: Path) -> None:
     """A directory passed via ``extra_lib_paths`` is searched in the dev fallback."""
     lib_file = tmp_path / _platform_lib_filename("dummy")
     lib_file.write_bytes(b"")
 
-    result = libinfo._find_library_by_basename(
+    result = libinfo.find_shared_library_path(
         "nonexistent-dist-name", "dummy", extra_lib_paths=[tmp_path]
     )
 
@@ -143,10 +143,10 @@ def test_find_library_by_basename_extra_lib_paths(tmp_path: Path) -> None:
     assert tmp_path.resolve() in result.resolve().parents
 
 
-def test_find_library_by_basename_extra_lib_paths_type_error(tmp_path: Path) -> None:
+def test_find_shared_library_path_extra_lib_paths_type_error(tmp_path: Path) -> None:
     """Non-Path elements in ``extra_lib_paths`` raise a TypeError naming the offender."""
     with pytest.raises(TypeError, match=r"extra_lib_paths\[1\] must be a pathlib\.Path"):
-        libinfo._find_library_by_basename(
+        libinfo.find_shared_library_path(
             "apache-tvm-ffi",
             "tvm_ffi",
             extra_lib_paths=[tmp_path, str(tmp_path)],  # ty: ignore[invalid-argument-type]

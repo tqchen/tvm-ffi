@@ -133,6 +133,8 @@ C++ integration helpers for building and loading inline modules.
   cpp.build_inline
   cpp.load
   cpp.build
+  libinfo.resolve_first_valid_path
+  libinfo.find_shared_library_path
   libinfo.load_lib_module
 
 NVRTC Utilities

@@ -34,214 +34,62 @@ if TYPE_CHECKING:
     from .module import Module
 
 
-def find_libtvm_ffi() -> str:
-    """Find libtvm_ffi.
+def resolve_first_valid_path(
+    paths: list[Path],
+    cond: Callable[[Path], bool | Path],
+) -> str | None:
+    """Resolve paths in order and return the first result accepted by a condition.
+
+    Parameters
+    ----------
+    paths
+        Candidate paths to resolve and check, in search order.
+    cond
+        Function called with each resolved :class:`pathlib.Path`. Return ``True``
+        to accept that resolved path, ``False`` to try the next candidate, or a
+        :class:`pathlib.Path` to return that path instead. A returned path is
+        converted to a string without further resolution or validation.
 
     Returns
     -------
     path
-        The full path to the located library.
+        The first accepted path as a string, or ``None`` if no candidate is
+        accepted. Candidates for which resolution or ``cond`` raises
+        :class:`OSError` or :class:`AssertionError` are skipped; other exceptions
+        propagate to the caller.
 
     """
-    candidate = _find_library_by_basename("apache-tvm-ffi", "tvm_ffi")
-    if ret := _resolve_and_validate([candidate], cond=lambda _: True):
-        return ret
-    raise RuntimeError("Cannot find libtvm_ffi")
-
-
-def find_windows_implib() -> str:
-    """Find and return the Windows import library path for tvm_ffi.lib."""
-    # implib = _find_library_by_basename("apache-tvm-ffi", "tvm_ffi").parent / "tvm_ffi.lib"
-    # ret = _resolve_to_str(implib)
-    candidate = _find_library_by_basename("apache-tvm-ffi", "tvm_ffi").parent / "tvm_ffi.lib"
-    if ret := _resolve_and_validate([candidate], cond=lambda _: True):
-        return ret
-    raise RuntimeError("Cannot find implib tvm_ffi.lib")
-
-
-def find_source_path() -> str:
-    """Find packaged source home path."""
-    if ret := _resolve_and_validate(
-        paths=[
-            _rel_top_directory(),
-            _dev_top_directory(),
-        ],
-        cond=lambda p: (p / "src").is_dir(),
-    ):
-        return ret
-    raise RuntimeError("Cannot find home path.")
-
-
-def find_cmake_path() -> str:
-    """Find the preferred cmake path."""
-    if ret := _resolve_and_validate(
-        paths=[
-            _rel_top_directory() / "share" / "cmake" / "tvm_ffi",  # Standard install
-            _dev_top_directory() / "cmake",  # Development mode
-        ],
-        cond=lambda p: p.is_dir(),
-    ):
-        return ret
-    raise RuntimeError("Cannot find cmake path.")
-
-
-def find_include_path() -> str:
-    """Find header files for C compilation."""
-    if ret := _resolve_and_validate(
-        paths=[
-            _rel_top_directory() / "include",
-            _dev_top_directory() / "include",
-        ],
-        cond=lambda p: p.is_dir(),
-    ):
-        return ret
-    raise RuntimeError("Cannot find include path.")
-
-
-def find_dlpack_include_path() -> str:
-    """Find dlpack header files for C compilation."""
-    if ret := _resolve_and_validate(
-        paths=[
-            _rel_top_directory() / "include",
-            _dev_top_directory() / "3rdparty" / "dlpack" / "include",
-        ],
-        cond=lambda p: (p / "dlpack").is_dir(),
-    ):
-        return ret
-    raise RuntimeError("Cannot find dlpack include path.")
-
-
-def find_cython_lib() -> str:
-    """Find the path to tvm cython."""
-    # Locate the extension without importing it: importing ``tvm_ffi.core``
-    # has side effects (e.g. it optionally imports torch), which is
-    # undesirable for lightweight callers such as ``tvm-ffi-config``.
-    spec = importlib.util.find_spec("tvm_ffi.core")
-    if spec is not None and spec.origin is not None:
+    for path in paths:
         try:
-            return str(Path(spec.origin).resolve())
-        except OSError:
-            pass
-    raise RuntimeError("Cannot find tvm cython path.")
+            resolved = path.resolve()
+            ret = cond(resolved)
+        except (OSError, AssertionError):
+            continue
+        if isinstance(ret, Path):
+            return str(ret)
+        elif ret is True:
+            return str(resolved)
+    return None
 
 
-def find_python_helper_include_path() -> str:
-    """Find header files for C compilation."""
-    if ret := _resolve_and_validate(
-        paths=[
-            _rel_top_directory() / "include",
-            _dev_top_directory() / "python" / "tvm_ffi" / "cython",
-        ],
-        cond=lambda p: (p / "tvm_ffi_python_helpers.h").is_file(),
-    ):
-        return ret
-    raise RuntimeError("Cannot find python helper include path.")
-
-
-def include_paths() -> list[str]:
-    """Find all include paths needed for FFI related compilation."""
-    return sorted(
-        {
-            find_include_path(),
-            find_dlpack_include_path(),
-            find_python_helper_include_path(),
-        }
-    )
-
-
-def load_lib_ctypes(
-    package: str,
-    target_name: str,
-    mode: str,
-    extra_lib_paths: list[Path] | None = None,
-) -> ctypes.CDLL:
-    """Load the tvm_ffi shared library by searching likely paths.
-
-    Parameters
-    ----------
-    package
-        The package name where the library is expected to be found. For example,
-        ``"apache-tvm-ffi"`` is the package name of `tvm-ffi`.
-    target_name
-        Name of the CMake target, e.g., ``"tvm_ffi"``. It is used to derive the platform-specific
-        shared library name, e.g., ``"libtvm_ffi.so"`` on Linux, ``"tvm_ffi.dll"`` on Windows.
-    mode
-        The mode to load the shared library. See `ctypes.${MODE}` for details.
-        Usually it is either ``"RTLD_LOCAL"`` or ``"RTLD_GLOBAL"``.
-    extra_lib_paths
-        Optional list of additional directories to search for the shared library
-        before falling back to the built-in dev candidates and PATH-derived dirs.
-        Useful when the caller's package does not ship a wheel-style ``RECORD``
-        but knows where its build artifacts land (e.g. ``<worktree>/build/lib``).
-        Every element must be a :class:`pathlib.Path`.
-
-    Returns
-    -------
-    The loaded shared library.
-
-    """
-    lib_path: Path = _find_library_by_basename(package, target_name, extra_lib_paths)
-    # The dll search path need to be added explicitly in windows
-    if sys.platform.startswith("win32"):
-        os.add_dll_directory(str(lib_path.parent))
-    return ctypes.CDLL(str(lib_path), getattr(ctypes, mode))
-
-
-def load_lib_module(
-    package: str,
-    target_name: str,
-    keep_module_alive: bool = True,
-    extra_lib_paths: list[Path] | None = None,
-) -> Module:
-    """Load the tvm_ffi shared library by searching likely paths.
-
-    Parameters
-    ----------
-    package
-        The package name where the library is expected to be found. For example,
-        ``"apache-tvm-ffi"`` is the package name of `tvm-ffi`.
-
-    target_name
-        Name of the CMake target, e.g., ``"tvm_ffi"``. It is used to derive the platform-specific
-        shared library name, e.g., ``"libtvm_ffi.so"`` on Linux, ``"tvm_ffi.dll"`` on Windows.
-
-    keep_module_alive
-        Whether to keep the loaded module alive to prevent it from being unloaded.
-
-    extra_lib_paths
-        Optional list of additional directories to search for the shared library
-        before falling back to the built-in dev candidates and PATH-derived dirs.
-        Useful when the caller's package does not ship a wheel-style ``RECORD``
-        but knows where its build artifacts land (e.g. ``<worktree>/build/lib``).
-        Every element must be a :class:`pathlib.Path`.
-
-    Returns
-    -------
-    The loaded shared library.
-
-    """
-    from .module import load_module  # noqa: PLC0415
-
-    lib_path: Path = _find_library_by_basename(package, target_name, extra_lib_paths)
-    # The dll search path need to be added explicitly in windows
-    if sys.platform.startswith("win32"):
-        os.add_dll_directory(str(lib_path.parent))
-    return load_module(lib_path, keep_module_alive=keep_module_alive)
-
-
-def _find_library_by_basename(  # noqa: PLR0912
+def find_shared_library_path(  # noqa: PLR0912
     package: str,
     target_name: str,
     extra_lib_paths: list[Path] | None = None,
 ) -> Path:
-    """Find a shared library by target_name name across known directories.
+    """Find a platform-specific shared library and return its resolved path.
 
     Parameters
     ----------
     package
-        The package name where the library is expected to be found.
+        Distribution name to inspect with :mod:`importlib.metadata`, for example
+        ``"apache-tvm-ffi"``. Matching entries in its wheel ``RECORD`` are
+        searched before any fallback directories.
     target_name
-        Base name (e.g., ``"tvm_ffi"`` or ``"tvm_ffi_testing"``).
+        Library basename without a platform-specific prefix or extension, for
+        example ``"tvm_ffi"``. This becomes ``libtvm_ffi.so`` on Linux,
+        ``tvm_ffi.dll`` on Windows, or ``libtvm_ffi.dylib`` (with ``.so`` also
+        accepted) on macOS.
     extra_lib_paths
         Optional list of additional directories to search **before** the
         built-in self-anchored fallback dirs and the ``PATH``/
@@ -254,7 +102,10 @@ def _find_library_by_basename(  # noqa: PLR0912
     Returns
     -------
     path
-        The full path to the located library.
+        The resolved :class:`pathlib.Path` of the first matching library. After
+        distribution metadata, search order is ``extra_lib_paths``, the
+        built-in library/build directories, then platform-specific library
+        environment variables and ``PATH``. Resolution errors are skipped.
 
     Raises
     ------
@@ -343,6 +194,201 @@ def _find_library_by_basename(  # noqa: PLR0912
     )
 
 
+def find_libtvm_ffi() -> str:
+    """Find libtvm_ffi.
+
+    Returns
+    -------
+    path
+        The full path to the located library.
+
+    """
+    candidate = find_shared_library_path("apache-tvm-ffi", "tvm_ffi")
+    if ret := resolve_first_valid_path([candidate], cond=lambda _: True):
+        return ret
+    raise RuntimeError("Cannot find libtvm_ffi")
+
+
+def find_windows_implib() -> str:
+    """Find and return the Windows import library path for tvm_ffi.lib."""
+    # implib = find_shared_library_path("apache-tvm-ffi", "tvm_ffi").parent / "tvm_ffi.lib"
+    # ret = _resolve_to_str(implib)
+    candidate = find_shared_library_path("apache-tvm-ffi", "tvm_ffi").parent / "tvm_ffi.lib"
+    if ret := resolve_first_valid_path([candidate], cond=lambda _: True):
+        return ret
+    raise RuntimeError("Cannot find implib tvm_ffi.lib")
+
+
+def find_source_path() -> str:
+    """Find packaged source home path."""
+    if ret := resolve_first_valid_path(
+        paths=[
+            _rel_top_directory(),
+            _dev_top_directory(),
+        ],
+        cond=lambda p: (p / "src").is_dir(),
+    ):
+        return ret
+    raise RuntimeError("Cannot find home path.")
+
+
+def find_cmake_path() -> str:
+    """Find the preferred cmake path."""
+    if ret := resolve_first_valid_path(
+        paths=[
+            _rel_top_directory() / "share" / "cmake" / "tvm_ffi",  # Standard install
+            _dev_top_directory() / "cmake",  # Development mode
+        ],
+        cond=lambda p: p.is_dir(),
+    ):
+        return ret
+    raise RuntimeError("Cannot find cmake path.")
+
+
+def find_include_path() -> str:
+    """Find header files for C compilation."""
+    if ret := resolve_first_valid_path(
+        paths=[
+            _rel_top_directory() / "include",
+            _dev_top_directory() / "include",
+        ],
+        cond=lambda p: p.is_dir(),
+    ):
+        return ret
+    raise RuntimeError("Cannot find include path.")
+
+
+def find_dlpack_include_path() -> str:
+    """Find dlpack header files for C compilation."""
+    if ret := resolve_first_valid_path(
+        paths=[
+            _rel_top_directory() / "include",
+            _dev_top_directory() / "3rdparty" / "dlpack" / "include",
+        ],
+        cond=lambda p: (p / "dlpack").is_dir(),
+    ):
+        return ret
+    raise RuntimeError("Cannot find dlpack include path.")
+
+
+def find_cython_lib() -> str:
+    """Find the path to tvm cython."""
+    # Locate the extension without importing it: importing ``tvm_ffi.core``
+    # has side effects (e.g. it optionally imports torch), which is
+    # undesirable for lightweight callers such as ``tvm-ffi-config``.
+    spec = importlib.util.find_spec("tvm_ffi.core")
+    if spec is not None and spec.origin is not None:
+        try:
+            return str(Path(spec.origin).resolve())
+        except OSError:
+            pass
+    raise RuntimeError("Cannot find tvm cython path.")
+
+
+def find_python_helper_include_path() -> str:
+    """Find header files for C compilation."""
+    if ret := resolve_first_valid_path(
+        paths=[
+            _rel_top_directory() / "include",
+            _dev_top_directory() / "python" / "tvm_ffi" / "cython",
+        ],
+        cond=lambda p: (p / "tvm_ffi_python_helpers.h").is_file(),
+    ):
+        return ret
+    raise RuntimeError("Cannot find python helper include path.")
+
+
+def include_paths() -> list[str]:
+    """Find all include paths needed for FFI related compilation."""
+    return sorted(
+        {
+            find_include_path(),
+            find_dlpack_include_path(),
+            find_python_helper_include_path(),
+        }
+    )
+
+
+def load_lib_ctypes(
+    package: str,
+    target_name: str,
+    mode: str,
+    extra_lib_paths: list[Path] | None = None,
+) -> ctypes.CDLL:
+    """Load the tvm_ffi shared library by searching likely paths.
+
+    Parameters
+    ----------
+    package
+        The package name where the library is expected to be found. For example,
+        ``"apache-tvm-ffi"`` is the package name of `tvm-ffi`.
+    target_name
+        Name of the CMake target, e.g., ``"tvm_ffi"``. It is used to derive the platform-specific
+        shared library name, e.g., ``"libtvm_ffi.so"`` on Linux, ``"tvm_ffi.dll"`` on Windows.
+    mode
+        The mode to load the shared library. See `ctypes.${MODE}` for details.
+        Usually it is either ``"RTLD_LOCAL"`` or ``"RTLD_GLOBAL"``.
+    extra_lib_paths
+        Optional list of additional directories to search for the shared library
+        before falling back to the built-in dev candidates and PATH-derived dirs.
+        Useful when the caller's package does not ship a wheel-style ``RECORD``
+        but knows where its build artifacts land (e.g. ``<worktree>/build/lib``).
+        Every element must be a :class:`pathlib.Path`.
+
+    Returns
+    -------
+    The loaded shared library.
+
+    """
+    lib_path: Path = find_shared_library_path(package, target_name, extra_lib_paths)
+    # The dll search path need to be added explicitly in windows
+    if sys.platform.startswith("win32"):
+        os.add_dll_directory(str(lib_path.parent))
+    return ctypes.CDLL(str(lib_path), getattr(ctypes, mode))
+
+
+def load_lib_module(
+    package: str,
+    target_name: str,
+    keep_module_alive: bool = True,
+    extra_lib_paths: list[Path] | None = None,
+) -> Module:
+    """Load the tvm_ffi shared library by searching likely paths.
+
+    Parameters
+    ----------
+    package
+        The package name where the library is expected to be found. For example,
+        ``"apache-tvm-ffi"`` is the package name of `tvm-ffi`.
+
+    target_name
+        Name of the CMake target, e.g., ``"tvm_ffi"``. It is used to derive the platform-specific
+        shared library name, e.g., ``"libtvm_ffi.so"`` on Linux, ``"tvm_ffi.dll"`` on Windows.
+
+    keep_module_alive
+        Whether to keep the loaded module alive to prevent it from being unloaded.
+
+    extra_lib_paths
+        Optional list of additional directories to search for the shared library
+        before falling back to the built-in dev candidates and PATH-derived dirs.
+        Useful when the caller's package does not ship a wheel-style ``RECORD``
+        but knows where its build artifacts land (e.g. ``<worktree>/build/lib``).
+        Every element must be a :class:`pathlib.Path`.
+
+    Returns
+    -------
+    The loaded shared library.
+
+    """
+    from .module import load_module  # noqa: PLC0415
+
+    lib_path: Path = find_shared_library_path(package, target_name, extra_lib_paths)
+    # The dll search path need to be added explicitly in windows
+    if sys.platform.startswith("win32"):
+        os.add_dll_directory(str(lib_path.parent))
+    return load_module(lib_path, keep_module_alive=keep_module_alive)
+
+
 def _split_env_var(env_var: str, split: str) -> list[str]:
     """Split an environment variable string.
 
@@ -375,23 +421,6 @@ def _dev_top_directory() -> Path:
     return _rel_top_directory() / ".." / ".."
 
 
-def _resolve_and_validate(
-    paths: list[Path],
-    cond: Callable[[Path], bool | Path],
-) -> str | None:
-    """For all paths that resolve properly, find the 1st one that meets the specified condition.
-
-    M. B. This code path gracefully handles broken paths, symlinks, or permission issues,
-    and is required for robust library discovery in all public APIs in this file.
-    """
-    for path in paths:
-        try:
-            resolved = path.resolve()
-            ret = cond(resolved)
-        except (OSError, AssertionError):
-            continue
-        if isinstance(ret, Path):
-            return str(ret)
-        elif ret is True:
-            return str(resolved)
-    return None
+# Compatibility for downstream callers of the former private helpers.
+_resolve_and_validate = resolve_first_valid_path
+_find_library_by_basename = find_shared_library_path
