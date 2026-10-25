@@ -34,181 +34,6 @@ if TYPE_CHECKING:
     from .module import Module
 
 
-def _resolve_and_validate(
-    paths: list[Path],
-    cond: Callable[[Path], bool | Path],
-) -> str | None:
-    """Resolve paths in order and return the first result accepted by a condition.
-
-    Parameters
-    ----------
-    paths
-        Candidate :class:`pathlib.Path` objects to resolve and check, in search order.
-    cond
-        Function called with each resolved :class:`pathlib.Path`. Return ``True``
-        to accept that resolved path, ``False`` to try the next candidate, or a
-        :class:`pathlib.Path` to return that path instead. A returned path is
-        converted to a string without further resolution or validation.
-
-    Returns
-    -------
-    path
-        The first accepted path as a string, or ``None`` if no candidate is
-        accepted. Candidates for which resolution or ``cond`` raises
-        :class:`OSError` or :class:`AssertionError` are skipped; other exceptions
-        propagate to the caller.
-
-    """
-    for path in paths:
-        try:
-            resolved = path.resolve()
-            ret = cond(resolved)
-        except (OSError, AssertionError):
-            continue
-        if isinstance(ret, Path):
-            return str(ret)
-        elif ret is True:
-            return str(resolved)
-    return None
-
-
-def _find_library_by_basename(  # noqa: PLR0912
-    package: str,
-    target_name: str,
-    extra_lib_paths: list[Path] | None = None,
-    *,
-    use_fallback_build_path: bool = True,
-    use_env_path: bool = True,
-) -> Path:
-    """Find a platform-specific shared library and return its resolved path.
-
-    Parameters
-    ----------
-    package
-        Distribution name to inspect with :mod:`importlib.metadata`, for example
-        ``"apache-tvm-ffi"``. Matching entries in its wheel ``RECORD`` are
-        searched before any fallback directories, regardless of
-        ``use_fallback_build_path`` and ``use_env_path``.
-    target_name
-        Library basename without a platform-specific prefix or extension, for
-        example ``"tvm_ffi"``. This becomes ``libtvm_ffi.so`` on Linux,
-        ``tvm_ffi.dll`` on Windows, or ``libtvm_ffi.dylib`` (with ``.so`` also
-        accepted) on macOS.
-    extra_lib_paths
-        Optional list of additional directories to search **before** the
-        built-in self-anchored fallback dirs and the ``PATH``/
-        ``LD_LIBRARY_PATH``/``DYLD_LIBRARY_PATH``-derived dirs. Caller-supplied
-        directories take precedence over the built-ins, so a foreign caller
-        (e.g. ``package="tvm"``) can point at its own build tree without
-        relying on ``tvm_ffi``'s file location. Every element must be a
-        :class:`pathlib.Path`.
-    use_fallback_build_path
-        If ``True``, include the built-in development/build/lib fallback
-        directories after distribution metadata and ``extra_lib_paths``.
-        This does not control installed paths found through distribution metadata.
-    use_env_path
-        If ``True``, include platform-specific library environment variables
-        and ``PATH`` after the other search directories. Independent of
-        ``use_fallback_build_path``; metadata and explicit directories are
-        always searched.
-
-    Returns
-    -------
-    path
-        The resolved :class:`pathlib.Path` of the first matching library. After
-        distribution metadata, search order is ``extra_lib_paths``, the
-        built-in library/build directories, then platform-specific library
-        environment variables and ``PATH``. Resolution errors are skipped.
-
-    Raises
-    ------
-    TypeError
-        If any element of ``extra_lib_paths`` is not a :class:`pathlib.Path`.
-    RuntimeError
-        If the library cannot be found in any of the candidate directories.
-        The error message lists every directory searched.
-
-    """
-    if extra_lib_paths is not None:
-        for i, p in enumerate(extra_lib_paths):
-            if not isinstance(p, Path):
-                raise TypeError(
-                    f"extra_lib_paths[{i}] must be a pathlib.Path, got {type(p).__name__}: {p!r}"
-                )
-
-    if sys.platform.startswith("win32"):
-        lib_dll_names = (f"{target_name}.dll",)
-    elif sys.platform.startswith("darwin"):
-        # Prefer dylib, also allow .so for some toolchains
-        lib_dll_names = (f"lib{target_name}.dylib", f"lib{target_name}.so")
-    else:  # Linux, FreeBSD, etc
-        lib_dll_names = (f"lib{target_name}.so",)
-
-    # Use `importlib.metadata` is the most reliable way to find package data files
-    try:
-        dist: im.PathDistribution = im.distribution(package)  # ty: ignore[invalid-assignment]
-        record = dist.read_text("RECORD") or ""
-        for line in record.splitlines():
-            partial_path, *_ = line.split(",")
-            if partial_path.endswith(lib_dll_names):
-                try:
-                    path = (dist._path.parent / partial_path).resolve()
-                except OSError:
-                    continue
-                if path.name in lib_dll_names:
-                    return path
-    except (im.PackageNotFoundError, OSError):
-        # Distribution metadata may be missing when the caller's package is on
-        # PYTHONPATH without a wheel install. Fall through to the dev fallback.
-        pass
-
-    # **Fallback**. it's possible that the library is not built as part of Python ecosystem,
-    # e.g. Use PYTHONPATH to point to dev package, and CMake + Makefiles to build the shared library.
-    dll_paths: list[Path] = []
-
-    # Case 1. Caller-supplied directories take precedence — these let a foreign
-    # caller (e.g. ``package="tvm"``) point at its own build tree without
-    # relying on ``tvm_ffi``'s file location.
-    if extra_lib_paths is not None:
-        dll_paths.extend(extra_lib_paths)
-
-    if use_fallback_build_path:
-        # Case 2. Built-in self-anchored fallback (back-compat for the self-call).
-        dll_paths.extend(
-            [
-                _rel_top_directory() / "build" / "lib",
-                _rel_top_directory() / "lib",
-                _dev_top_directory() / "build" / "lib",
-                _dev_top_directory() / "lib",
-            ]
-        )
-
-    if use_env_path:
-        # Case 3. PATH-related environment variables.
-        if sys.platform.startswith("win32"):
-            dll_paths.extend(Path(p) for p in _split_env_var("PATH", ";"))
-        elif sys.platform.startswith("darwin"):
-            dll_paths.extend(Path(p) for p in _split_env_var("DYLD_LIBRARY_PATH", ":"))
-            dll_paths.extend(Path(p) for p in _split_env_var("PATH", ":"))
-        else:
-            dll_paths.extend(Path(p) for p in _split_env_var("LD_LIBRARY_PATH", ":"))
-            dll_paths.extend(Path(p) for p in _split_env_var("PATH", ":"))
-
-    # Search for the library in candidate directories
-    for dll_dir in dll_paths:
-        for lib_dll_name in lib_dll_names:
-            try:
-                path = (dll_dir / lib_dll_name).resolve()
-                if path.is_file():
-                    return path
-            except OSError:
-                continue
-    raise RuntimeError(
-        f"Cannot find library {', '.join(lib_dll_names)}; "
-        f"searched directories:\n  " + "\n  ".join(str(p) for p in dll_paths)
-    )
-
-
 def find_libtvm_ffi() -> str:
     """Find libtvm_ffi.
 
@@ -404,6 +229,143 @@ def load_lib_module(
     return load_module(lib_path, keep_module_alive=keep_module_alive)
 
 
+def _find_library_by_basename(  # noqa: PLR0912
+    package: str,
+    target_name: str,
+    extra_lib_paths: list[Path] | None = None,
+    *,
+    use_fallback_build_path: bool = True,
+    use_env_path: bool = True,
+) -> Path:
+    """Find a platform-specific shared library and return its resolved path.
+
+    Parameters
+    ----------
+    package
+        Distribution name to inspect with :mod:`importlib.metadata`, for example
+        ``"apache-tvm-ffi"``. Matching entries in its wheel ``RECORD`` are
+        searched before any fallback directories, regardless of
+        ``use_fallback_build_path`` and ``use_env_path``.
+    target_name
+        Library basename without a platform-specific prefix or extension, for
+        example ``"tvm_ffi"``. This becomes ``libtvm_ffi.so`` on Linux,
+        ``tvm_ffi.dll`` on Windows, or ``libtvm_ffi.dylib`` (with ``.so`` also
+        accepted) on macOS.
+    extra_lib_paths
+        Optional list of additional directories to search **before** the
+        built-in self-anchored fallback dirs and the ``PATH``/
+        ``LD_LIBRARY_PATH``/``DYLD_LIBRARY_PATH``-derived dirs. Caller-supplied
+        directories take precedence over the built-ins, so a foreign caller
+        (e.g. ``package="tvm"``) can point at its own build tree without
+        relying on ``tvm_ffi``'s file location. Every element must be a
+        :class:`pathlib.Path`.
+    use_fallback_build_path
+        If ``True``, include the built-in development/build/lib fallback
+        directories after distribution metadata and ``extra_lib_paths``.
+        This does not control installed paths found through distribution metadata.
+    use_env_path
+        If ``True``, include platform-specific library environment variables
+        and ``PATH`` after the other search directories. Independent of
+        ``use_fallback_build_path``; metadata and explicit directories are
+        always searched.
+
+    Returns
+    -------
+    path
+        The resolved :class:`pathlib.Path` of the first matching library. After
+        distribution metadata, search order is ``extra_lib_paths``, the
+        built-in library/build directories, then platform-specific library
+        environment variables and ``PATH``. Resolution errors are skipped.
+
+    Raises
+    ------
+    TypeError
+        If any element of ``extra_lib_paths`` is not a :class:`pathlib.Path`.
+    RuntimeError
+        If the library cannot be found in any of the candidate directories.
+        The error message lists every directory searched.
+
+    """
+    if extra_lib_paths is not None:
+        for i, p in enumerate(extra_lib_paths):
+            if not isinstance(p, Path):
+                raise TypeError(
+                    f"extra_lib_paths[{i}] must be a pathlib.Path, got {type(p).__name__}: {p!r}"
+                )
+
+    if sys.platform.startswith("win32"):
+        lib_dll_names = (f"{target_name}.dll",)
+    elif sys.platform.startswith("darwin"):
+        # Prefer dylib, also allow .so for some toolchains
+        lib_dll_names = (f"lib{target_name}.dylib", f"lib{target_name}.so")
+    else:  # Linux, FreeBSD, etc
+        lib_dll_names = (f"lib{target_name}.so",)
+
+    # Use `importlib.metadata` is the most reliable way to find package data files
+    try:
+        dist: im.PathDistribution = im.distribution(package)  # ty: ignore[invalid-assignment]
+        record = dist.read_text("RECORD") or ""
+        for line in record.splitlines():
+            partial_path, *_ = line.split(",")
+            if partial_path.endswith(lib_dll_names):
+                try:
+                    path = (dist._path.parent / partial_path).resolve()
+                except OSError:
+                    continue
+                if path.name in lib_dll_names:
+                    return path
+    except (im.PackageNotFoundError, OSError):
+        # Distribution metadata may be missing when the caller's package is on
+        # PYTHONPATH without a wheel install. Fall through to the dev fallback.
+        pass
+
+    # **Fallback**. it's possible that the library is not built as part of Python ecosystem,
+    # e.g. Use PYTHONPATH to point to dev package, and CMake + Makefiles to build the shared library.
+    dll_paths: list[Path] = []
+
+    # Case 1. Caller-supplied directories take precedence — these let a foreign
+    # caller (e.g. ``package="tvm"``) point at its own build tree without
+    # relying on ``tvm_ffi``'s file location.
+    if extra_lib_paths is not None:
+        dll_paths.extend(extra_lib_paths)
+
+    if use_fallback_build_path:
+        # Case 2. Built-in self-anchored fallback (back-compat for the self-call).
+        dll_paths.extend(
+            [
+                _rel_top_directory() / "build" / "lib",
+                _rel_top_directory() / "lib",
+                _dev_top_directory() / "build" / "lib",
+                _dev_top_directory() / "lib",
+            ]
+        )
+
+    if use_env_path:
+        # Case 3. PATH-related environment variables.
+        if sys.platform.startswith("win32"):
+            dll_paths.extend(Path(p) for p in _split_env_var("PATH", ";"))
+        elif sys.platform.startswith("darwin"):
+            dll_paths.extend(Path(p) for p in _split_env_var("DYLD_LIBRARY_PATH", ":"))
+            dll_paths.extend(Path(p) for p in _split_env_var("PATH", ":"))
+        else:
+            dll_paths.extend(Path(p) for p in _split_env_var("LD_LIBRARY_PATH", ":"))
+            dll_paths.extend(Path(p) for p in _split_env_var("PATH", ":"))
+
+    # Search for the library in candidate directories
+    for dll_dir in dll_paths:
+        for lib_dll_name in lib_dll_names:
+            try:
+                path = (dll_dir / lib_dll_name).resolve()
+                if path.is_file():
+                    return path
+            except OSError:
+                continue
+    raise RuntimeError(
+        f"Cannot find library {', '.join(lib_dll_names)}; "
+        f"searched directories:\n  " + "\n  ".join(str(p) for p in dll_paths)
+    )
+
+
 def _split_env_var(env_var: str, split: str) -> list[str]:
     """Split an environment variable string.
 
@@ -434,3 +396,41 @@ def _rel_top_directory() -> Path:
 def _dev_top_directory() -> Path:
     """Get the top-level development directory."""
     return _rel_top_directory() / ".." / ".."
+
+
+def _resolve_and_validate(
+    paths: list[Path],
+    cond: Callable[[Path], bool | Path],
+) -> str | None:
+    """Resolve paths in order and return the first result accepted by a condition.
+
+    Parameters
+    ----------
+    paths
+        Candidate :class:`pathlib.Path` objects to resolve and check, in search order.
+    cond
+        Function called with each resolved :class:`pathlib.Path`. Return ``True``
+        to accept that resolved path, ``False`` to try the next candidate, or a
+        :class:`pathlib.Path` to return that path instead. A returned path is
+        converted to a string without further resolution or validation.
+
+    Returns
+    -------
+    path
+        The first accepted path as a string, or ``None`` if no candidate is
+        accepted. Candidates for which resolution or ``cond`` raises
+        :class:`OSError` or :class:`AssertionError` are skipped; other exceptions
+        propagate to the caller.
+
+    """
+    for path in paths:
+        try:
+            resolved = path.resolve()
+            ret = cond(resolved)
+        except (OSError, AssertionError):
+            continue
+        if isinstance(ret, Path):
+            return str(ret)
+        elif ret is True:
+            return str(resolved)
+    return None
