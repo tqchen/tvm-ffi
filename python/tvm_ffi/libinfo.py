@@ -78,7 +78,10 @@ def find_shared_library_path(  # noqa: PLR0912
     package: str,
     target_name: str,
     extra_lib_paths: list[str | Path] | None = None,
-) -> str:
+    *,
+    allow_missing: bool = False,
+    use_default_paths: bool = True,
+) -> str | None:
     """Find a platform-specific shared library and return its resolved path.
 
     Parameters
@@ -86,7 +89,8 @@ def find_shared_library_path(  # noqa: PLR0912
     package
         Distribution name to inspect with :mod:`importlib.metadata`, for example
         ``"apache-tvm-ffi"``. Matching entries in its wheel ``RECORD`` are
-        searched before any fallback directories.
+        searched before any fallback directories, including when
+        ``use_default_paths=False``.
     target_name
         Library basename without a platform-specific prefix or extension, for
         example ``"tvm_ffi"``. This becomes ``libtvm_ffi.so`` on Linux,
@@ -100,6 +104,14 @@ def find_shared_library_path(  # noqa: PLR0912
         (e.g. ``package="tvm"``) can point at its own build tree without
         relying on ``tvm_ffi``'s file location. Elements may be strings or
         :class:`pathlib.Path` objects and are normalized to paths internally.
+    allow_missing
+        If ``True``, return ``None`` when no library is found instead of raising
+        :class:`RuntimeError`. Invalid inputs still raise an exception.
+    use_default_paths
+        If ``True``, search built-in directories and environment paths after
+        distribution metadata and ``extra_lib_paths``. If ``False``, skip only
+        those default directories; metadata and explicit directories are still
+        searched, in that order.
 
     Returns
     -------
@@ -108,6 +120,7 @@ def find_shared_library_path(  # noqa: PLR0912
         distribution metadata, search order is ``extra_lib_paths``, the
         built-in library/build directories, then platform-specific library
         environment variables and ``PATH``. Resolution errors are skipped.
+        Return ``None`` when no match is found and ``allow_missing=True``.
 
     Raises
     ------
@@ -115,7 +128,7 @@ def find_shared_library_path(  # noqa: PLR0912
         If any element of ``extra_lib_paths`` is neither a string nor a
         :class:`pathlib.Path`.
     RuntimeError
-        If the library cannot be found in any of the candidate directories.
+        If no library is found and ``allow_missing=False``.
         The error message lists every directory searched.
 
     """
@@ -162,25 +175,26 @@ def find_shared_library_path(  # noqa: PLR0912
     if extra_lib_paths is not None:
         dll_paths.extend(Path(p) for p in extra_lib_paths)
 
-    # Case 2. Built-in self-anchored fallback (back-compat for the self-call).
-    dll_paths.extend(
-        [
-            _rel_top_directory() / "build" / "lib",
-            _rel_top_directory() / "lib",
-            _dev_top_directory() / "build" / "lib",
-            _dev_top_directory() / "lib",
-        ]
-    )
+    if use_default_paths:
+        # Case 2. Built-in self-anchored fallback (back-compat for the self-call).
+        dll_paths.extend(
+            [
+                _rel_top_directory() / "build" / "lib",
+                _rel_top_directory() / "lib",
+                _dev_top_directory() / "build" / "lib",
+                _dev_top_directory() / "lib",
+            ]
+        )
 
-    # Case 3. PATH-related environment variables.
-    if sys.platform.startswith("win32"):
-        dll_paths.extend(Path(p) for p in _split_env_var("PATH", ";"))
-    elif sys.platform.startswith("darwin"):
-        dll_paths.extend(Path(p) for p in _split_env_var("DYLD_LIBRARY_PATH", ":"))
-        dll_paths.extend(Path(p) for p in _split_env_var("PATH", ":"))
-    else:
-        dll_paths.extend(Path(p) for p in _split_env_var("LD_LIBRARY_PATH", ":"))
-        dll_paths.extend(Path(p) for p in _split_env_var("PATH", ":"))
+        # Case 3. PATH-related environment variables.
+        if sys.platform.startswith("win32"):
+            dll_paths.extend(Path(p) for p in _split_env_var("PATH", ";"))
+        elif sys.platform.startswith("darwin"):
+            dll_paths.extend(Path(p) for p in _split_env_var("DYLD_LIBRARY_PATH", ":"))
+            dll_paths.extend(Path(p) for p in _split_env_var("PATH", ":"))
+        else:
+            dll_paths.extend(Path(p) for p in _split_env_var("LD_LIBRARY_PATH", ":"))
+            dll_paths.extend(Path(p) for p in _split_env_var("PATH", ":"))
 
     # Search for the library in candidate directories
     for dll_dir in dll_paths:
@@ -191,6 +205,8 @@ def find_shared_library_path(  # noqa: PLR0912
                     return str(path)
             except OSError:
                 continue
+    if allow_missing:
+        return None
     raise RuntimeError(
         f"Cannot find library {', '.join(lib_dll_names)}; "
         f"searched directories:\n  " + "\n  ".join(str(p) for p in dll_paths)
@@ -206,12 +222,14 @@ def find_libtvm_ffi() -> str:
         The full path to the located library.
 
     """
-    return find_shared_library_path("apache-tvm-ffi", "tvm_ffi")
+    lib_path = find_shared_library_path("apache-tvm-ffi", "tvm_ffi")
+    assert lib_path is not None
+    return lib_path
 
 
 def find_windows_implib() -> str:
     """Find and return the Windows import library path for tvm_ffi.lib."""
-    candidate = Path(find_shared_library_path("apache-tvm-ffi", "tvm_ffi")).parent / "tvm_ffi.lib"
+    candidate = Path(find_libtvm_ffi()).parent / "tvm_ffi.lib"
     if ret := resolve_first_valid_path([candidate], cond=lambda _: True):
         return ret
     raise RuntimeError("Cannot find implib tvm_ffi.lib")
@@ -339,6 +357,7 @@ def load_lib_ctypes(
 
     """
     lib_path = find_shared_library_path(package, target_name, extra_lib_paths)
+    assert lib_path is not None
     # The dll search path need to be added explicitly in windows
     if sys.platform.startswith("win32"):
         os.add_dll_directory(str(Path(lib_path).parent))
@@ -381,6 +400,7 @@ def load_lib_module(
     from .module import load_module  # noqa: PLC0415
 
     lib_path = find_shared_library_path(package, target_name, extra_lib_paths)
+    assert lib_path is not None
     # The dll search path need to be added explicitly in windows
     if sys.platform.startswith("win32"):
         os.add_dll_directory(str(Path(lib_path).parent))
@@ -429,4 +449,6 @@ def _find_library_by_basename(
     extra_lib_paths: list[str | Path] | None = None,
 ) -> Path:
     """Preserve the Path return type for callers of the former private helper."""
-    return Path(find_shared_library_path(package, target_name, extra_lib_paths))
+    lib_path = find_shared_library_path(package, target_name, extra_lib_paths)
+    assert lib_path is not None
+    return Path(lib_path)

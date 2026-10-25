@@ -19,6 +19,7 @@
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 
 import pytest
@@ -183,3 +184,89 @@ def test_private_libinfo_compatibility() -> None:
     assert result.parent.is_dir()
     assert str(result) == libinfo.find_shared_library_path("apache-tvm-ffi", "tvm_ffi")
     assert libinfo._resolve_and_validate([result], lambda _: True) == str(result)
+
+
+def test_find_shared_library_path_without_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Disabling defaults retains metadata precedence and explicit directories."""
+
+    def unexpected_lookup(*args: object) -> None:
+        pytest.fail("lookup consulted a disabled default search source")
+
+    monkeypatch.setattr(libinfo, "_rel_top_directory", unexpected_lookup)
+    monkeypatch.setattr(libinfo, "_dev_top_directory", unexpected_lookup)
+    monkeypatch.setattr(libinfo, "_split_env_var", unexpected_lookup)
+    filename = _platform_lib_filename("dummy")
+    distribution = SimpleNamespace(
+        _path=tmp_path / "dummy.dist-info", read_text=lambda _: f"metadata/{filename},,"
+    )
+    monkeypatch.setattr(libinfo.im, "distribution", lambda _: distribution)
+    library = tmp_path / filename
+    library.touch()
+    assert libinfo.find_shared_library_path(
+        "dummy-package", "dummy", [str(tmp_path)], use_default_paths=False
+    ) == str((tmp_path / "metadata" / filename).resolve())
+
+    def missing_distribution(package: str) -> None:
+        raise libinfo.im.PackageNotFoundError(package)
+
+    monkeypatch.setattr(libinfo.im, "distribution", missing_distribution)
+    assert libinfo.find_shared_library_path(
+        "dummy-package", "dummy", [str(tmp_path)], use_default_paths=False
+    ) == str(library.resolve())
+    assert (
+        libinfo.find_shared_library_path(
+            "dummy-package", "dummy", [], use_default_paths=False, allow_missing=True
+        )
+        is None
+    )
+    with pytest.raises(RuntimeError, match="Cannot find library"):
+        libinfo.find_shared_library_path("dummy-package", "dummy", use_default_paths=False)
+
+
+def test_find_shared_library_path_default_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Built-in directories remain enabled by default and can be disabled."""
+    library = tmp_path / "lib" / _platform_lib_filename("dummy")
+    library.parent.mkdir()
+    library.touch()
+    monkeypatch.setattr(libinfo, "_rel_top_directory", lambda: tmp_path)
+    monkeypatch.setattr(libinfo, "_dev_top_directory", lambda: tmp_path)
+    assert libinfo.find_shared_library_path("nonexistent-dist-name", "dummy") == str(
+        library.resolve()
+    )
+    assert (
+        libinfo.find_shared_library_path(
+            "nonexistent-dist-name", "dummy", use_default_paths=False, allow_missing=True
+        )
+        is None
+    )
+
+
+def test_find_shared_library_path_allow_missing(tmp_path: Path) -> None:
+    """Missing-result policy changes only lookup misses, not invalid arguments."""
+    target_name = "nonexistent_library_for_libinfo_test"
+    with pytest.raises(RuntimeError, match="Cannot find library"):
+        libinfo.find_shared_library_path("nonexistent-dist-name", target_name)
+    assert (
+        libinfo.find_shared_library_path("nonexistent-dist-name", target_name, allow_missing=True)
+        is None
+    )
+    with pytest.raises(TypeError, match=r"must be str or pathlib\.Path"):
+        libinfo.find_shared_library_path(
+            "unused-package",
+            "dummy",
+            [123],  # ty: ignore[invalid-argument-type]
+            allow_missing=True,
+            use_default_paths=False,
+        )
+    with pytest.raises(TypeError):
+        libinfo.find_shared_library_path(
+            "unused-package",
+            "dummy",
+            [tmp_path],
+            True,  # ty: ignore[too-many-positional-arguments]
+            True,
+        )
