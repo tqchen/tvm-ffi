@@ -77,10 +77,9 @@ def _find_library_by_basename(  # noqa: PLR0912
     target_name: str,
     extra_lib_paths: list[Path] | None = None,
     *,
-    allow_missing: bool = False,
     use_fallback_build_path: bool = True,
     use_env_path: bool = True,
-) -> Path | None:
+) -> Path:
     """Find a platform-specific shared library and return its resolved path.
 
     Parameters
@@ -103,9 +102,6 @@ def _find_library_by_basename(  # noqa: PLR0912
         (e.g. ``package="tvm"``) can point at its own build tree without
         relying on ``tvm_ffi``'s file location. Every element must be a
         :class:`pathlib.Path`.
-    allow_missing
-        If ``True``, return ``None`` when no library is found instead of raising
-        :class:`RuntimeError`. Invalid inputs still raise an exception.
     use_fallback_build_path
         If ``True``, include the built-in development/build/lib fallback
         directories after distribution metadata and ``extra_lib_paths``.
@@ -123,14 +119,13 @@ def _find_library_by_basename(  # noqa: PLR0912
         distribution metadata, search order is ``extra_lib_paths``, the
         built-in library/build directories, then platform-specific library
         environment variables and ``PATH``. Resolution errors are skipped.
-        Return ``None`` when no match is found and ``allow_missing=True``.
 
     Raises
     ------
     TypeError
         If any element of ``extra_lib_paths`` is not a :class:`pathlib.Path`.
     RuntimeError
-        If no library is found and ``allow_missing=False``.
+        If the library cannot be found in any of the candidate directories.
         The error message lists every directory searched.
 
     """
@@ -208,8 +203,6 @@ def _find_library_by_basename(  # noqa: PLR0912
                     return path
             except OSError:
                 continue
-    if allow_missing:
-        return None
     raise RuntimeError(
         f"Cannot find library {', '.join(lib_dll_names)}; "
         f"searched directories:\n  " + "\n  ".join(str(p) for p in dll_paths)
@@ -226,7 +219,6 @@ def find_libtvm_ffi() -> str:
 
     """
     candidate = _find_library_by_basename("apache-tvm-ffi", "tvm_ffi")
-    assert candidate is not None
     if ret := _resolve_and_validate([candidate], cond=lambda _: True):
         return ret
     raise RuntimeError("Cannot find libtvm_ffi")
@@ -236,9 +228,7 @@ def find_windows_implib() -> str:
     """Find and return the Windows import library path for tvm_ffi.lib."""
     # implib = _find_library_by_basename("apache-tvm-ffi", "tvm_ffi").parent / "tvm_ffi.lib"
     # ret = _resolve_to_str(implib)
-    library = _find_library_by_basename("apache-tvm-ffi", "tvm_ffi")
-    assert library is not None
-    candidate = library.parent / "tvm_ffi.lib"
+    candidate = _find_library_by_basename("apache-tvm-ffi", "tvm_ffi").parent / "tvm_ffi.lib"
     if ret := _resolve_and_validate([candidate], cond=lambda _: True):
         return ret
     raise RuntimeError("Cannot find implib tvm_ffi.lib")
@@ -365,8 +355,7 @@ def load_lib_ctypes(
     The loaded shared library.
 
     """
-    lib_path = _find_library_by_basename(package, target_name, extra_lib_paths)
-    assert lib_path is not None
+    lib_path: Path = _find_library_by_basename(package, target_name, extra_lib_paths)
     # The dll search path need to be added explicitly in windows
     if sys.platform.startswith("win32"):
         os.add_dll_directory(str(lib_path.parent))
@@ -408,8 +397,7 @@ def load_lib_module(
     """
     from .module import load_module  # noqa: PLC0415
 
-    lib_path = _find_library_by_basename(package, target_name, extra_lib_paths)
-    assert lib_path is not None
+    lib_path: Path = _find_library_by_basename(package, target_name, extra_lib_paths)
     # The dll search path need to be added explicitly in windows
     if sys.platform.startswith("win32"):
         os.add_dll_directory(str(lib_path.parent))
