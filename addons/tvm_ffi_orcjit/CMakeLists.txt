@@ -78,8 +78,9 @@ target_link_libraries(tvm_ffi_orcjit PRIVATE tvm_ffi::header tvm_ffi::shared ${L
 if (CMAKE_SYSTEM_NAME MATCHES "Linux|Android|FreeBSD|NetBSD|OpenBSD" AND CMAKE_CXX_COMPILER_ID
                                                                          MATCHES "GNU|Clang"
 )
+  target_compile_options(tvm_ffi_orcjit PRIVATE -ffunction-sections -fdata-sections)
   target_link_options(
-    tvm_ffi_orcjit PRIVATE "LINKER:--exclude-libs,ALL"
+    tvm_ffi_orcjit PRIVATE "LINKER:--exclude-libs,ALL" "LINKER:--gc-sections"
     "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/cmake/orcjit.lds"
   )
 elseif (APPLE)
@@ -105,14 +106,28 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
   if (NOT _orc_rt_candidates)
     message(FATAL_ERROR "mlc-llvm-static is missing the Linux liborc_rt archive")
   endif ()
-  list(GET _orc_rt_candidates 0 ORC_RT_PATH)
+  list(GET _orc_rt_candidates 0 _orc_rt_source)
+  # Debug information inside the embedded archive survives stripping the outer shared library. Strip
+  # a build-directory copy, preserving the SDK and the archive's linkable symbols.
+  set(ORC_RT_PATH "${CMAKE_CURRENT_BINARY_DIR}/liborc_rt-stripped.a")
+  add_custom_command(
+    OUTPUT "${ORC_RT_PATH}"
+    COMMAND "${CMAKE_COMMAND}" -E copy "${_orc_rt_source}" "${ORC_RT_PATH}"
+    COMMAND "${CMAKE_STRIP}" --strip-debug "${ORC_RT_PATH}"
+    DEPENDS "${_orc_rt_source}"
+    COMMENT "Stripping debug information from embedded ORC runtime"
+    VERBATIM
+  )
+  set_source_files_properties("${ORC_RT_PATH}" PROPERTIES HEADER_FILE_ONLY TRUE)
   message(STATUS "Embedding liborc_rt: ${ORC_RT_PATH}")
   enable_language(ASM)
   configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/ffi/orc_rt_embed.S.in"
     "${CMAKE_CURRENT_BINARY_DIR}/orc_rt_embed.S" @ONLY
   )
-  target_sources(tvm_ffi_orcjit PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/orc_rt_embed.S")
+  target_sources(
+    tvm_ffi_orcjit PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/orc_rt_embed.S" "${ORC_RT_PATH}"
+  )
   target_compile_definitions(tvm_ffi_orcjit PRIVATE TVM_FFI_ORCJIT_EMBED_ORC_RT=1)
   # Re-run .incbin if the archive itself changes (path is stable across builds).
   set_property(
