@@ -34,8 +34,8 @@ if TYPE_CHECKING:
     from .module import Module
 
 
-def resolve_first_valid_path(
-    paths: list[str | Path],
+def _resolve_and_validate(
+    paths: list[Path],
     cond: Callable[[Path], bool | Path],
 ) -> str | None:
     """Resolve paths in order and return the first result accepted by a condition.
@@ -43,9 +43,7 @@ def resolve_first_valid_path(
     Parameters
     ----------
     paths
-        Candidate paths as strings or :class:`pathlib.Path` objects, in search
-        order. Each candidate is converted to a :class:`pathlib.Path` before
-        resolution and validation.
+        Candidate :class:`pathlib.Path` objects to resolve and check, in search order.
     cond
         Function called with each resolved :class:`pathlib.Path`. Return ``True``
         to accept that resolved path, ``False`` to try the next candidate, or a
@@ -63,7 +61,7 @@ def resolve_first_valid_path(
     """
     for path in paths:
         try:
-            resolved = Path(path).resolve()
+            resolved = path.resolve()
             ret = cond(resolved)
         except (OSError, AssertionError):
             continue
@@ -74,14 +72,14 @@ def resolve_first_valid_path(
     return None
 
 
-def find_shared_library_path(  # noqa: PLR0912
+def _find_library_by_basename(  # noqa: PLR0912
     package: str,
     target_name: str,
-    extra_lib_paths: list[str | Path] | None = None,
+    extra_lib_paths: list[Path] | None = None,
     *,
     allow_missing: bool = False,
-    use_default_paths: bool = True,
-) -> str | None:
+    use_fallback_path: bool = True,
+) -> Path | None:
     """Find a platform-specific shared library and return its resolved path.
 
     Parameters
@@ -90,7 +88,7 @@ def find_shared_library_path(  # noqa: PLR0912
         Distribution name to inspect with :mod:`importlib.metadata`, for example
         ``"apache-tvm-ffi"``. Matching entries in its wheel ``RECORD`` are
         searched before any fallback directories, including when
-        ``use_default_paths=False``.
+        ``use_fallback_path=False``.
     target_name
         Library basename without a platform-specific prefix or extension, for
         example ``"tvm_ffi"``. This becomes ``libtvm_ffi.so`` on Linux,
@@ -102,12 +100,12 @@ def find_shared_library_path(  # noqa: PLR0912
         ``LD_LIBRARY_PATH``/``DYLD_LIBRARY_PATH``-derived dirs. Caller-supplied
         directories take precedence over the built-ins, so a foreign caller
         (e.g. ``package="tvm"``) can point at its own build tree without
-        relying on ``tvm_ffi``'s file location. Elements may be strings or
-        :class:`pathlib.Path` objects and are normalized to paths internally.
+        relying on ``tvm_ffi``'s file location. Every element must be a
+        :class:`pathlib.Path`.
     allow_missing
         If ``True``, return ``None`` when no library is found instead of raising
         :class:`RuntimeError`. Invalid inputs still raise an exception.
-    use_default_paths
+    use_fallback_path
         If ``True``, search built-in directories and environment paths after
         distribution metadata and ``extra_lib_paths``. If ``False``, skip only
         those default directories; metadata and explicit directories are still
@@ -116,7 +114,7 @@ def find_shared_library_path(  # noqa: PLR0912
     Returns
     -------
     path
-        The resolved path of the first matching library as a string. After
+        The resolved :class:`pathlib.Path` of the first matching library. After
         distribution metadata, search order is ``extra_lib_paths``, the
         built-in library/build directories, then platform-specific library
         environment variables and ``PATH``. Resolution errors are skipped.
@@ -125,8 +123,7 @@ def find_shared_library_path(  # noqa: PLR0912
     Raises
     ------
     TypeError
-        If any element of ``extra_lib_paths`` is neither a string nor a
-        :class:`pathlib.Path`.
+        If any element of ``extra_lib_paths`` is not a :class:`pathlib.Path`.
     RuntimeError
         If no library is found and ``allow_missing=False``.
         The error message lists every directory searched.
@@ -134,9 +131,9 @@ def find_shared_library_path(  # noqa: PLR0912
     """
     if extra_lib_paths is not None:
         for i, p in enumerate(extra_lib_paths):
-            if not isinstance(p, (str, Path)):
+            if not isinstance(p, Path):
                 raise TypeError(
-                    f"extra_lib_paths[{i}] must be str or pathlib.Path, got {type(p).__name__}: {p!r}"
+                    f"extra_lib_paths[{i}] must be a pathlib.Path, got {type(p).__name__}: {p!r}"
                 )
 
     if sys.platform.startswith("win32"):
@@ -159,7 +156,7 @@ def find_shared_library_path(  # noqa: PLR0912
                 except OSError:
                     continue
                 if path.name in lib_dll_names:
-                    return str(path)
+                    return path
     except (im.PackageNotFoundError, OSError):
         # Distribution metadata may be missing when the caller's package is on
         # PYTHONPATH without a wheel install. Fall through to the dev fallback.
@@ -173,9 +170,9 @@ def find_shared_library_path(  # noqa: PLR0912
     # caller (e.g. ``package="tvm"``) point at its own build tree without
     # relying on ``tvm_ffi``'s file location.
     if extra_lib_paths is not None:
-        dll_paths.extend(Path(p) for p in extra_lib_paths)
+        dll_paths.extend(extra_lib_paths)
 
-    if use_default_paths:
+    if use_fallback_path:
         # Case 2. Built-in self-anchored fallback (back-compat for the self-call).
         dll_paths.extend(
             [
@@ -202,7 +199,7 @@ def find_shared_library_path(  # noqa: PLR0912
             try:
                 path = (dll_dir / lib_dll_name).resolve()
                 if path.is_file():
-                    return str(path)
+                    return path
             except OSError:
                 continue
     if allow_missing:
@@ -222,22 +219,28 @@ def find_libtvm_ffi() -> str:
         The full path to the located library.
 
     """
-    lib_path = find_shared_library_path("apache-tvm-ffi", "tvm_ffi")
-    assert lib_path is not None
-    return lib_path
+    candidate = _find_library_by_basename("apache-tvm-ffi", "tvm_ffi")
+    assert candidate is not None
+    if ret := _resolve_and_validate([candidate], cond=lambda _: True):
+        return ret
+    raise RuntimeError("Cannot find libtvm_ffi")
 
 
 def find_windows_implib() -> str:
     """Find and return the Windows import library path for tvm_ffi.lib."""
-    candidate = Path(find_libtvm_ffi()).parent / "tvm_ffi.lib"
-    if ret := resolve_first_valid_path([candidate], cond=lambda _: True):
+    # implib = _find_library_by_basename("apache-tvm-ffi", "tvm_ffi").parent / "tvm_ffi.lib"
+    # ret = _resolve_to_str(implib)
+    library = _find_library_by_basename("apache-tvm-ffi", "tvm_ffi")
+    assert library is not None
+    candidate = library.parent / "tvm_ffi.lib"
+    if ret := _resolve_and_validate([candidate], cond=lambda _: True):
         return ret
     raise RuntimeError("Cannot find implib tvm_ffi.lib")
 
 
 def find_source_path() -> str:
     """Find packaged source home path."""
-    if ret := resolve_first_valid_path(
+    if ret := _resolve_and_validate(
         paths=[
             _rel_top_directory(),
             _dev_top_directory(),
@@ -250,7 +253,7 @@ def find_source_path() -> str:
 
 def find_cmake_path() -> str:
     """Find the preferred cmake path."""
-    if ret := resolve_first_valid_path(
+    if ret := _resolve_and_validate(
         paths=[
             _rel_top_directory() / "share" / "cmake" / "tvm_ffi",  # Standard install
             _dev_top_directory() / "cmake",  # Development mode
@@ -263,7 +266,7 @@ def find_cmake_path() -> str:
 
 def find_include_path() -> str:
     """Find header files for C compilation."""
-    if ret := resolve_first_valid_path(
+    if ret := _resolve_and_validate(
         paths=[
             _rel_top_directory() / "include",
             _dev_top_directory() / "include",
@@ -276,7 +279,7 @@ def find_include_path() -> str:
 
 def find_dlpack_include_path() -> str:
     """Find dlpack header files for C compilation."""
-    if ret := resolve_first_valid_path(
+    if ret := _resolve_and_validate(
         paths=[
             _rel_top_directory() / "include",
             _dev_top_directory() / "3rdparty" / "dlpack" / "include",
@@ -303,7 +306,7 @@ def find_cython_lib() -> str:
 
 def find_python_helper_include_path() -> str:
     """Find header files for C compilation."""
-    if ret := resolve_first_valid_path(
+    if ret := _resolve_and_validate(
         paths=[
             _rel_top_directory() / "include",
             _dev_top_directory() / "python" / "tvm_ffi" / "cython",
@@ -329,7 +332,7 @@ def load_lib_ctypes(
     package: str,
     target_name: str,
     mode: str,
-    extra_lib_paths: list[str | Path] | None = None,
+    extra_lib_paths: list[Path] | None = None,
 ) -> ctypes.CDLL:
     """Load the tvm_ffi shared library by searching likely paths.
 
@@ -349,26 +352,26 @@ def load_lib_ctypes(
         before falling back to the built-in dev candidates and PATH-derived dirs.
         Useful when the caller's package does not ship a wheel-style ``RECORD``
         but knows where its build artifacts land (e.g. ``<worktree>/build/lib``).
-        Elements may be strings or :class:`pathlib.Path` objects.
+        Every element must be a :class:`pathlib.Path`.
 
     Returns
     -------
     The loaded shared library.
 
     """
-    lib_path = find_shared_library_path(package, target_name, extra_lib_paths)
+    lib_path = _find_library_by_basename(package, target_name, extra_lib_paths)
     assert lib_path is not None
     # The dll search path need to be added explicitly in windows
     if sys.platform.startswith("win32"):
-        os.add_dll_directory(str(Path(lib_path).parent))
-    return ctypes.CDLL(lib_path, getattr(ctypes, mode))
+        os.add_dll_directory(str(lib_path.parent))
+    return ctypes.CDLL(str(lib_path), getattr(ctypes, mode))
 
 
 def load_lib_module(
     package: str,
     target_name: str,
     keep_module_alive: bool = True,
-    extra_lib_paths: list[str | Path] | None = None,
+    extra_lib_paths: list[Path] | None = None,
 ) -> Module:
     """Load the tvm_ffi shared library by searching likely paths.
 
@@ -390,7 +393,7 @@ def load_lib_module(
         before falling back to the built-in dev candidates and PATH-derived dirs.
         Useful when the caller's package does not ship a wheel-style ``RECORD``
         but knows where its build artifacts land (e.g. ``<worktree>/build/lib``).
-        Elements may be strings or :class:`pathlib.Path` objects.
+        Every element must be a :class:`pathlib.Path`.
 
     Returns
     -------
@@ -399,11 +402,11 @@ def load_lib_module(
     """
     from .module import load_module  # noqa: PLC0415
 
-    lib_path = find_shared_library_path(package, target_name, extra_lib_paths)
+    lib_path = _find_library_by_basename(package, target_name, extra_lib_paths)
     assert lib_path is not None
     # The dll search path need to be added explicitly in windows
     if sys.platform.startswith("win32"):
-        os.add_dll_directory(str(Path(lib_path).parent))
+        os.add_dll_directory(str(lib_path.parent))
     return load_module(lib_path, keep_module_alive=keep_module_alive)
 
 
@@ -437,18 +440,3 @@ def _rel_top_directory() -> Path:
 def _dev_top_directory() -> Path:
     """Get the top-level development directory."""
     return _rel_top_directory() / ".." / ".."
-
-
-# Compatibility for downstream callers of the former private helpers.
-_resolve_and_validate = resolve_first_valid_path
-
-
-def _find_library_by_basename(
-    package: str,
-    target_name: str,
-    extra_lib_paths: list[str | Path] | None = None,
-) -> Path:
-    """Preserve the Path return type for callers of the former private helper."""
-    lib_path = find_shared_library_path(package, target_name, extra_lib_paths)
-    assert lib_path is not None
-    return Path(lib_path)
