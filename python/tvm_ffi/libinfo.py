@@ -78,7 +78,8 @@ def _find_library_by_basename(  # noqa: PLR0912
     extra_lib_paths: list[Path] | None = None,
     *,
     allow_missing: bool = False,
-    use_fallback_path: bool = True,
+    use_fallback_build_path: bool = True,
+    use_env_path: bool = True,
 ) -> Path | None:
     """Find a platform-specific shared library and return its resolved path.
 
@@ -87,8 +88,8 @@ def _find_library_by_basename(  # noqa: PLR0912
     package
         Distribution name to inspect with :mod:`importlib.metadata`, for example
         ``"apache-tvm-ffi"``. Matching entries in its wheel ``RECORD`` are
-        searched before any fallback directories, including when
-        ``use_fallback_path=False``.
+        searched before any fallback directories, regardless of
+        ``use_fallback_build_path`` and ``use_env_path``.
     target_name
         Library basename without a platform-specific prefix or extension, for
         example ``"tvm_ffi"``. This becomes ``libtvm_ffi.so`` on Linux,
@@ -105,11 +106,15 @@ def _find_library_by_basename(  # noqa: PLR0912
     allow_missing
         If ``True``, return ``None`` when no library is found instead of raising
         :class:`RuntimeError`. Invalid inputs still raise an exception.
-    use_fallback_path
-        If ``True``, search built-in directories and environment paths after
-        distribution metadata and ``extra_lib_paths``. If ``False``, skip only
-        those default directories; metadata and explicit directories are still
-        searched, in that order.
+    use_fallback_build_path
+        If ``True``, include the built-in development/build/lib fallback
+        directories after distribution metadata and ``extra_lib_paths``.
+        This does not control installed paths found through distribution metadata.
+    use_env_path
+        If ``True``, include platform-specific library environment variables
+        and ``PATH`` after the other search directories. Independent of
+        ``use_fallback_build_path``; metadata and explicit directories are
+        always searched.
 
     Returns
     -------
@@ -172,7 +177,7 @@ def _find_library_by_basename(  # noqa: PLR0912
     if extra_lib_paths is not None:
         dll_paths.extend(extra_lib_paths)
 
-    if use_fallback_path:
+    if use_fallback_build_path:
         # Case 2. Built-in self-anchored fallback (back-compat for the self-call).
         dll_paths.extend(
             [
@@ -183,6 +188,7 @@ def _find_library_by_basename(  # noqa: PLR0912
             ]
         )
 
+    if use_env_path:
         # Case 3. PATH-related environment variables.
         if sys.platform.startswith("win32"):
             dll_paths.extend(Path(p) for p in _split_env_var("PATH", ";"))
