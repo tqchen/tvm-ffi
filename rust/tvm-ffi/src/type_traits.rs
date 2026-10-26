@@ -70,6 +70,16 @@ pub unsafe trait AnyCompatible: Sized {
     /// the type string of the type
     fn type_str() -> String;
 
+    /// The type schema of the type: the JSON object C++
+    /// `TypeTraits<T>::TypeSchema` writes, which the type schemas of functions
+    /// and fields embed.
+    ///
+    /// The default, `{"type":"<type_str>"}`, fits a type whose type string is
+    /// its type key, as for object references.
+    fn type_schema() -> String {
+        type_schema(&Self::type_str(), &[])
+    }
+
     /// Borrow `self` into an owned [`Any`], increfing object-backed values.
     ///
     /// The by-reference counterpart of `Any::from(value)`, for fields reached
@@ -80,6 +90,74 @@ pub unsafe trait AnyCompatible: Sized {
     #[inline]
     fn to_any(&self) -> Any {
         AnyView::from(self).into()
+    }
+}
+
+/// Writes a type schema, `{"type":"<origin>"}` or, with type arguments,
+/// `{"type":"<origin>","args":[...]}`, as C++ `TypeTraits<T>::TypeSchema` does.
+pub(crate) fn type_schema(origin: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        format!(r#"{{"type":"{origin}"}}"#)
+    } else {
+        format!(r#"{{"type":"{origin}","args":[{}]}}"#, args.join(","))
+    }
+}
+
+/// The metadata C++ records for a function or field of type schema
+/// `type_schema`: `{"type_schema":<type_schema as a JSON string>}`.
+pub(crate) fn type_schema_metadata(type_schema: &str) -> String {
+    format!(r#"{{"type_schema":{}}}"#, escape_string_json(type_schema))
+}
+
+/// `text` as a JSON string literal, escaped as C++ `EscapeStringJSON`
+/// (`string.h`) escapes it, so that metadata matches the C++ one byte for byte.
+fn escape_string_json(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 2);
+    out.push('"');
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '/' => out.push_str("\\/"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if (ch as u32) < 0x20 || ch == '\u{7f}' => {
+                out.push_str(&format!("\\u{:04x}", ch as u32))
+            }
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// The type schema of a function parameter or return type.
+///
+/// This is [`AnyCompatible::type_schema`] for a type that converts through
+/// [`Any`], and `{"type":"Any"}` for `Any` and `AnyView` themselves, as C++
+/// `details::TypeSchema<T>` writes them.
+pub(crate) trait TypeSchema {
+    fn type_schema() -> String;
+}
+
+impl<T: AnyCompatible> TypeSchema for T {
+    fn type_schema() -> String {
+        <T as AnyCompatible>::type_schema()
+    }
+}
+
+impl TypeSchema for Any {
+    fn type_schema() -> String {
+        type_schema("Any", &[])
+    }
+}
+
+impl TypeSchema for AnyView<'_> {
+    fn type_schema() -> String {
+        type_schema("Any", &[])
     }
 }
 
@@ -112,6 +190,7 @@ mod container_element_ops {
         unsafe fn container_try_cast_from_any_view(data: &TVMFFIAny) -> Result<Self, ()>;
         fn container_get_mismatch_type_info(data: &TVMFFIAny) -> String;
         fn container_type_str() -> String;
+        fn container_type_schema() -> String;
     }
 
     impl<T: AnyCompatible> Ops for T {
@@ -153,6 +232,11 @@ mod container_element_ops {
         #[inline]
         fn container_type_str() -> String {
             <T as AnyCompatible>::type_str()
+        }
+
+        #[inline]
+        fn container_type_schema() -> String {
+            <T as AnyCompatible>::type_schema()
         }
     }
 
@@ -197,6 +281,11 @@ mod container_element_ops {
         #[inline]
         fn container_type_str() -> String {
             "Any".to_string()
+        }
+
+        #[inline]
+        fn container_type_schema() -> String {
+            <Any as super::TypeSchema>::type_schema()
         }
     }
 }
@@ -295,6 +384,10 @@ unsafe impl<T: AnyCompatible> AnyCompatible for Option<T> {
     fn type_str() -> String {
         // make it consistent with c++ representation
         "Optional<".to_string() + T::type_str().as_str() + ">"
+    }
+
+    fn type_schema() -> String {
+        type_schema("Optional", &[<T as AnyCompatible>::type_schema()])
     }
 
     unsafe fn copy_to_any_view(src: &Self, data: &mut TVMFFIAny) {
