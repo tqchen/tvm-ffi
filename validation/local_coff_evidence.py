@@ -30,8 +30,10 @@ else:
     text = "\n".join(p.read_text(errors="replace") for p in maps)
     assert "coff_dispatch.obj" in text.lower(), "Local dispatcher missing from link map"
     assert "coff_aarch64.obj" in text.lower(), "Local backend missing from link map"
-    assert not re.search(r"(?:[:/\\(]|\b)COFF\.cpp\.obj\b", text, re.I), "Stock COFF member extracted"
+    assert not re.search(r"\bLLVMJITLink(?:\.lib)?[:(]COFF\.cpp\.obj\b", text, re.I), "Stock COFF member extracted"
     assert not re.search(r"/FORCE(?::MULTIPLE)?|/WHOLEARCHIVE", Path("native-build.log").read_text(errors="replace"), re.I)
+    for name in ["?createLinkGraphFromCOFFObject@", "?link_COFF@", "??RGetImageBaseSymbol@"]:
+        assert any(name in line and "coff_dispatch.obj" in line for line in text.splitlines()), name
     evidence = {
         "source_head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         "platform": platform.platform(),
