@@ -1,0 +1,56 @@
+name: Validate local AArch64 COFF backport
+on:
+  push:
+    branches: [orcjit-coff-local-validation-858]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: arm64
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+      - name: Install the released SDK
+        shell: pwsh
+        run: |
+          python -m pip install uv cmake ninja scikit-build-core pytest pytest-xdist "apache-tvm-ffi==0.1.15.post1" "mlc-llvm-static==23.1.1.post0"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python validation/local_coff_evidence.py before
+      - name: Build the local backport and install the wheel
+        shell: pwsh
+        run: |
+          uv build --wheel --no-build-isolation --out-dir wheelhouse '-Ccmake.define.CMAKE_SHARED_LINKER_FLAGS=/MAP /VERBOSE:LIB' addons/tvm_ffi_orcjit 2>&1 | Tee-Object -FilePath native-build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python validation/local_coff_evidence.py after
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $wheel = (Get-ChildItem wheelhouse/*.whl)[0].FullName
+          uv pip install --system --python python --no-deps "$wheel"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip check
+      - name: Execute generated functions and lifecycle tests
+        shell: pwsh
+        run: |
+          python -m pytest addons/tvm_ffi_orcjit/tests -v --junitxml=native-tests.xml
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python addons/tvm_ffi_orcjit/examples/quick-start/run.py --lang c
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local-coff-native-evidence
+          path: |
+            sdk-before.json
+            native-evidence.json
+            native-build.log
+            native-tests.xml
+            addons/tvm_ffi_orcjit/build/**/*.map
+            wheelhouse/*.whl
+          if-no-files-found: warn
