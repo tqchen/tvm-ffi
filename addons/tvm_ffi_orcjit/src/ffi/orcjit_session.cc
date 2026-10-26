@@ -29,6 +29,10 @@
 #include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
 #include <llvm/ExecutionEngine/Orc/LLJIT.h>
 #include <llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h>
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+#include <llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h>
+#include <llvm/ExecutionEngine/SectionMemoryManager.h>
+#endif
 #include <llvm/Support/Error.h>
 #include <llvm/Support/MemoryBuffer.h>
 #include <llvm/Support/Process.h>
@@ -40,6 +44,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <sstream>
 
@@ -162,6 +167,79 @@ class LibStdCxxNonsharedGenerator final : public llvm::orc::DefinitionGenerator 
 #endif
 #endif
 
+#if defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+// LLVM's COFF JITLink supports x86-64 only. RuntimeDyld supplies ARM64 COFF
+// relocations, import slots and long-branch stubs. Retain our local CRT
+// lifecycle policy, collecting pointers only after relocation has finished.
+std::unique_ptr<llvm::orc::ObjectLayer> CreateARM64COFFLayer(llvm::orc::ExecutionSession& ES,
+                                                             ORCJITExecutionSessionObj* session) {
+  struct LifecycleRange {
+    uint64_t address;
+    uint64_t size;
+    int priority;
+    bool is_init;
+  };
+  using Responsibility = llvm::orc::MaterializationResponsibility;
+  using PendingRanges = std::unordered_map<Responsibility*, std::vector<LifecycleRange>>;
+  auto pending = std::make_shared<PendingRanges>();
+  auto layer =
+      std::make_unique<llvm::orc::RTDyldObjectLinkingLayer>(ES, [](const llvm::MemoryBuffer&) {
+        // Keep each object's code and data within ARM64 PC-relative range.
+        return std::make_unique<llvm::SectionMemoryManager>(nullptr, true);
+      });
+  layer->setProcessAllSections(true);
+  layer->setOverrideObjectFlagsWithResponsibilityFlags(true);
+  layer->setNotifyLoaded([pending](Responsibility& R, const llvm::object::ObjectFile& Obj,
+                                   const llvm::RuntimeDyld::LoadedObjectInfo& Info) {
+    auto& ranges = (*pending)[&R];
+    ranges.clear();
+    for (const auto& section : Obj.sections()) {
+      auto name = section.getName();
+      if (!name) {
+        llvm::consumeError(name.takeError());
+        continue;
+      }
+      bool is_init = name->starts_with(".CRT$XC");
+      if (!is_init && !name->starts_with(".CRT$XT")) continue;
+      auto suffix = name->substr(7);
+      int priority = 0;
+      if (!suffix.empty()) {
+        priority = static_cast<int>(suffix[0]) * 100000;
+        int number = 0;
+        suffix.substr(1).getAsInteger(10, number);
+        priority += number;
+      }
+      ranges.push_back({Info.getSectionLoadAddress(section), section.getSize(), priority, is_init});
+    }
+  });
+  layer->setNotifyEmitted(
+      [pending, session](Responsibility& R, std::unique_ptr<llvm::MemoryBuffer>) {
+        auto it = pending->find(&R);
+        if (it == pending->end()) return;
+        auto ranges = std::move(it->second);
+        pending->erase(it);
+        for (const auto& range : ranges) {
+          if (!range.address) continue;
+          for (uint64_t offset = 0; offset + sizeof(uint64_t) <= range.size;
+               offset += sizeof(uint64_t)) {
+            uint64_t address = 0;
+            std::memcpy(&address, reinterpret_cast<const void*>(range.address + offset),
+                        sizeof(address));
+            if (!address) continue;
+            ORCJITExecutionSessionObj::InitFiniEntry entry{llvm::orc::ExecutorAddr(address),
+                                                           range.priority};
+            if (range.is_init) {
+              session->AddPendingInitializer(&R.getTargetJITDylib(), entry);
+            } else {
+              session->AddPendingDeinitializer(&R.getTargetJITDylib(), entry);
+            }
+          }
+        }
+      });
+  return layer;
+}
+#endif
+
 // Install ExecutorNativePlatform per the `orc_rt` selector (see the ctor doc).
 // A no-op off Linux/ELF: those targets retain LLJIT's generic platform support
 // and use the local lifecycle adapter below.
@@ -264,6 +342,12 @@ ORCJITExecutionSessionObj::ORCJITExecutionSessionObj(const Optional<Variant<Stri
             return std::make_unique<llvm::orc::ObjectLinkingLayer>(ES, memory_manager);
           });
     }  // if (memory_manager_)
+#elif defined(_WIN32) && (defined(_M_ARM64) || defined(__aarch64__))
+    builder.setObjectLinkingLayerCreator(
+        [this](llvm::orc::ExecutionSession& ES, llvm::jitlink::JITLinkMemoryManager&)
+            -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
+          return CreateARM64COFFLayer(ES, this);
+        });
 #elif defined(__APPLE__) || defined(_WIN32)
     // Force ObjectLinkingLayer (JITLink) so we can attach InitFiniPlugin.
     // macOS: LLJIT already defaults to JITLink for Darwin, but the explicit
@@ -342,7 +426,7 @@ ORCJITExecutionSessionObj::ORCJITExecutionSessionObj(const Optional<Variant<Stri
   // building.  See llvm_patches/win_coff_pdata_strip.h for the rationale.
   jit_->getObjTransformLayer().setTransform(&StripCoffPdataXdata);
 #endif
-#if defined(__APPLE__) || defined(_WIN32)
+#if defined(__APPLE__) || (defined(_WIN32) && !defined(_M_ARM64) && !defined(__aarch64__))
   // Mach-O and COFF still need the local lifecycle adapter. Linux uses LLVM
   // 23's ELFNixPlatform initialize/deinitialize path instead.
   auto& objlayer = jit_->getObjLinkingLayer();
@@ -355,9 +439,13 @@ ORCJITExecutionSessionObj::ORCJITExecutionSessionObj(const Optional<Variant<Stri
   // comprehensive generator that searches all loaded DLLs (vcruntime140,
   // ucrtbase, tvm_ffi, etc.) and creates __imp_* pointer stubs.
   if (auto PSG = jit_->getProcessSymbolsJITDylib()) {
+#if defined(_M_ARM64) || defined(__aarch64__)
+    PSG->addGenerator(std::make_unique<DLLImportDefinitionGenerator>(jit_->getExecutionSession()));
+#else
     auto& ObjLayer = static_cast<llvm::orc::ObjectLinkingLayer&>(jit_->getObjLinkingLayer());
     PSG->addGenerator(
         std::make_unique<DLLImportDefinitionGenerator>(jit_->getExecutionSession(), ObjLayer));
+#endif
   }
 #endif
 }
