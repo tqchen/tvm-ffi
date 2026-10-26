@@ -421,9 +421,9 @@ ORCJITExecutionSessionObj::ORCJITExecutionSessionObj(const Optional<Variant<Stri
     // Override ProcessSymbols setup to NOT add the default
     // EPCDynamicLibrarySearchGenerator. That generator resolves symbols to
     // absolute host-process addresses, which causes PCRel32 overflow when
-    // JIT code calls into DLLs >2GB away. Our DLLImportDefinitionGenerator
-    // (added after construction) wraps every resolved address in a
-    // JIT-allocated PLT stub, keeping all fixups in range.
+    // AMD64 JIT code calls into DLLs >2GB away. Our generator below uses
+    // JITLink stubs on AMD64 and native RuntimeDyld stubs on ARM64, while
+    // resolving symbols from all loaded DLLs on both architectures.
     builder.setProcessSymbolsJITDylibSetup(
         [](llvm::orc::LLJIT& J) -> llvm::Expected<llvm::orc::JITDylibSP> {
           return &J.getExecutionSession().createBareJITDylib("<Process Symbols>");

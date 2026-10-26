@@ -30,7 +30,7 @@ TVM-FFI exported functions.
 - **Symbol Isolation**: Separate `load_module` calls define independent symbol namespaces, so they can define the same symbol without conflicts
 - **Bounded-Range Memory**: A growable Linux slab pool keeps JIT code/data close enough for 32-bit PC-relative relocations and supports explicit drained-slab reclamation
 - **Init/Fini Support**: Handles static constructors/destructors across ELF (`.init_array`/`.ctors`), Mach-O (`__mod_init_func`), and COFF (`.CRT$XC*`/`.CRT$XT*`)
-- **Cross-Platform**: Linux (x86_64, aarch64), macOS (arm64), Windows (AMD64)
+- **Cross-Platform**: Linux (x86_64, aarch64), macOS (arm64), Windows (AMD64, ARM64)
 - **Multi-Compiler**: Tested with LLVM Clang, GCC, Apple Clang, MSVC, and clang-cl
 - **TVM-FFI Integration**: Seamlessly works with TVM-FFI's stable C ABI
 - **Python API**: Simple Pythonic interface for JIT compilation and execution
@@ -44,7 +44,7 @@ can be loaded and executed by the ORC JIT:
 | -------- | --------- | :-: | :-: |
 | Linux (x86_64, aarch64) | LLVM Clang, GCC | yes | yes |
 | macOS (arm64) | LLVM Clang, Apple Clang | yes | yes |
-| Windows (AMD64) | LLVM Clang, MSVC, clang-cl | yes | no |
+| Windows (AMD64, ARM64) | LLVM Clang, MSVC, clang-cl | yes | no |
 
 Windows is C-only across all compilers. C++ objects compiled with
 `TVM_FFI_DLL_EXPORT_TYPED_FUNC` use `try`/`catch` (via `TVM_FFI_SAFE_CALL_BEGIN/END`),
@@ -186,19 +186,21 @@ Compile: `clang -O2 -c -o example.o example.c`
 
 ## How It Works
 
-- **LLJIT**: Built on LLVM's ORC JIT v2 with `ObjectLinkingLayer` (JITLink) for
-  all platforms.
+- **LLJIT**: Built on LLVM's ORC JIT v2 with `ObjectLinkingLayer` (JITLink),
+  except Windows ARM64, which uses `RTDyldObjectLinkingLayer` because LLVM's
+  COFF JITLink backend does not support ARM64 relocations.
 - **ELF Lifecycle** (Linux): LLVM 23.1.1+ `ELFNixPlatform` runs ordered
   constructors and destructors through `LLJIT::initialize` / `deinitialize`.
-- **InitFiniPlugin** (macOS/Windows): A local `ObjectLinkingLayer::Plugin`
-  handles Mach-O `__mod_init_func`/`__mod_term_func` and COFF
-  `.CRT$XC*`/`.CRT$XT*` while those ORC platforms remain unsuitable.
-- **DLL Import Stubs** (Windows): Custom `DefinitionGenerator` that resolves host
-  process symbols from all loaded DLLs and creates `__imp_*` pointer stubs in
-  JIT memory, keeping all fixups within PCRel32 range.
+- **Init/Fini Adapters** (macOS/Windows): A local `ObjectLinkingLayer::Plugin`
+  handles Mach-O `__mod_init_func`/`__mod_term_func` and AMD64 COFF
+  `.CRT$XC*`/`.CRT$XT*` while those ORC platforms remain unsuitable. Windows
+  ARM64 collects relocated CRT pointers through RuntimeDyld callbacks.
+- **DLL Imports** (Windows): A custom `DefinitionGenerator` resolves host
+  process symbols from loaded DLLs. AMD64 uses JITLink pointer and jump stubs;
+  ARM64 uses RuntimeDyld's native import slots and branch stubs.
 - **SEH Stripping** (Windows): `ObjectTransformLayer` strips `.pdata`/`.xdata`
-  relocations from COFF objects before JITLink graph building, working around a
-  JITLink limitation with COMDAT section symbols.
+  relocations from COFF objects. C++ exception handling on Windows remains
+  unsupported on both architectures.
 
 Refer to [ORCJIT_PRIMER.md](./ORCJIT_PRIMER.md) for background on object files,
 linking, LLVM ORC JIT v2, and the addon's architecture.
@@ -227,7 +229,7 @@ tvm_ffi_orcjit/
 
 ## CI
 
-Runs on Linux (x86_64, aarch64), macOS (arm64), Windows (AMD64) via
+Runs on Linux (x86_64, aarch64), macOS (arm64), Windows (AMD64, ARM64) via
 `cibuildwheel`. Each platform builds test objects with multiple compilers
 and runs the full test suite. See the `orcjit` job in `.github/workflows/ci_test.yml`.
 
