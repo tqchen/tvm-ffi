@@ -38,6 +38,7 @@
 
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ExecutionEngine/JITLink/JITLink.h>
+#include <llvm/ExecutionEngine/JITLink/aarch64.h>
 #include <llvm/ExecutionEngine/JITLink/x86_64.h>
 #include <llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h>
 #include <llvm/Support/DynamicLibrary.h>
@@ -140,12 +141,15 @@ llvm::Error DLLImportDefinitionGenerator::tryToGenerate(
                                         G->getPointerSize(), llvm::jitlink::Linkage::Strong,
                                         llvm::jitlink::Scope::Local, false);
     // __imp_XXX pointer (GOT-like entry)
-    auto& Ptr = llvm::jitlink::x86_64::createAnonymousPointer(*G, Sec, &Target);
+    bool IsAArch64 = ES_.getTargetTriple().getArch() == llvm::Triple::aarch64;
+    auto& Ptr = IsAArch64 ? llvm::jitlink::aarch64::createAnonymousPointer(*G, Sec, &Target)
+                          : llvm::jitlink::x86_64::createAnonymousPointer(*G, Sec, &Target);
     Ptr.setName(G->intern(("__imp_" + *InternedName).str()));
     Ptr.setLinkage(llvm::jitlink::Linkage::Strong);
     Ptr.setScope(llvm::jitlink::Scope::Default);
     // XXX jump stub (PLT-like entry) for direct calls
-    auto& StubBlock = llvm::jitlink::x86_64::createPointerJumpStubBlock(*G, Sec, Ptr);
+    auto& StubBlock = IsAArch64 ? llvm::jitlink::aarch64::createPointerJumpStubBlock(*G, Sec, Ptr)
+                                : llvm::jitlink::x86_64::createPointerJumpStubBlock(*G, Sec, Ptr);
     G->addDefinedSymbol(StubBlock, 0, *InternedName, StubBlock.getSize(),
                         llvm::jitlink::Linkage::Strong, llvm::jitlink::Scope::Default, true, false);
   }

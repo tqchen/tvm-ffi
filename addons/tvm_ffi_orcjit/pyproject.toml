@@ -19,7 +19,7 @@
 requires = [
   "scikit-build-core>=0.10.0",
   "apache-tvm-ffi>=0.1.14.post1",
-  "mlc-llvm-static==23.1.1",
+  "mlc-llvm-static==23.1.1.post0",
 ]
 build-backend = "scikit_build_core.build"
 

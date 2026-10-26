@@ -22,7 +22,7 @@ description: >
 
 inputs:
   arch:
-    description: "Target architecture (e.g., x86_64, aarch64, arm64, AMD64)"
+    description: "Target architecture (e.g., x86_64, aarch64, arm64, AMD64, ARM64)"
     required: true
   build:
     description: "cibuildwheel build selector (e.g., cp312-manylinux_x86_64)"
@@ -32,7 +32,7 @@ inputs:
     required: true
   llvm_version:
     description: "mlc-llvm-static version (keep in sync with the addon build requirements)"
-    default: "23.1.1"
+    default: "23.1.1.post0"
     required: false
 
 runs:

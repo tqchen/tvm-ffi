@@ -59,7 +59,7 @@ jobs:
         id: orcjit_files
         run: |
           FILES=$(git diff --name-only --diff-filter=ACMR origin/${{ github.base_ref }}...HEAD -- \
-            addons/tvm_ffi_orcjit/ .github/actions/build-orcjit-wheel/ | tr '\n' ' ')
+            addons/tvm_ffi_orcjit/ .github/actions/build-orcjit-wheel/ .github/workflows/publish_orcjit_wheel.yml | tr '\n' ' ')
           echo "files=$FILES" >> $GITHUB_OUTPUT
           [ -n "$FILES" ] && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
 
@@ -235,7 +235,7 @@ jobs:
     name: orcjit ${{ matrix.os }} (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     env:
-      LLVM_VERSION: "23.1.1"
+      LLVM_VERSION: "23.1.1.post0"
     strategy:
       fail-fast: false
       matrix:
@@ -244,6 +244,7 @@ jobs:
           - {os: ubuntu-24.04-arm, arch: aarch64, build: "cp312-manylinux_aarch64"}
           - {os: macos-14, arch: arm64, build: "cp312-macosx_arm64"}
           - {os: windows-latest, arch: AMD64, build: "cp312-win_amd64"}
+          - {os: windows-11-arm, arch: ARM64, build: "cp312-win_arm64"}
 
     steps:
       - uses: actions/checkout@v5
