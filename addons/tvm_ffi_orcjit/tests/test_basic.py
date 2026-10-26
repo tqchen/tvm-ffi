@@ -491,13 +491,16 @@ def test_ctor_dtor(v: Variant) -> None:
         assert "<dtors>" not in log
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="COFF DLL imports require Windows")
+@pytest.mark.skipif(
+    sys.platform != "win32" or platform.machine().lower() not in ("arm64", "aarch64"),
+    reason="AArch64 COFF import address resolution requires Windows ARM64",
+)
 def test_coff_imported_data_and_functions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Import slots preserve data addresses and direct calls use callable thunks."""
     compiler = shutil.which("clang-cl")
     if compiler is None:
         pytest.skip("clang-cl is unavailable")
-    monkeypatch.setenv("CC", compiler)
+    monkeypatch.setenv("CC", "clang-cl")
     host = tmp_path / "host.c"
     host.write_text(
         "__declspec(dllexport) int tvm_ffi_coff_imported_data = 17;\n"
@@ -551,7 +554,7 @@ def test_failed_materialization_does_not_retain_crt_callbacks(
     compiler = shutil.which("clang-cl")
     if compiler is None:
         pytest.skip("clang-cl is unavailable")
-    monkeypatch.setenv("CC", compiler)
+    monkeypatch.setenv("CC", "clang-cl")
     source = Path(__file__).parent / "sources" / "c" / "test_ctor_dtor.c"
     failing_source = tmp_path / "failed_ctor.c"
     failing_source.write_text(
