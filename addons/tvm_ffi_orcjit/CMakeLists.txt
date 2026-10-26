@@ -57,8 +57,9 @@ elseif (WIN32)
     PRIVATE src/ffi/llvm_patches/init_fini_plugin.cc src/ffi/llvm_patches/win_coff_pdata_strip.cc
             src/ffi/llvm_patches/win_dll_import_generator.cc
   )
-  if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" OR CMAKE_GENERATOR_PLATFORM
-                                                                    STREQUAL "ARM64")
+  if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" OR CMAKE_GENERATOR_PLATFORM STREQUAL
+                                                                  "ARM64"
+  )
     option(TVM_FFI_ORCJIT_ARM64_COFF_JITLINK "Use the local LLVM AArch64 COFF JITLink backport" ON)
     if (TVM_FFI_ORCJIT_ARM64_COFF_JITLINK)
       if (NOT LLVM_PACKAGE_VERSION VERSION_EQUAL "23.1.1")
@@ -75,11 +76,17 @@ elseif (WIN32)
         message(FATAL_ERROR "The local AArch64 COFF backport requires static LLVMJITLink")
       endif ()
       set(_coff_patch_dir src/ffi/llvm_patches/win_aarch64_coff)
-      # Direct objects replace the complete COFF.cpp member interface before the
-      # static archive is searched. Do not place these sources in another archive.
-      target_sources(tvm_ffi_orcjit PRIVATE ${_coff_patch_dir}/coff_aarch64.cc
-                                           ${_coff_patch_dir}/coff_dispatch.cc)
-      install(FILES ${_coff_patch_dir}/LICENSE.txt DESTINATION licenses RENAME LLVM-coff.txt)
+      # Direct objects replace the complete COFF.cpp member interface before the static archive is
+      # searched. Do not place these sources in another archive.
+      target_sources(
+        tvm_ffi_orcjit PRIVATE ${_coff_patch_dir}/coff_aarch64.cc
+                               ${_coff_patch_dir}/coff_dispatch.cc
+      )
+      install(
+        FILES ${_coff_patch_dir}/LICENSE.txt
+        DESTINATION licenses
+        RENAME LLVM-coff.txt
+      )
     else ()
       target_sources(tvm_ffi_orcjit PRIVATE src/ffi/llvm_patches/win_arm64_rtdyld.cc)
       target_compile_definitions(tvm_ffi_orcjit PRIVATE TVM_FFI_ORCJIT_WINDOWS_ARM64=1)
