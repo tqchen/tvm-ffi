@@ -71,7 +71,10 @@ namespace orcjit {
 class DLLImportDefinitionGenerator : public llvm::orc::DefinitionGenerator {
  public:
   DLLImportDefinitionGenerator(llvm::orc::ExecutionSession& ES, llvm::orc::ObjectLinkingLayer& L)
-      : ES_(ES), L_(L) {}
+      : ES_(ES), L_(&L) {}
+
+  // RuntimeDyld creates ARM64 COFF import slots and branch trampolines itself.
+  explicit DLLImportDefinitionGenerator(llvm::orc::ExecutionSession& ES) : ES_(ES), L_(nullptr) {}
 
   llvm::Error tryToGenerate(llvm::orc::LookupState& LS, llvm::orc::LookupKind K,
                             llvm::orc::JITDylib& JD, llvm::orc::JITDylibLookupFlags JDLookupFlags,
@@ -81,7 +84,7 @@ class DLLImportDefinitionGenerator : public llvm::orc::DefinitionGenerator {
   static void* FindInProcessModules(const std::string& Name);
 
   llvm::orc::ExecutionSession& ES_;
-  llvm::orc::ObjectLinkingLayer& L_;
+  llvm::orc::ObjectLinkingLayer* L_;
 };
 
 }  // namespace orcjit
