@@ -15,74 +15,41 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Publish OrcJIT wheel
+name: Validate retained ORCJIT ARM64 wheel
 
 on:
   push:
     branches: [orcjit-arm64-validation-855]
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Branch, tag or SHA to build"
-        required: true
-      publish:
-        description: "Publish built wheels to PyPI"
-        type: boolean
-        default: false
-        required: true
+
+permissions:
+  contents: read
+  actions: read
 
 jobs:
-  build_wheels:
-    name: ${{ matrix.os }} (${{ matrix.arch }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {os: windows-11-arm, arch: ARM64, build: "cp312-win_arm64"}
-
+  validate:
+    runs-on: windows-11-arm
     steps:
-      - name: Checkout repository (for local composite action)
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
         with:
-          fetch-depth: 1
-
-      - name: Build OrcJIT wheel
-        uses: ./.github/actions/build-orcjit-wheel
-        with:
-          arch: ${{ matrix.arch }}
-          build: ${{ matrix.build }}
-          checkout_ref: ${{ github.sha }}
-
-      - name: Upload wheels
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cibw-orcjit-wheels-${{ matrix.os }}-${{ matrix.arch }}-${{ strategy.job-index }}
-          path: ./wheelhouse/*.whl
-
-  upload_pypi:
-    needs: [build_wheels]
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
-      attestations: write
-    if: github.event_name == 'workflow_dispatch' && inputs.publish
-    steps:
+          python-version: "3.12"
+          architecture: arm64
       - uses: actions/download-artifact@v4
         with:
-          pattern: cibw-orcjit-*
-          path: dist
-          merge-multiple: true
-
-      - name: Generate artifact attestation for wheels
-        uses: actions/attest-build-provenance@v1
-        with:
-          subject-path: dist/*
-
-      - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
-        with:
-          attestations: true
-          verbose: true
+          name: cibw-orcjit-wheels-windows-11-arm-ARM64-0
+          run-id: 40264510479
+          github-token: ${{ github.token }}
+          path: wheelhouse
+      - name: Install retained wheel and released core
+        shell: pwsh
+        run: |
+          $wheel = (Get-ChildItem wheelhouse/*.whl)[0].FullName
+          python -m pip install "apache-tvm-ffi==0.1.15.post1" "$wheel" pytest pytest-xdist ninja mlc-llvm-static==23.1.1.post0
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip check
+      - name: Validate object lifecycle and generated function execution
+        shell: pwsh
+        run: |
+          python -m pytest addons/tvm_ffi_orcjit/tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python addons/tvm_ffi_orcjit/examples/quick-start/run.py --lang c
