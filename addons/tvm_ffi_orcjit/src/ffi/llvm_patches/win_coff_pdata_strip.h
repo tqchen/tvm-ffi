@@ -34,7 +34,7 @@
  * (pre-graph-build) to prevent the graph builder error.  Both pieces
  * disappear once `COFFPlatform` becomes usable.
  *
- * Trigger: Windows x86_64 JIT of clang-cl objects that contain
+ * Trigger: Windows x86_64 or ARM64 JIT of clang-cl objects that contain
  *          static-linkage functions (i.e. almost any C++ input).
  * Symptom without the transform: JITLink graph-build failure with
  *          "Could not find symbol" referencing a COMDAT leader.
@@ -69,7 +69,7 @@ namespace orcjit {
  *
  *  Returns the (possibly copy-modified) buffer.  Safe to install as the
  *  `ObjTransformLayer` transform — invokes no LLVM object parsers and
- *  short-circuits for any non-x86_64 or too-small input.
+ *  short-circuits for inputs other than x86_64/ARM64 or too-small inputs.
  */
 llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>> StripCoffPdataXdata(
     std::unique_ptr<llvm::MemoryBuffer> Buf);

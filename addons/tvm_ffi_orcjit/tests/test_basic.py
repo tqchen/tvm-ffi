@@ -508,6 +508,43 @@ def test_ctor_dtor(v: Variant) -> None:
 
 @pytest.mark.skipif(
     sys.platform != "win32" or platform.machine().lower() not in ("arm64", "aarch64"),
+    reason="AArch64 COFF unwind relocations require Windows ARM64",
+)
+def test_coff_static_comdat_unwind(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Static COMDAT unwind references must be removed before graph construction."""
+    if shutil.which("clang-cl") is None:
+        pytest.skip("clang-cl is unavailable")
+    monkeypatch.setenv("CC", "clang-cl")
+    source = tmp_path / "static_comdat.c"
+    source.write_text(
+        "#include <tvm/ffi/c_api.h>\n"
+        "__declspec(noinline) static int helper(int n) {\n"
+        "  volatile int values[32]; values[0] = n; return values[0] + 7;\n}\n"
+        "TVM_FFI_DLL_EXPORT int __tvm_ffi_probe(void* self, const TVMFFIAny* args, "
+        "int32_t n, TVMFFIAny* result) {\n"
+        "  result->type_index = kTVMFFIInt; result->zero_padding = 0;\n"
+        "  result->v_int64 = helper(n); return 0;\n}\n"
+    )
+    obj = tvm_ffi.cpp.build(
+        name="static_comdat",
+        sources=[str(source)],
+        output="static_comdat.o",
+        extra_cflags=["/O2", "/Gy", "/GS-"],
+        build_directory=str(tmp_path / "build"),
+    )
+    content = Path(obj).read_bytes()
+    assert int.from_bytes(content[:2], "little") == 0xAA64
+    # Require actual unwind relocations so this cannot pass on a leaf-only object.
+    count = int.from_bytes(content[2:4], "little")
+    offset = 20 + int.from_bytes(content[16:18], "little")
+    sections = [content[offset + i * 40 : offset + (i + 1) * 40] for i in range(count)]
+    assert any(s[:8].startswith(b".pdata") and int.from_bytes(s[32:34], "little") for s in sections)
+    module = ExecutionSession().load_module(obj)
+    assert module.probe() == 7
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or platform.machine().lower() not in ("arm64", "aarch64"),
     reason="AArch64 COFF import address resolution requires Windows ARM64",
 )
 def test_coff_imported_data_and_functions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

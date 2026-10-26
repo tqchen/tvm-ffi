@@ -75,7 +75,7 @@ llvm::Expected<std::unique_ptr<llvm::MemoryBuffer>> StripCoffPdataXdata(
     sec_hdr_start = 20 + opt_hdr_size;
     sym_entry_size = 18;
   }
-  if (machine != 0x8664) return std::move(Buf);
+  if (machine != 0x8664 && machine != 0xAA64) return std::move(Buf);
 
   // String table follows the symbol table
   size_t strtab_start = ptr_to_symtab + static_cast<size_t>(num_symbols) * sym_entry_size;
