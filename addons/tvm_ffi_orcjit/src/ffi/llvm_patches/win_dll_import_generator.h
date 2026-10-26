@@ -38,7 +38,11 @@
  *      land in JIT memory, keeping every PCRel32 fixup within ±2 GB
  *      of the JIT arena.
  *
- * Trigger: any Windows x86_64 JIT graph that references a DLL-imported
+ * On AArch64, the COFF JITLink backend supplies graph-local import slots and
+ * branch thunks. The generator resolves their targets to real host addresses,
+ * preserving imported data as well as functions.
+ *
+ * Trigger: any Windows JIT graph that references a DLL-imported
  *          symbol (which, for MSVC-compiled objects, is effectively
  *          any C runtime or libtvm_ffi entry point).
  * Symptom without the generator: unresolved `__imp_XXX` externals
