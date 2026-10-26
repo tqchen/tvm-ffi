@@ -119,6 +119,7 @@ ALLOW_FILE_NAME = {
 
 # List of specific files allowed in relpath to <proj_root>
 ALLOW_SPECIFIC_FILE = {
+    "addons/tvm_ffi_orcjit/src/ffi/llvm_patches/win_aarch64_coff/upstream/COFFOptions.inc",
     "LICENSE",
     "NOTICE",
     "KEYS",

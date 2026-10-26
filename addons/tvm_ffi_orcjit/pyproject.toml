@@ -67,6 +67,7 @@ sdist.include = [
   "/src/**/*.h",
   "/src/**/*.cc",
   "/src/**/*.cpp",
+  "/src/ffi/llvm_patches/win_aarch64_coff/**",
   "/python/**/*.py",
 ]
 

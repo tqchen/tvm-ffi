@@ -172,6 +172,8 @@ FMT_MAP = {
 
 # Files and patterns to skip during header checking.
 SKIP_LIST: list[str] = [
+    # Pinned LLVM sources retain their Apache-2.0 WITH LLVM-exception notices.
+    "addons/tvm_ffi_orcjit/src/ffi/llvm_patches/win_aarch64_coff/**",
     ".agents/skills/**/SKILL.md",
 ]
 

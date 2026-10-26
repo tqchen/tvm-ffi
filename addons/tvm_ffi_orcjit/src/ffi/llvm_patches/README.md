@@ -57,6 +57,13 @@ Each patch file opens with a fixed-shape header describing:
   Upstream dependency: usable `COFFPlatform` and in-range DLL call stubs.
   Remove when: host DLL imports work end-to-end without the custom generator.
 
+- **AArch64 COFF JITLink** (`win_aarch64_coff/`)
+  LLVM issue: not yet filed; LLVM23.1.1 rejects ARM64 COFF.
+  The local backport uses the released static SDK unchanged and is guarded to
+  its exact private ABI. See the directory README for archive selection and
+  native validation requirements.
+  Remove when: the minimum LLVM SDK provides native AArch64 COFF JITLink.
+
 ## Removal checklist
 
 When deleting a patch file:
