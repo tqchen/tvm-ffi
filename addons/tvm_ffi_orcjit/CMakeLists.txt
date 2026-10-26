@@ -82,6 +82,13 @@ elseif (WIN32)
         tvm_ffi_orcjit PRIVATE ${_coff_patch_dir}/coff_aarch64.cc
                                ${_coff_patch_dir}/coff_dispatch.cc
       )
+      if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+        # Match LLVM's preprocessing of the generated COFF option declarations.
+        set_source_files_properties(
+          ${_coff_patch_dir}/coff_aarch64.cc ${_coff_patch_dir}/coff_dispatch.cc
+          PROPERTIES COMPILE_OPTIONS /Zc:preprocessor
+        )
+      endif ()
       install(
         FILES ${_coff_patch_dir}/LICENSE.txt
         DESTINATION licenses
