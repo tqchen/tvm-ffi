@@ -26,8 +26,8 @@ __tvm_ffi_probe:
   add x9, x9, :lo12:target - 16
   ldr x11, [x9]
   add x10, x10, x11
-  adrp x9, target
-  ldr q0, [x9, :lo12:target]
+  adrp x9, simd_target
+  ldr q0, [x9, :lo12:simd_target]
   umov x11, v0.d[0]
   add x10, x10, x11
   mov x9, #1
@@ -42,4 +42,6 @@ data:
   .zero 4080
   .quad 17, 0
 target:
+  .quad 42, 0
+simd_target:
   .quad 42, 0
