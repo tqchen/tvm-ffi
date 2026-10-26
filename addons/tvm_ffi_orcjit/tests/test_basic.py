@@ -25,6 +25,8 @@ the module tears the dylib down.
 from __future__ import annotations
 
 import gc
+import platform
+import shutil
 import sys
 import tempfile
 import threading
@@ -485,6 +487,65 @@ def test_ctor_dtor(v: Variant) -> None:
         assert post.index("<fini_array.102>") < post.index("<fini_array.101>")
         assert "<ctors>" not in log
         assert "<dtors>" not in log
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or platform.machine().lower() not in ("arm64", "aarch64"),
+    reason="RuntimeDyld COFF lifecycle recovery is specific to Windows ARM64",
+)
+def test_failed_materialization_does_not_retain_crt_callbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed object cannot leave callbacks in the next module's lifecycle."""
+    compiler = shutil.which("clang-cl")
+    if compiler is None:
+        pytest.skip("clang-cl is unavailable")
+    monkeypatch.setenv("CC", compiler)
+    source = Path(__file__).parent / "sources" / "c" / "test_ctor_dtor.c"
+    failing_source = tmp_path / "failed_ctor.c"
+    failing_source.write_text(
+        source.read_text().replace(
+            "static void puts_log(const char* msg) {",
+            "extern void tvm_ffi_test_unresolved_symbol(void);\n"
+            "static void puts_log(const char* msg) {\n"
+            "  tvm_ffi_test_unresolved_symbol();",
+        )
+    )
+    failed_obj = tvm_ffi.cpp.build(
+        name="failed_ctor",
+        sources=[str(failing_source)],
+        output="failed_ctor.o",
+        extra_cflags=["/GS-"],
+        build_directory=str(tmp_path / "build"),
+    )
+    log: list[str] = []
+
+    @tvm_ffi.register_global_func("append_log", override=True)
+    def append_ctor_log(value: str) -> None:
+        log.append(value)
+
+    session = ExecutionSession()
+    failed = None
+    with pytest.raises(Exception, match="Failed to materialize|Symbols not found"):
+        failed = session.load_module(failed_obj)
+        failed.get_function("main")
+    del failed
+    gc.collect()
+    assert log == []
+
+    mod = load("c/test_ctor_dtor", session=session)
+    mod.get_function("main")()
+    del mod
+    gc.collect()
+    assert log == [
+        "<crt.XCA>",
+        "<crt.XCB>",
+        "<crt.XCC>",
+        "<crt.XCU>",
+        "<main>",
+        "<crt.XTA>",
+        "<crt.XTZ>",
+    ]
 
 
 @pytest.mark.skipif(
