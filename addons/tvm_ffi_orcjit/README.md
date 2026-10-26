@@ -198,7 +198,7 @@ Compile: `clang -O2 -c -o example.o example.c`
 - **DLL Imports** (Windows): A custom `DefinitionGenerator` resolves host
   process symbols from loaded DLLs. AMD64 uses JITLink pointer and jump stubs;
   ARM64 uses RuntimeDyld's native import slots and branch stubs.
-- **SEH Stripping** (Windows): `ObjectTransformLayer` strips `.pdata`/`.xdata`
+- **SEH Stripping** (Windows AMD64): `ObjectTransformLayer` strips `.pdata`/`.xdata`
   relocations from COFF objects. C++ exception handling on Windows remains
   unsupported on both architectures.
 
