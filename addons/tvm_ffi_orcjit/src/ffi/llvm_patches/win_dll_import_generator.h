@@ -19,7 +19,7 @@
 
 /*!
  * \file win_dll_import_generator.h
- * \brief Windows DLL-import symbol generator for JIT code (COFF/x86_64).
+ * \brief Windows DLL-import symbol generator for JIT code.
  *
  * On Windows with the MSVC ABI, COFF objects reference DLL-imported
  * symbols via `__imp_XXX` pointer stubs and direct calls.  Without
@@ -37,6 +37,8 @@
  *      (`jmp [__imp_XXX]`) so direct calls stay in range.  All stubs
  *      land in JIT memory, keeping every PCRel32 fixup within ±2 GB
  *      of the JIT arena.
+ *   On ARM64, RTDyld creates its own import slots and long-branch stubs.
+ *   The generator only supplies the absolute addresses of the base symbols.
  *
  * On AArch64, the COFF JITLink backend supplies graph-local import slots and
  * branch thunks. The generator resolves their targets to real host addresses,
@@ -74,7 +76,10 @@ namespace orcjit {
  */
 class DLLImportDefinitionGenerator : public llvm::orc::DefinitionGenerator {
  public:
-  DLLImportDefinitionGenerator(llvm::orc::ExecutionSession& ES, llvm::orc::ObjectLinkingLayer& L)
+  // A null layer selects absolute addresses for RTDyld, which creates its own
+  // architecture-specific import slots and branch stubs.
+  explicit DLLImportDefinitionGenerator(llvm::orc::ExecutionSession& ES,
+                                        llvm::orc::ObjectLinkingLayer* L = nullptr)
       : ES_(ES), L_(L) {}
 
   llvm::Error tryToGenerate(llvm::orc::LookupState& LS, llvm::orc::LookupKind K,
@@ -85,7 +90,7 @@ class DLLImportDefinitionGenerator : public llvm::orc::DefinitionGenerator {
   static void* FindInProcessModules(const std::string& Name);
 
   llvm::orc::ExecutionSession& ES_;
-  llvm::orc::ObjectLinkingLayer& L_;
+  llvm::orc::ObjectLinkingLayer* L_;
 };
 
 }  // namespace orcjit

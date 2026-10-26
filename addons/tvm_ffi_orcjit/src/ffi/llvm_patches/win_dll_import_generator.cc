@@ -129,7 +129,7 @@ llvm::Error DLLImportDefinitionGenerator::tryToGenerate(
 
   // AArch64 COFF JITLink owns graph-local IAT slots and branch thunks. Resolve
   // their targets to real addresses, including data, instead of function stubs.
-  if (ES_.getTargetTriple().getArch() == llvm::Triple::aarch64) {
+  if (L_ == nullptr || ES_.getTargetTriple().getArch() == llvm::Triple::aarch64) {
     llvm::orc::SymbolMap Symbols;
     for (auto& [Name, Addr] : Resolved) {
       Symbols[Name] = llvm::orc::ExecutorSymbolDef(Addr, llvm::JITSymbolFlags::Exported);
@@ -160,7 +160,7 @@ llvm::Error DLLImportDefinitionGenerator::tryToGenerate(
     G->addDefinedSymbol(StubBlock, 0, *InternedName, StubBlock.getSize(),
                         llvm::jitlink::Linkage::Strong, llvm::jitlink::Scope::Default, true, false);
   }
-  return L_.add(JD, std::move(G));
+  return L_->add(JD, std::move(G));
 }
 
 }  // namespace orcjit

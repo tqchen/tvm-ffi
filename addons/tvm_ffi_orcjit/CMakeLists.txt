@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 project(
   tvm_ffi_orcjit
-  VERSION 0.1.2
+  VERSION 0.1.3
   LANGUAGES C CXX
 )
 
@@ -59,26 +59,31 @@ elseif (WIN32)
   )
   if (CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64)$" OR CMAKE_GENERATOR_PLATFORM
                                                                     STREQUAL "ARM64")
-    if (NOT LLVM_PACKAGE_VERSION VERSION_EQUAL "23.1.1")
-      message(FATAL_ERROR "The local AArch64 COFF backport requires LLVM 23.1.1")
+    option(TVM_FFI_ORCJIT_ARM64_COFF_JITLINK "Use the local LLVM AArch64 COFF JITLink backport" ON)
+    if (TVM_FFI_ORCJIT_ARM64_COFF_JITLINK)
+      if (NOT LLVM_PACKAGE_VERSION VERSION_EQUAL "23.1.1")
+        message(FATAL_ERROR "The local AArch64 COFF backport requires LLVM 23.1.1")
+      endif ()
+      if (NOT MSVC)
+        message(FATAL_ERROR "The local AArch64 COFF backport requires the MSVC ABI")
+      endif ()
+      if (LLVM_ENABLE_RTTI)
+        message(FATAL_ERROR "The local AArch64 COFF backport requires the no-RTTI SDK")
+      endif ()
+      get_target_property(_coff_llvm_type LLVMJITLink TYPE)
+      if (NOT _coff_llvm_type STREQUAL "STATIC_LIBRARY")
+        message(FATAL_ERROR "The local AArch64 COFF backport requires static LLVMJITLink")
+      endif ()
+      set(_coff_patch_dir src/ffi/llvm_patches/win_aarch64_coff)
+      # Direct objects replace the complete COFF.cpp member interface before the
+      # static archive is searched. Do not place these sources in another archive.
+      target_sources(tvm_ffi_orcjit PRIVATE ${_coff_patch_dir}/coff_aarch64.cc
+                                           ${_coff_patch_dir}/coff_dispatch.cc)
+      install(FILES ${_coff_patch_dir}/LICENSE.txt DESTINATION licenses RENAME LLVM-coff.txt)
+    else ()
+      target_sources(tvm_ffi_orcjit PRIVATE src/ffi/llvm_patches/win_arm64_rtdyld.cc)
+      target_compile_definitions(tvm_ffi_orcjit PRIVATE TVM_FFI_ORCJIT_WINDOWS_ARM64=1)
     endif ()
-    if (NOT MSVC)
-      message(FATAL_ERROR "The local AArch64 COFF backport requires the MSVC ABI")
-    endif ()
-    get_target_property(_coff_llvm_type LLVMJITLink TYPE)
-    if (NOT _coff_llvm_type STREQUAL "STATIC_LIBRARY")
-      message(FATAL_ERROR "The local AArch64 COFF backport requires static LLVMJITLink")
-    endif ()
-    set(_coff_patch_dir src/ffi/llvm_patches/win_aarch64_coff)
-    # Direct objects replace the complete COFF.cpp member interface before the
-    # static archive is searched. Do not place these sources in another archive.
-    target_sources(tvm_ffi_orcjit PRIVATE ${_coff_patch_dir}/coff_aarch64.cc
-                                         ${_coff_patch_dir}/coff_dispatch.cc)
-    set_source_files_properties(
-      ${_coff_patch_dir}/coff_aarch64.cc ${_coff_patch_dir}/coff_dispatch.cc
-      PROPERTIES COMPILE_OPTIONS "/GR-"
-    )
-    install(FILES ${_coff_patch_dir}/LICENSE.txt DESTINATION licenses RENAME LLVM-coff.txt)
   endif ()
 endif ()
 set_target_properties(
@@ -89,6 +94,15 @@ target_include_directories(
 )
 separate_arguments(LLVM_DEFINITIONS_LIST NATIVE_COMMAND "${LLVM_DEFINITIONS}")
 target_compile_definitions(tvm_ffi_orcjit PRIVATE ${LLVM_DEFINITIONS_LIST})
+# LLVM-facing subclasses must use the SDK's RTTI mode: otherwise their typeinfo references LLVM
+# base-class typeinfo that a no-RTTI SDK does not provide.
+if (NOT LLVM_ENABLE_RTTI)
+  if (MSVC)
+    target_compile_options(tvm_ffi_orcjit PRIVATE /GR-)
+  else ()
+    target_compile_options(tvm_ffi_orcjit PRIVATE -fno-rtti)
+  endif ()
+endif ()
 
 # Imported targets carry the static compression libraries and platform system dependencies.
 llvm_map_components_to_libnames(LLVM_LIBS Core OrcJIT Support native)
