@@ -33,7 +33,7 @@ jobs:
           python validation/local_coff_evidence.py after
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $wheel = (Get-ChildItem wheelhouse/*.whl)[0].FullName
-          uv pip install --system --python python --no-deps "$wheel"
+          python -m pip install --no-deps "$wheel"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m pip check
       - name: Execute generated functions and lifecycle tests
