@@ -18,6 +18,8 @@
 name: Publish OrcJIT wheel
 
 on:
+  push:
+    branches: [orcjit-arm64-validation-855]
   workflow_dispatch:
     inputs:
       tag:
@@ -37,10 +39,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: ubuntu-latest, arch: x86_64, build: "cp312-manylinux_x86_64"}
-          - {os: ubuntu-24.04-arm, arch: aarch64, build: "cp312-manylinux_aarch64"}
-          - {os: macos-14, arch: arm64, build: "cp312-macosx_arm64"}
-          - {os: windows-latest, arch: AMD64, build: "cp312-win_amd64"}
           - {os: windows-11-arm, arch: ARM64, build: "cp312-win_arm64"}
 
     steps:
@@ -54,9 +52,10 @@ jobs:
         with:
           arch: ${{ matrix.arch }}
           build: ${{ matrix.build }}
-          checkout_ref: ${{ inputs.tag }}
+          checkout_ref: ${{ github.sha }}
 
       - name: Upload wheels
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cibw-orcjit-wheels-${{ matrix.os }}-${{ matrix.arch }}-${{ strategy.job-index }}
