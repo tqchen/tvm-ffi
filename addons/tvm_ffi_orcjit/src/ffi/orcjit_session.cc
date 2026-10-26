@@ -180,18 +180,41 @@ std::unique_ptr<llvm::orc::ObjectLayer> CreateARM64COFFLayer(llvm::orc::Executio
     bool is_init;
   };
   using Responsibility = llvm::orc::MaterializationResponsibility;
-  using PendingRanges = std::unordered_map<Responsibility*, std::vector<LifecycleRange>>;
+  using Ranges = std::vector<LifecycleRange>;
+  using PendingRanges = std::unordered_map<const char*, std::shared_ptr<Ranges>>;
+  class ObjectMemoryManager : public llvm::SectionMemoryManager {
+   public:
+    ObjectMemoryManager(std::shared_ptr<PendingRanges> pending, const char* object)
+        : llvm::SectionMemoryManager(nullptr, true),
+          pending_(std::move(pending)),
+          object_(object),
+          ranges_(std::make_shared<Ranges>()) {
+      (*pending_)[object_] = ranges_;
+    }
+    ~ObjectMemoryManager() override {
+      // NotifyEmitted is skipped on materialization failure. Release retained
+      // lifecycle ranges together with the memory they describe on every path.
+      auto it = pending_->find(object_);
+      // An emitted object's buffer can be reused before its memory is released.
+      if (it != pending_->end() && it->second == ranges_) pending_->erase(it);
+    }
+
+   private:
+    std::shared_ptr<PendingRanges> pending_;
+    const char* object_;
+    std::shared_ptr<Ranges> ranges_;
+  };
   auto pending = std::make_shared<PendingRanges>();
-  auto layer =
-      std::make_unique<llvm::orc::RTDyldObjectLinkingLayer>(ES, [](const llvm::MemoryBuffer&) {
+  auto layer = std::make_unique<llvm::orc::RTDyldObjectLinkingLayer>(
+      ES, [pending](const llvm::MemoryBuffer& object) {
         // Keep each object's code and data within ARM64 PC-relative range.
-        return std::make_unique<llvm::SectionMemoryManager>(nullptr, true);
+        return std::make_unique<ObjectMemoryManager>(pending, object.getBufferStart());
       });
   layer->setProcessAllSections(true);
   layer->setOverrideObjectFlagsWithResponsibilityFlags(true);
   layer->setNotifyLoaded([pending](Responsibility& R, const llvm::object::ObjectFile& Obj,
                                    const llvm::RuntimeDyld::LoadedObjectInfo& Info) {
-    auto& ranges = (*pending)[&R];
+    auto& ranges = *pending->at(Obj.getMemoryBufferRef().getBufferStart());
     ranges.clear();
     for (const auto& section : Obj.sections()) {
       auto name = section.getName();
@@ -213,12 +236,12 @@ std::unique_ptr<llvm::orc::ObjectLayer> CreateARM64COFFLayer(llvm::orc::Executio
     }
   });
   layer->setNotifyEmitted(
-      [pending, session](Responsibility& R, std::unique_ptr<llvm::MemoryBuffer>) {
-        auto it = pending->find(&R);
+      [pending, session](Responsibility& R, std::unique_ptr<llvm::MemoryBuffer> object) {
+        auto it = pending->find(object->getBufferStart());
         if (it == pending->end()) return;
         auto ranges = std::move(it->second);
         pending->erase(it);
-        for (const auto& range : ranges) {
+        for (const auto& range : *ranges) {
           if (!range.address) continue;
           for (uint64_t offset = 0; offset + sizeof(uint64_t) <= range.size;
                offset += sizeof(uint64_t)) {
