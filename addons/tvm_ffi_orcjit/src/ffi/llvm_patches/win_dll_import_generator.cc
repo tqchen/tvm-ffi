@@ -126,6 +126,16 @@ llvm::Error DLLImportDefinitionGenerator::tryToGenerate(
   }
   if (Resolved.empty()) return llvm::Error::success();
 
+  // AArch64 COFF JITLink owns graph-local IAT slots and branch thunks. Resolve
+  // their targets to real addresses, including data, instead of function stubs.
+  if (ES_.getTargetTriple().getArch() == llvm::Triple::aarch64) {
+    llvm::orc::SymbolMap Symbols;
+    for (auto& [Name, Addr] : Resolved) {
+      Symbols[Name] = llvm::orc::ExecutorSymbolDef(Addr, llvm::JITSymbolFlags::Exported);
+    }
+    return JD.define(llvm::orc::absoluteSymbols(std::move(Symbols)));
+  }
+
   // Step 2: Build a LinkGraph with __imp_ pointers and PLT jump stubs.
   auto G = std::make_unique<llvm::jitlink::LinkGraph>(
       "<DLL_IMPORT_STUBS>", ES_.getSymbolStringPool(), ES_.getTargetTriple(),
