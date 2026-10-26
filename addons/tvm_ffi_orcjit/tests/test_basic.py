@@ -24,7 +24,11 @@ the module tears the dylib down.
 
 from __future__ import annotations
 
+import ctypes
 import gc
+import platform
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -485,6 +489,114 @@ def test_ctor_dtor(v: Variant) -> None:
         assert post.index("<fini_array.102>") < post.index("<fini_array.101>")
         assert "<ctors>" not in log
         assert "<dtors>" not in log
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="COFF DLL imports require Windows")
+def test_coff_imported_data_and_functions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Import slots preserve data addresses and direct calls use callable thunks."""
+    compiler = shutil.which("clang-cl")
+    if compiler is None:
+        pytest.skip("clang-cl is unavailable")
+    monkeypatch.setenv("CC", compiler)
+    host = tmp_path / "host.c"
+    host.write_text(
+        "__declspec(dllexport) int tvm_ffi_coff_imported_data = 17;\n"
+        "__declspec(dllexport) int tvm_ffi_coff_direct(int x) { return x + 3; }\n"
+        "__declspec(dllexport) int tvm_ffi_coff_indirect(int x) { return x + 3; }\n"
+    )
+    dll = tmp_path / "host_imports.dll"
+    subprocess.run(
+        [compiler, "/LD", "/O2", str(host), "/link", f"/out:{dll}"], cwd=tmp_path, check=True
+    )
+    handle = ctypes.WinDLL(str(dll))
+    data = ctypes.c_int.in_dll(handle, "tvm_ffi_coff_imported_data")
+    source = tmp_path / "imports.c"
+    source.write_text(
+        "#include <tvm/ffi/c_api.h>\n"
+        "__declspec(dllimport) extern int tvm_ffi_coff_imported_data;\n"
+        "extern int tvm_ffi_coff_direct(int);\n"
+        "__declspec(dllimport) extern int tvm_ffi_coff_indirect(int);\n"
+        "TVM_FFI_DLL_EXPORT int __tvm_ffi_probe(void* self, const TVMFFIAny* args, "
+        "int32_t n, TVMFFIAny* result) {\n"
+        "  result->type_index = kTVMFFIInt; result->zero_padding = 0;\n"
+        "  result->v_int64 = tvm_ffi_coff_imported_data + tvm_ffi_coff_direct(2) "
+        "+ tvm_ffi_coff_indirect(4); return 0;\n}\n"
+    )
+    obj = tvm_ffi.cpp.build(
+        name="imports",
+        sources=[str(source)],
+        output="imports.o",
+        extra_cflags=["/GS-"],
+        build_directory=str(tmp_path / "build"),
+    )
+    session = ExecutionSession()
+    mod = session.load_module(obj)
+    assert mod.probe() == 29
+    data.value = 31
+    assert mod.probe() == 43
+    del mod
+    gc.collect()
+    reloaded = session.load_module(obj)
+    assert reloaded.probe() == 43
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or platform.machine().lower() not in ("arm64", "aarch64"),
+    reason="COFF lifecycle recovery is specific to Windows ARM64",
+)
+def test_failed_materialization_does_not_retain_crt_callbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed object cannot leave callbacks in the next module's lifecycle."""
+    compiler = shutil.which("clang-cl")
+    if compiler is None:
+        pytest.skip("clang-cl is unavailable")
+    monkeypatch.setenv("CC", compiler)
+    source = Path(__file__).parent / "sources" / "c" / "test_ctor_dtor.c"
+    failing_source = tmp_path / "failed_ctor.c"
+    failing_source.write_text(
+        source.read_text().replace(
+            "static void puts_log(const char* msg) {",
+            "extern void tvm_ffi_test_unresolved_symbol(void);\n"
+            "static void puts_log(const char* msg) {\n"
+            "  tvm_ffi_test_unresolved_symbol();",
+        )
+    )
+    failed_obj = tvm_ffi.cpp.build(
+        name="failed_ctor",
+        sources=[str(failing_source)],
+        output="failed_ctor.o",
+        extra_cflags=["/GS-"],
+        build_directory=str(tmp_path / "build"),
+    )
+    log: list[str] = []
+
+    @tvm_ffi.register_global_func("append_log", override=True)
+    def append_ctor_log(value: str) -> None:
+        log.append(value)
+
+    session = ExecutionSession()
+    failed = None
+    with pytest.raises(Exception, match=r"Failed to materialize|Symbols not found"):
+        failed = session.load_module(failed_obj)
+        failed.get_function("main")
+    del failed
+    gc.collect()
+    assert log == []
+
+    mod = load("c/test_ctor_dtor", session=session)
+    mod.get_function("main")()
+    del mod
+    gc.collect()
+    assert log == [
+        "<crt.XCA>",
+        "<crt.XCB>",
+        "<crt.XCC>",
+        "<crt.XCU>",
+        "<main>",
+        "<crt.XTA>",
+        "<crt.XTZ>",
+    ]
 
 
 @pytest.mark.skipif(
