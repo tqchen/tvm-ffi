@@ -26,6 +26,16 @@ use tvm_ffi_sys::{
     TVMFFIErrorMoveFromRaised, TVMFFIErrorSetRaised, TVMFFIObjectHandle, TVMFFITypeIndex,
 };
 
+/// The object behind an [`Error`]: its kind, message, backtrace, cause and context.
+#[repr(C)]
+#[derive(Object)]
+#[type_key = "ffi.Error"]
+#[type_index(TVMFFITypeIndex::kTVMFFIError)]
+pub struct ErrorObj {
+    object: Object,
+    cell: TVMFFIErrorCell,
+}
+
 /// The kind of an [`Error`], such as `ValueError`, matching the exception
 /// type that Python raises.
 ///
@@ -72,16 +82,6 @@ pub const INDEX_ERROR: ErrorKind = ErrorKind::new("IndexError");
 pub const INTERNAL_ERROR: ErrorKind = ErrorKind::new("InternalError");
 pub const OVERFLOW_ERROR: ErrorKind = ErrorKind::new("OverflowError");
 pub const ZERO_DIVISION_ERROR: ErrorKind = ErrorKind::new("ZeroDivisionError");
-
-/// error object
-#[repr(C)]
-#[derive(Object)]
-#[type_key = "ffi.Error"]
-#[type_index(TVMFFITypeIndex::kTVMFFIError)]
-pub struct ErrorObj {
-    object: Object,
-    cell: TVMFFIErrorCell,
-}
 
 /// An error that crosses the FFI boundary, with a kind, a message and a
 /// backtrace.
@@ -291,11 +291,8 @@ impl Error {
         self.data.cell.backtrace.as_str()
     }
 
-    /// Return the cause, if one was attached to this error.
-    ///
-    /// # Returns
-    ///
-    /// The error that caused this one, or `None`.
+    /// The error that caused this one, the next link of the cause chain, as C++
+    /// `cause_chain()`. See also `source`.
     pub fn cause_chain(&self) -> Option<&Error> {
         let handle = &self.data.cell.cause_chain;
         if handle.is_null() {
@@ -306,11 +303,7 @@ impl Error {
         Some(unsafe { &*(handle as *const _ as *const Error) })
     }
 
-    /// Return the application-specific context, if present.
-    ///
-    /// # Returns
-    ///
-    /// The context object, or `None`.
+    /// The application-specific context object, if present.
     pub fn extra_context(&self) -> Option<&object::ObjectRef> {
         let handle = &self.data.cell.extra_context;
         if handle.is_null() {
@@ -319,32 +312,6 @@ impl Error {
         // SAFETY: the cell owns a non-null object handle, and an `ObjectRef`
         // is exactly that one object pointer.
         Some(unsafe { &*(handle as *const _ as *const object::ObjectRef) })
-    }
-
-    /// The `extra_context` slot, to update in place.
-    pub(crate) fn extra_context_mut(&mut self) -> &mut Option<object::ObjectRef> {
-        let error = self.make_mut();
-        // SAFETY: this handle is the only reference, and the slot owns a nullable
-        // object handle, which is exactly an `Option<ObjectRef>`.
-        unsafe {
-            &mut *std::ptr::addr_of_mut!((*error).cell.extra_context)
-                .cast::<Option<object::ObjectRef>>()
-        }
-    }
-
-    /// Make this handle the only reference to its error, copying a shared one, as
-    /// `Arc::make_mut`.
-    fn make_mut(&mut self) -> *mut ErrorObj {
-        if !ObjectArc::is_unique(&self.data) {
-            *self = Self::new_with_cause_and_extra_context(
-                self.kind(),
-                self.message(),
-                self.backtrace(),
-                self.cause_chain(),
-                self.extra_context(),
-            );
-        }
-        ObjectArc::as_mut_ptr(&mut self.data)
     }
 
     /// Get the traceback of the error in the order of most recent call last, as
@@ -390,6 +357,32 @@ impl Error {
             );
         }
         this
+    }
+
+    /// The `extra_context` slot, to update in place.
+    pub(crate) fn extra_context_mut(&mut self) -> &mut Option<object::ObjectRef> {
+        let error = self.make_mut();
+        // SAFETY: this handle is the only reference, and the slot owns a nullable
+        // object handle, which is exactly an `Option<ObjectRef>`.
+        unsafe {
+            &mut *std::ptr::addr_of_mut!((*error).cell.extra_context)
+                .cast::<Option<object::ObjectRef>>()
+        }
+    }
+
+    /// Make this handle the only reference to its error, copying a shared one, as
+    /// `Arc::make_mut`.
+    fn make_mut(&mut self) -> *mut ErrorObj {
+        if !ObjectArc::is_unique(&self.data) {
+            *self = Self::new_with_cause_and_extra_context(
+                self.kind(),
+                self.message(),
+                self.backtrace(),
+                self.cause_chain(),
+                self.extra_context(),
+            );
+        }
+        ObjectArc::as_mut_ptr(&mut self.data)
     }
 }
 

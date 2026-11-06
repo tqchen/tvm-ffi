@@ -48,32 +48,15 @@ pub struct ObjectArc<T: ObjectCore> {
     _phantom: std::marker::PhantomData<T>,
 }
 
-// Not `Send`/`Sync` by default: an object's thread safety is that of its (often
-// C++) implementation, which the handle cannot see. An object type opts in with
-// `ImmutableObject`; tvm-ffi's own immutable handles opt in explicitly.
-
-/// An object type whose shared instances are never mutated, so handles to it may
-/// cross threads.
+/// A generic managed reference to a TVM-FFI object.
 ///
-/// A handle `ObjectArc<T>`, and every reference built on it, is `Send + Sync`
-/// when `T: ImmutableObject` and `T`'s fields are themselves `Send + Sync`, so
-/// a field such as `Any`, which may hold a mutable object, keeps the handle
-/// single-threaded. The stub generator implements it for each class whose C++
-/// declaration is not `_type_mutable`. An erased `ObjectRef` may point at any
-/// object, so it never crosses threads.
-///
-/// # Safety
-///
-/// No code may mutate an instance while it is shared: changes go through
-/// copy-on-write, in place only on a uniquely held instance, as for C++ classes
-/// that are not `_type_mutable`.
-pub unsafe trait ImmutableObject: ObjectCore {}
-
-// SAFETY: `T` is never mutated while shared, its fields are thread-safe, and the
-// reference count is atomic.
-unsafe impl<T: ImmutableObject + Send + Sync> Send for ObjectArc<T> {}
-// SAFETY: as for `Send`.
-unsafe impl<T: ImmutableObject + Send + Sync> Sync for ObjectArc<T> {}
+/// Holds an `ObjectArc<Object>` that manages the underlying object's lifetime
+/// through reference counting.
+#[repr(C)]
+#[derive(ObjectRef, Clone)]
+pub struct ObjectRef {
+    data: ObjectArc<Object>,
+}
 
 /// The native representation of an object-system type.
 ///
@@ -421,6 +404,39 @@ pub fn is_instance_of<Target: ObjectCore>(object_type_index: i32) -> bool {
     }
 }
 
+/// Format a managed reference as its runtime type key and object address, as
+/// the `Debug` implementation of `#[derive(ObjectRef)]` does.
+///
+/// Call it from `Debug` for a reference type implemented by hand, such as a
+/// typed view over another reference, so that `downcast(..).unwrap()` and
+/// `assert_eq!` can print it.
+///
+/// ```
+/// use tvm_ffi::object::{fmt_object_ref, ObjectRef};
+/// use tvm_ffi::Array;
+/// struct Shown(ObjectRef);
+/// impl std::fmt::Debug for Shown {
+///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+///         fmt_object_ref(&self.0, f)
+///     }
+/// }
+/// let shown = Shown(Array::from_vec(vec![1_i64]).into());
+/// assert!(format!("{shown:?}").starts_with("ffi.Array@"));
+/// ```
+pub fn fmt_object_ref<T: ObjectRefCore>(
+    this: &T,
+    f: &mut std::fmt::Formatter<'_>,
+) -> std::fmt::Result {
+    let object = ObjectArc::as_ptr(T::data(this)).cast::<TVMFFIObject>();
+    // SAFETY: `this` keeps the object, and so its header, alive.
+    let type_index = unsafe { (*object).type_index };
+    write!(f, "{}@{:p}", type_key_of_index(type_index), object)
+}
+
+// ----------------------------------------------------------------------------
+// Helpers
+// ----------------------------------------------------------------------------
+
 /// The strict downcast from the root [`ObjectRef`] to `B`, for the containers'
 /// `TryFrom<ObjectRef>`, which are hand-written as their upcasts are.
 #[inline(always)]
@@ -458,35 +474,6 @@ pub(crate) fn into_root_object_ref<S: ObjectRefCore>(value: S) -> ObjectRef {
     }
 }
 
-/// Format a managed reference as its runtime type key and object address, as
-/// the `Debug` implementation of `#[derive(ObjectRef)]` does.
-///
-/// Call it from `Debug` for a reference type implemented by hand, such as a
-/// typed view over another reference, so that `downcast(..).unwrap()` and
-/// `assert_eq!` can print it.
-///
-/// ```
-/// use tvm_ffi::object::{fmt_object_ref, ObjectRef};
-/// use tvm_ffi::Array;
-/// struct Shown(ObjectRef);
-/// impl std::fmt::Debug for Shown {
-///     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-///         fmt_object_ref(&self.0, f)
-///     }
-/// }
-/// let shown = Shown(Array::from_vec(vec![1_i64]).into());
-/// assert!(format!("{shown:?}").starts_with("ffi.Array@"));
-/// ```
-pub fn fmt_object_ref<T: ObjectRefCore>(
-    this: &T,
-    f: &mut std::fmt::Formatter<'_>,
-) -> std::fmt::Result {
-    let object = ObjectArc::as_ptr(T::data(this)).cast::<TVMFFIObject>();
-    // SAFETY: `this` keeps the object, and so its header, alive.
-    let type_index = unsafe { (*object).type_index };
-    write!(f, "{}@{:p}", type_key_of_index(type_index), object)
-}
-
 /// The registered type key of `type_index`, or `<type_index N>` when it has none.
 pub(crate) fn type_key_of_index(type_index: i32) -> String {
     unsafe {
@@ -497,16 +484,6 @@ pub(crate) fn type_key_of_index(type_index: i32) -> String {
             (*info).type_key.as_str().to_string()
         }
     }
-}
-
-/// A generic managed reference to a TVM-FFI object.
-///
-/// Holds an `ObjectArc<Object>` that manages the underlying object's lifetime
-/// through reference counting.
-#[repr(C)]
-#[derive(ObjectRef, Clone)]
-pub struct ObjectRef {
-    data: ObjectArc<Object>,
 }
 
 /// Unsafe operations on object
@@ -646,9 +623,9 @@ pub mod unsafe_ {
     }
 }
 
-//---------------------
+// ----------------------------------------------------------------------------
 // Object
-//---------------------
+// ----------------------------------------------------------------------------
 
 impl Object {
     pub fn new() -> Self {
@@ -671,9 +648,9 @@ unsafe impl ObjectCore for Object {
     }
 }
 
-//---------------------
+// ----------------------------------------------------------------------------
 // ObjectArc
-//---------------------
+// ----------------------------------------------------------------------------
 
 // Allocate and initialize the normal FFI header while preserving the concrete
 // payload's alignment and drop/layout deleter. The payload starts with an Object.
@@ -904,3 +881,19 @@ impl<T: ObjectCore> Clone for ObjectArc<T> {
         }
     }
 }
+
+/// An object type whose shared instances are never mutated, so `ObjectArc<T>` is
+/// `Send + Sync` when `T`'s fields are.
+///
+/// # Safety
+///
+/// No code may mutate an instance while it is shared: changes go through
+/// copy-on-write, in place only on a uniquely held instance, as for C++ classes
+/// that are not `_type_mutable`.
+pub unsafe trait ImmutableObject: ObjectCore {}
+
+// SAFETY: `T` is never mutated while shared, its fields are thread-safe, and the
+// reference count is atomic.
+unsafe impl<T: ImmutableObject + Send + Sync> Send for ObjectArc<T> {}
+// SAFETY: as for `Send`.
+unsafe impl<T: ImmutableObject + Send + Sync> Sync for ObjectArc<T> {}

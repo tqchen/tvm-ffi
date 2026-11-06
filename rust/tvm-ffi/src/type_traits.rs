@@ -214,14 +214,17 @@ pub trait ContainerElement: container_element_ops::Ops {}
 impl<T: AnyCompatible> ContainerElement for T {}
 impl ContainerElement for Any {}
 
-/// Types whose value an FFI `Any` cell stores in place, so `&Self` can be
-/// borrowed from the cell, as [`crate::Array`] indexing does.
+/// A type whose value an FFI cell stores in place, so `&Self` borrows from the
+/// cell, as [`Array`](crate::Array) indexing does.
+///
+/// A reference type implemented by hand gets it from
+/// [`unsafe_impl_ref_downcast!`](crate::unsafe_impl_ref_downcast).
 ///
 /// # Safety
 ///
-/// For a cell that passes `container_check_any_strict` for `Self`,
-/// `ref_from_any_unchecked` must return a reference into that cell that is a valid
-/// `Self` for as long as the cell is borrowed.
+/// For a cell that `Self` strictly accepts, `ref_from_any_unchecked` must
+/// return a reference into that cell that is a valid `Self` for as long as the
+/// cell is borrowed.
 #[doc(hidden)]
 pub unsafe trait RefFromAnyUnchecked: ContainerElement {
     /// Borrow the value stored in `cell`.
@@ -325,10 +328,10 @@ unsafe impl<T: crate::object::ObjectRefCore> DowncastRefFromAny for Option<T> {
     }
 }
 
-/// Types that [`crate::Any::downcast_ref`] and [`crate::AnyView::downcast_ref`]
-/// can borrow from an FFI cell in place: object types (`ArrayObj`), and the
-/// [`RefFromAnyUnchecked`] types (managed references such as `Array<T>`, `String`,
-/// `i64`).
+/// A type that [`Any::downcast_ref`] and [`AnyView::downcast_ref`] borrow from
+/// an FFI cell in place: object types (`ArrayObj`), and the
+/// [`RefFromAnyUnchecked`] types (managed references such as `Array<T>`,
+/// `String`, `i64`).
 ///
 /// # Safety
 ///
@@ -359,7 +362,8 @@ unsafe impl<T: crate::object::ObjectCore> DowncastRefFromAny for T {
     }
 }
 
-/// Borrow `cell` as a [`RefFromAnyUnchecked`] type when it strictly holds one.
+/// Borrow `cell` as a [`RefFromAnyUnchecked`] type when it strictly holds one:
+/// the [`DowncastRefFromAny`] of such a type.
 ///
 /// # Safety
 ///
@@ -376,7 +380,7 @@ pub unsafe fn downcast_ref_from_any_in_place<T: RefFromAnyUnchecked>(
     }
 }
 
-/// Types that an object reference's [`ObjectRefCore::downcast_ref`] can borrow
+/// A type that an object reference's [`ObjectRefCore::downcast_ref`] borrows
 /// from the reference's object pointer: object types (`ArrayObj`), and managed
 /// references that are exactly one object pointer (`Array<T>`, every
 /// `#[derive(ObjectRef)]` type).
@@ -412,7 +416,8 @@ unsafe impl<T: crate::object::ObjectCore> DowncastRefFromObject for T {
 }
 
 /// Borrow the object pointer at `place` as the one-pointer reference type `T`
-/// when the object strictly is a `T`.
+/// when the object strictly is a `T`: the [`DowncastRefFromObject`] of such a
+/// type.
 ///
 /// # Safety
 ///
