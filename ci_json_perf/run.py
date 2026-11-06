@@ -34,7 +34,7 @@ HARNESS = Path(__file__).resolve().parent
 OUT = ROOT / "results"
 OUT.mkdir(exist_ok=True)
 STATES = ("baseline", "candidate")
-REPEATS = 21
+REPEATS = 41
 
 
 def capture(args: list[str]) -> dict[str, Any]:
@@ -176,7 +176,7 @@ time.sleep(2)
 for mode in ["parse", "write"]:
     for case in ["int", "float", "integral_float", "scientific", "ints", "floats", "mixed"]:
         pilot, _ = measure("baseline", mode, case, 2000)
-        iterations = max(1000, min(20000000, int(0.12e9 / pilot)))
+        iterations = max(1000, min(20000000, int(0.4e9 / pilot)))
         groups = {state: [] for state in STATES}
         ratios = []
         for repeat in range(REPEATS):
@@ -227,7 +227,7 @@ for row in result["summary"]:
 summary = [
     "## Matched JSON performance",
     "",
-    f"Platform: {result['platform']}; 21 alternating pairs per workload.",
+    f"Platform: {result['platform']}; 41 alternating pairs per workload.",
     "Shared hosted runner: results are measurements, not an isolation guarantee.",
     "",
     "| Workload | Baseline ns/op | Candidate ns/op | Median reduction | Paired ratio 95% interval |",
