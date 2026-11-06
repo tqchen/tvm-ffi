@@ -21,7 +21,6 @@
  *
  * \brief A minimalistic JSON writer based on ffi values.
  */
-#include <locale.h>
 #include <tvm/ffi/any.h>
 #include <tvm/ffi/container/array.h>
 #include <tvm/ffi/container/dict.h>
@@ -35,14 +34,11 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
+#include <locale>
+#include <sstream>
 #include <string>
 #include <unordered_set>
 #include <utility>
-
-#ifdef __APPLE__
-#include <xlocale.h>
-#endif
 
 namespace tvm {
 namespace ffi {
@@ -160,41 +156,26 @@ class JSONWriter {
     result_.append(buffer, static_cast<size_t>(result.ptr - buffer));
   }
 
-  static int WriteFloatToBuffer(char* buffer, size_t size, double value, bool fixed) {
-// libc++ and older libstdc++ use the C-locale fallback.
+  void WriteFiniteFloat(double value, bool fixed) {
+// libc++ and older libstdc++ use the classic-locale stream fallback.
 #if defined(_MSC_VER) || (defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 11)
-    auto result = std::to_chars(buffer, buffer + size, value,
+    char buffer[32];
+    auto result = std::to_chars(buffer, buffer + sizeof(buffer), value,
                                 fixed ? std::chars_format::fixed : std::chars_format::general,
                                 fixed ? 1 : 17);
-    return static_cast<int>(result.ptr - buffer);
+    result_.append(buffer, static_cast<size_t>(result.ptr - buffer));
 #else
-    static const struct NumberLocale {
-#ifdef _WIN32
-      _locale_t value = _create_locale(LC_NUMERIC, "C");
-      ~NumberLocale() { _free_locale(value); }
-#else
-      locale_t value = newlocale(LC_NUMERIC_MASK, "C", nullptr);
-      ~NumberLocale() { freelocale(value); }
-#endif
-      NumberLocale() { TVM_FFI_ICHECK(value != nullptr) << "Cannot create JSON numeric locale"; }
-    } locale;
-#ifdef _WIN32
-    return _snprintf_l(buffer, size, fixed ? "%.1f" : "%.17g", locale.value, value);
-#elif defined(__APPLE__)
-    return snprintf_l(buffer, size, locale.value, fixed ? "%.1f" : "%.17g", value);
-#else
-    locale_t previous_locale = uselocale(locale.value);
-    int count = snprintf(buffer, size, fixed ? "%.1f" : "%.17g", value);
-    uselocale(previous_locale);
-    return count;
-#endif
+    std::ostringstream stream;
+    stream.imbue(std::locale::classic());
+    stream.setf(fixed ? std::ios_base::fixed : std::ios_base::fmtflags(0),
+                std::ios_base::floatfield);
+    stream.precision(fixed ? 1 : 17);
+    stream << value;
+    result_.append(stream.str());
 #endif
   }
 
   void WriteFloat(double value) {
-    // largest possible string representation of a double is around 24 chars plus
-    // one null terminator keep 32 to be safe
-    char buffer[32];
     if (FastMathSafeIsNaN(value)) {
       WriteLiteral("NaN", 3);
     } else if (FastMathSafeIsInf(value)) {
@@ -210,13 +191,11 @@ class JSONWriter {
         // always print an extra .0 for integer so integer numbers are printed as floats
         // this helps us to distinguish between integer and float, which is not necessary
         // but helps to ensure roundtrip property of the parser/printer in terms of int/float types
-        int size = WriteFloatToBuffer(buffer, sizeof(buffer), int_part, true);
-        result_.append(buffer, size);
+        WriteFiniteFloat(int_part, true);
       } else {
         // Save 17 decimal digits to avoid loss during loading JSON
         // this is the maximum precision that can be represented in a double
-        int size = WriteFloatToBuffer(buffer, sizeof(buffer), value, false);
-        result_.append(buffer, size);
+        WriteFiniteFloat(value, false);
       }
     }
   }
