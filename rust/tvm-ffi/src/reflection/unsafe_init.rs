@@ -67,7 +67,6 @@ pub unsafe trait UnsafeInit: ObjectCore {
     ///
     /// `this` points to an object that [`unsafe_init`] made, which is not used
     /// afterwards.
-    #[doc(hidden)]
     unsafe fn drop_defined_fields(this: *mut Self);
 }
 
@@ -78,11 +77,13 @@ unsafe impl UnsafeInit for Object {
 
 /// Drops the field at `field` unless it is undefined.
 ///
+/// Call it for each field in [`UnsafeInit::drop_defined_fields`] of an object
+/// implemented by hand.
+///
 /// # Safety
 ///
 /// `field` points to a field of an object, defined or undefined, which is not
 /// used afterwards.
-#[doc(hidden)]
 #[inline]
 pub unsafe fn drop_if_defined<F: AnyCompatible>(field: *mut F) {
     unsafe {

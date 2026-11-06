@@ -152,8 +152,20 @@ impl IntoStaticInitResult for Never {
     }
 }
 
-/// A [`static_init_block!`](crate::static_init_block), gathered at link time.
-#[doc(hidden)]
+/// A [`static_init_block!`](crate::static_init_block), gathered at link time into
+/// [`STATIC_INIT_BLOCKS`].
+///
+/// Inspect the blocks to check what they registered, as a test does:
+///
+/// ```no_run
+/// use tvm_ffi::static_init::STATIC_INIT_BLOCKS;
+/// use tvm_ffi::Function;
+///
+/// for block in STATIC_INIT_BLOCKS.iter() {
+///     let succeeded = Function::get_global(&block.marker()).is_ok();
+///     println!("{}: succeeded {succeeded}", block.identity());
+/// }
+/// ```
 pub struct StaticInitBlock {
     /// The module and line of the block.
     module: &'static str,
@@ -169,7 +181,6 @@ pub struct StaticInitBlock {
 
 /// The [`static_init_block!`](crate::static_init_block)s of the program or library, gathered at
 /// link time from the whole of it.
-#[doc(hidden)]
 #[linkme::distributed_slice]
 pub static STATIC_INIT_BLOCKS: [StaticInitBlock];
 
@@ -196,7 +207,6 @@ impl StaticInitBlock {
     /// The identity of the block in the process, `module:line@version#hash`: the same in every
     /// library that links the block's crate, and another one if the crate version or the block's
     /// text differs.
-    #[doc(hidden)]
     pub fn identity(&self) -> std::string::String {
         format!(
             "{}:{}@{}#{:016x}",
@@ -207,7 +217,6 @@ impl StaticInitBlock {
     /// The name of the global function that marks the block run in the process,
     /// `ffi.static_init_block.<identity>`. The libraries of a process share the global function
     /// table, and their statics are their own.
-    #[doc(hidden)]
     pub fn marker(&self) -> std::string::String {
         format!("ffi.static_init_block.{}", self.identity())
     }

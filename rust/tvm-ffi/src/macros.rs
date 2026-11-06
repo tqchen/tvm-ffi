@@ -16,7 +16,8 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-// rexport paste under macro namespace so downstream do not need to specify dep
+// Re-export paste for the export macros, so downstream crates need not depend on it.
+#[doc(hidden)]
 pub use paste;
 // ----------------------------------------------------------------------------
 // Macros for error handling
@@ -41,12 +42,24 @@ macro_rules! function_name {
     }};
 }
 
-/// Resolves a registered global [`Function`](crate::function::Function) by name
-/// and caches it for the lifetime of the process (lock-free after the first
-/// lookup). Each call site gets its own cache and the macro evaluates to a
-/// `&'static Function`. Panics — naming the function — if it is not registered.
+/// Look up a registered global [`Function`](crate::Function) by name once, and
+/// keep it for the process: a `&'static Function`.
 ///
-/// Usage: `cached_global_func!("ffi.Map").call_packed(args)`
+/// Each call site has its own cache, which later calls read without a lock.
+/// Use it for a function that must be registered, such as a built-in one; it
+/// panics, naming the function, if the function is not. See also
+/// [`Function::get_global`](crate::Function::get_global), which returns an
+/// error instead.
+///
+/// # Examples
+///
+/// ```
+/// use tvm_ffi::{cached_global_func, Array};
+///
+/// let array = cached_global_func!("ffi.Array").call_tuple((1_i64, 2_i64))?;
+/// assert_eq!(Array::<i64>::try_from(array)?.len(), 2);
+/// # Ok::<(), tvm_ffi::Error>(())
+/// ```
 #[macro_export]
 macro_rules! cached_global_func {
     ($name:literal) => {{
@@ -332,13 +345,13 @@ macro_rules! attach_context {
 // Macros for any definitions
 // ----------------------------------------------------------------------------
 
-// implements try from any for all integer types
 /// Implement `TryFrom<AnyView>`, `TryFrom<Any>` and `TryFrom<&Any>` for each listed
-/// [`AnyCompatible`](crate::type_traits::AnyCompatible) type, so it converts out of
-/// FFI values.
+/// [`AnyCompatible`](crate::AnyCompatible) type, so it converts out of FFI values
+/// by its `AnyCompatible` checks.
 ///
-/// `#[derive(ObjectRef)]` calls this. Call it yourself for a reference type you
-/// implement by hand, such as a typed view over another reference, together with
+/// `#[derive(ObjectRef)]` calls it. Call it for a reference type implemented by
+/// hand, such as a typed view over another reference, as
+/// `impl_try_from_any!(MyPairView)`, together with
 /// [`impl_arg_into_ref!`](crate::impl_arg_into_ref) and
 /// [`impl_into_arg_holder_default!`](crate::impl_into_arg_holder_default).
 #[macro_export]
@@ -417,12 +430,12 @@ macro_rules! impl_try_from_any_for_parametric {
     };
 }
 
-/// Implement `IntoArgHolder` for each listed type, so it can be passed to a
-/// [`Function`](crate::Function) call.
+/// Let each listed [`AnyCompatible`](crate::AnyCompatible) type, owned or
+/// borrowed, be an argument of a function from
+/// [`into_typed_fn!`](crate::into_typed_fn).
 ///
-/// `#[derive(ObjectRef)]` calls this. Call it yourself for a reference type you
-/// implement by hand, such as a typed view over another reference, together with
-/// [`impl_try_from_any!`](crate::impl_try_from_any) and
+/// See also [`impl_try_from_any!`](crate::impl_try_from_any), which a reference
+/// type implemented by hand calls with it and
 /// [`impl_arg_into_ref!`](crate::impl_arg_into_ref).
 #[macro_export]
 macro_rules! impl_into_arg_holder_default {
@@ -444,12 +457,12 @@ macro_rules! impl_into_arg_holder_default {
     };
 }
 
-/// Implement `ArgIntoRef` for each listed type, so a typed function can take it
-/// as an argument by reference.
+/// Let each listed [`AnyCompatible`](crate::AnyCompatible) type, owned or
+/// borrowed, be an element of the arguments of
+/// [`Function::call_tuple`](crate::Function::call_tuple).
 ///
-/// `#[derive(ObjectRef)]` calls this. Call it yourself for a reference type you
-/// implement by hand, such as a typed view over another reference, together with
-/// [`impl_try_from_any!`](crate::impl_try_from_any) and
+/// See also [`impl_try_from_any!`](crate::impl_try_from_any), which a reference
+/// type implemented by hand calls with it and
 /// [`impl_into_arg_holder_default!`](crate::impl_into_arg_holder_default).
 #[macro_export]
 macro_rules! impl_arg_into_ref {

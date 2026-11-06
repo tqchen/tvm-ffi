@@ -30,6 +30,7 @@ pub mod extra;
 pub mod function;
 #[doc(hidden)]
 pub mod function_internal;
+#[doc(hidden)]
 pub mod macros;
 #[doc(hidden)]
 pub mod match_any_internal;

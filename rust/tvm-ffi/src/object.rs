@@ -149,11 +149,23 @@ pub unsafe trait ObjectCoreWithExtraItems: ObjectCore {
 /// `Array<T>` and every `#[derive(ObjectRef)]` type, with the operations every
 /// reference supports: identity ([`same_as`](Self::same_as)) and strict casts
 /// between reference types, which check the object's runtime type and never
-/// convert. [`downcast_ref`](Self::downcast_ref) borrows in place, and
-/// [`downcast`](Self::downcast) takes the reference, as std's
-/// `dyn Any::downcast_ref` and `Box<dyn Any>::downcast` do. Upcasts are
-/// `From`/`Into`, which `#[derive(ObjectRef)]` and
+/// convert. Upcasts are `From`/`Into`, which `#[derive(ObjectRef)]` and
 /// [`unsafe_impl_object_upcast!`](crate::unsafe_impl_object_upcast) generate.
+///
+/// # Casts
+///
+/// * [`downcast_ref`](Self::downcast_ref) borrows, strictly, as std's
+///   `dyn Any::downcast_ref` does.
+/// * [`downcast`](Self::downcast) takes the value, strictly, and hands it back
+///   on a mismatch, as `Box<dyn Any>::downcast` does; the counterpart of C++
+///   `as<T>()`.
+/// * `TryFrom` takes the value and returns a `TypeError`, for `?`. Between
+///   references it only checks; from an [`Any`](crate::Any) it converts by
+///   the FFI rules, such as an integer into a float.
+///
+/// For an owned error from a borrow, write
+/// `value.downcast_ref::<T>().ok_or_else(|| Error::downcast_failed::<T>(value.clone()))`
+/// (see [`Error::downcast_failed`](crate::Error::downcast_failed)).
 ///
 /// The derive implements it. `data`, `into_data` and `from_data` are the
 /// handle plumbing the FFI uses, called as associated functions; the trait is
@@ -376,21 +388,17 @@ impl std::fmt::Debug for ObjectIdentity {
     }
 }
 
-/// Check whether a runtime type index refers to `Target` or one of its
-/// subtypes.
+/// Whether the runtime type index of an object is `Target` or one of its
+/// subtypes, as C++ `Object::IsInstance<T>()` checks.
 ///
-/// The subtype relation lives in the process-wide type table maintained by the
-/// tvm-ffi library: every registered type records its depth in the single
-/// inheritance tree together with the chain of its ancestors. The check is
-/// O(1) — if `target` really is an ancestor, it must appear in the candidate's
-/// ancestor array exactly at `target`'s depth.
-///
-/// This is a hidden support function for derive-generated object checks. Object
-/// indices in the registered range must refer to entries in the runtime type
-/// table.
-#[doc(hidden)]
+/// Use it in the strict check of a reference type implemented by hand; the
+/// casts of [`ObjectRefCore`] call it already. An index in the object range
+/// must be registered.
 #[inline(always)]
 pub fn is_instance_of<Target: ObjectCore>(object_type_index: i32) -> bool {
+    // Every registered type records its depth in the single inheritance tree
+    // and its ancestors, so the check is O(1): an ancestor `Target` appears in
+    // the candidate's ancestor array exactly at `Target`'s depth.
     let target_type_index = Target::type_index();
     if object_type_index == target_type_index {
         return true;
@@ -780,7 +788,8 @@ impl<T: ObjectCore> ObjectArc<T> {
     /// # Safety
     ///
     /// `this` points to an `ObjectArc<T>` or to all-zero bytes.
-    #[doc(hidden)]
+    ///
+    /// See also [`AnyCompatible::is_undefined`].
     #[inline]
     pub unsafe fn is_null(this: *const Self) -> bool {
         (*std::ptr::addr_of!((*this).ptr).cast::<*const T>()).is_null()
