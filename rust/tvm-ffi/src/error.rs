@@ -177,7 +177,7 @@ impl Error {
     ///
     /// * `kind` - The kind of the error, such as [`VALUE_ERROR`].
     /// * `message` - The message of the error.
-    /// * `backtrace` - The backtrace of the error, which may be empty.
+    /// * `backtrace` - The backtrace of the error, most recent call first; may be empty.
     ///
     /// # Returns
     ///
@@ -192,7 +192,7 @@ impl Error {
     ///
     /// * `kind` - The kind of the error.
     /// * `message` - The message of the error.
-    /// * `backtrace` - The backtrace of the error, which may be empty.
+    /// * `backtrace` - The backtrace of the error, most recent call first; may be empty.
     /// * `cause_chain` - The error that caused this one, if any.
     /// * `extra_context` - An object of application-specific context, if any.
     ///
