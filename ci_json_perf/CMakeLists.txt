@@ -16,7 +16,7 @@
 # under the License.
 
 cmake_minimum_required(VERSION 3.26)
-project(json_perf LANGUAGES CXX C)
+project(tvm_ffi LANGUAGES CXX C)
 add_subdirectory("${FFI_SOURCE}" ffi)
 add_executable(json_probe probe.cc)
 target_link_libraries(json_probe PRIVATE tvm_ffi_shared)
