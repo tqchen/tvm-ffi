@@ -26,6 +26,10 @@ on:
       # dev branch is used for testing purposes
       - dev
 
+# Validate the source version without requiring upstream release tags in this fork.
+env:
+  SETUPTOOLS_SCM_PRETEND_VERSION: "0.1.16.dev0"
+
 jobs:
   prepare:
     name: Prepare
