@@ -25,13 +25,25 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <locale>
 #include <random>
 #include <string>
 #include <vector>
 using namespace tvm::ffi;
+struct CommaPunctuation : std::numpunct<char> {
+  char do_decimal_point() const override { return ','; }
+  char do_thousands_sep() const override { return '.'; }
+  std::string do_grouping() const override { return std::string(1, 3); }
+};
 int main(int argc, char** argv) {
   std::string mode = argc > 1 ? argv[1] : "validate";
   if (mode == "validate") {
+    std::locale previous =
+        std::locale::global(std::locale(std::locale::classic(), new CommaPunctuation));
+    if (json::Stringify(1234.5) != "1234.5" || json::Stringify(-0.0) != "-0.0" ||
+        json::Stringify(1234.0) != "1234.0")
+      return 3;
+    std::locale::global(previous);
     std::vector<std::string> inputs = {"0",
                                        "-0",
                                        "-0.0",

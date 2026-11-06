@@ -34,7 +34,7 @@ HARNESS = Path(__file__).resolve().parent
 OUT = ROOT / "results"
 OUT.mkdir(exist_ok=True)
 STATES = ("baseline", "candidate")
-REPEATS = 41
+REPEATS = 31
 
 
 def capture(args: list[str]) -> dict[str, Any]:
@@ -88,7 +88,7 @@ for state in STATES:
         str(build),
         "-DFFI_SOURCE=" + str(source),
         "-DCMAKE_BUILD_TYPE=Release",
-        "-DTVM_FFI_BUILD_TESTS=OFF",
+        "-DTVM_FFI_BUILD_TESTS=ON",
     ]
     with (OUT / (state + "-build.log")).open("w") as log:
         subprocess.run(config, stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -101,10 +101,18 @@ for state in STATES:
                 "Release",
                 "--target",
                 "json_probe",
+                "tvm_ffi_tests",
                 "--parallel",
                 "4",
             ],
             stdout=log,
+            stderr=subprocess.STDOUT,
+            check=True,
+        )
+    with (OUT / (state + "-json-tests.log")).open("w") as testlog:
+        subprocess.run(
+            ["ctest", "--test-dir", str(build / "ffi"), "-R", "JSON", "--output-on-failure"],
+            stdout=testlog,
             stderr=subprocess.STDOUT,
             check=True,
         )
@@ -173,10 +181,10 @@ def measure(state: str, mode: str, case: str, iterations: int) -> tuple[float, i
 
 result["before"] = snapshot()
 time.sleep(2)
-for mode in ["parse", "write"]:
+for mode in ["write"]:
     for case in ["int", "float", "integral_float", "scientific", "ints", "floats", "mixed"]:
         pilot, _ = measure("baseline", mode, case, 2000)
-        iterations = max(1000, min(20000000, int(0.4e9 / pilot)))
+        iterations = max(1000, min(20000000, int(0.25e9 / pilot)))
         groups = {state: [] for state in STATES}
         ratios = []
         for repeat in range(REPEATS):
@@ -227,7 +235,7 @@ for row in result["summary"]:
 summary = [
     "## Matched JSON performance",
     "",
-    f"Platform: {result['platform']}; 41 alternating pairs per workload.",
+    f"Platform: {result['platform']}; 31 alternating pairs per workload.",
     "Shared hosted runner: results are measurements, not an isolation guarantee.",
     "",
     "| Workload | Baseline ns/op | Candidate ns/op | Median reduction | Paired ratio 95% interval |",

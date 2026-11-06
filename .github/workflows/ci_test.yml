@@ -15,7 +15,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: JSON performance validation
+name: JSON ostream fallback evaluation
 on:
   workflow_dispatch:
 permissions:
@@ -34,21 +34,28 @@ jobs:
           path: harness
       - uses: actions/checkout@v5
         with:
-          ref: 7d097720891cc06e67f314f57e0688c1e056e9e0
+          ref: 41a315a30b66e1289dcecccc55207b8feeae76b8
           submodules: recursive
           path: baseline
       - uses: actions/checkout@v5
         with:
-          ref: 41a315a30b66e1289dcecccc55207b8feeae76b8
+          ref: 8f1f551fdb3cb923731673db941d5b17284bc176
           submodules: recursive
           path: candidate
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
         with:
-          python-version: '3.13'
+          python-version: '3.14'
       - name: Build matched Release binaries and measure sequentially
-        run: uv run --no-project python harness/ci_json_perf/run.py
+        env:
+          SETUPTOOLS_SCM_PRETEND_VERSION: 0.1.dev955
+          SOURCE_DATE_EPOCH: '1793812800'
+          CMAKE_BUILD_PARALLEL_LEVEL: '4'
+          MACOSX_DEPLOYMENT_TARGET: '11.0'
+        run: |
+          uv run --no-project --with build==1.6.1 --with scikit-build-core==1.1.2 --with cython==3.3.0 --with setuptools-scm==10.3.4 --with ninja==1.13.2 --with delocate python harness/ci_json_perf/wheels.py
+          uv run --no-project python harness/ci_json_perf/run.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: json-performance-${{ matrix.os }}
+          name: json-ostream-${{ matrix.os }}
           path: results/
