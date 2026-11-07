@@ -156,16 +156,17 @@ pub const COMBINED_REF_COUNT_WEAK_ONE: u64 = 1u64 << 32;
 pub const COMBINED_REF_COUNT_BOTH_ONE: u64 =
     COMBINED_REF_COUNT_STRONG_ONE | COMBINED_REF_COUNT_WEAK_ONE;
 
-#[repr(C)]
+// `align(8)` pads `deleter` to the 8 bytes of the C union with `int64_t` on
+// 32-bit targets.
+#[repr(C, align(8))]
 pub struct TVMFFIObject {
     pub combined_ref_count: AtomicU64,
     pub type_index: i32,
     pub __padding: u32,
     pub deleter: Option<TVMFFIObjectDeleter>,
-    // private padding to ensure 8 bytes alignment
-    #[cfg(target_pointer_width = "32")]
-    __padding: u32,
 }
+
+const _: () = assert!(size_of::<TVMFFIObject>() == 24 && align_of::<TVMFFIObject>() == 8);
 
 impl TVMFFIObject {
     #[allow(clippy::new_without_default)]
