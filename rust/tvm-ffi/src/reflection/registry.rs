@@ -518,9 +518,15 @@ pub struct TypeAttrDef<T: ObjectCore> {
     _type: PhantomData<fn() -> T>,
 }
 
+impl<T: ObjectCore> Default for TypeAttrDef<T> {
+    #[inline(always)]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T: ObjectCore> TypeAttrDef<T> {
     /// A builder for the type attributes of `T`.
-    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self { _type: PhantomData }
     }

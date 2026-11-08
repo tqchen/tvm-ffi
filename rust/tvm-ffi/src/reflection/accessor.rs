@@ -45,6 +45,17 @@ pub struct TypeAttrColumn(NonNull<TVMFFITypeAttrColumn>);
 unsafe impl Send for TypeAttrColumn {}
 unsafe impl Sync for TypeAttrColumn {}
 
+impl std::fmt::Debug for TypeAttrColumn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // SAFETY: the column is registry-owned process-lifetime data.
+        let column = unsafe { self.0.as_ref() };
+        f.debug_struct("TypeAttrColumn")
+            .field("begin_index", &column.begin_index)
+            .field("size", &column.size)
+            .finish()
+    }
+}
+
 impl TypeAttrColumn {
     /// Look up a registered type-attribute column by name.
     pub fn lookup(name: &str) -> Option<Self> {
@@ -309,6 +320,18 @@ impl<N> Clone for FieldGetter<N> {
 }
 
 impl<N> Copy for FieldGetter<N> {}
+
+impl<N> std::fmt::Debug for FieldGetter<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FieldGetter")
+            .field(
+                "owner",
+                &type_key(self.owner_type_index).unwrap_or_default(),
+            )
+            .field("offset", &self.field_offset)
+            .finish()
+    }
+}
 
 impl FieldGetter {
     /// Resolve a reflected field declared by `type_index` or one of its bases.
